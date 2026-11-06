@@ -11,6 +11,7 @@
 
 class QComboBox;
 class QFrame;
+class QLabel;
 class QListWidget;
 class QToolButton;
 class SegmentedControl;
@@ -42,6 +43,8 @@ public:
     void showPage(int index);  // FEAT-045: 0 General, 1 Appearance, 2 Editor, 3 Shortcuts (when present)
     // FEAT-045: adds Mentis to the agents' apps (tests set it; empty = the apps of this computer).
     std::function<QList<McpClients::Outcome>()> connectAgentApps;
+    // FEAT-090: the date and time of the last update check, under the version; after "Check now".
+    void refreshLastUpdateCheck();
 
 signals:
     // Emessi dopo aver salvato la scelta; chi apre la finestra ridisegna cio' che serve.
@@ -71,6 +74,7 @@ private:
     static void paintSwatch(QToolButton *button, const QColor &color);
 
     NodeItem::SelectionStyle m_style;
+    QLabel *m_lastUpdateCheck = nullptr;  // FEAT-090
     QToolButton *m_selectedColor = nullptr;
     QToolButton *m_hoverColor = nullptr;
     QToolButton *m_textColor = nullptr;  // sfondo del testo selezionato (2026-10-13)

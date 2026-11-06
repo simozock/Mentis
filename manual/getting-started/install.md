@@ -40,7 +40,8 @@ Once a day at startup Mentis asks GitHub for a new version, and if there is one:
 ![The Updates settings](../images/getting-started/install-updates.png)
 
 **Settings** › **General** › **Updates**: **Check for updates at startup** turns it off; **Check
-now** checks at once, skipped versions too.
+now** checks at once, skipped versions too. Under your version: the date and time of the last
+check. With no network or no answer from GitHub, the check at startup shows nothing.
 
 > [!NOTE]
 > This is the only time Mentis connects to the internet on its own.

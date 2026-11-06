@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(Mentis VERSION 0.8.0 LANGUAGES CXX)
+project(Mentis VERSION 0.8.1 LANGUAGES CXX)
 
 # 2026-10-14: senza un tipo di build (generatori a configurazione singola, es. Ninja da riga di
 # comando) il compilatore non ottimizzava (-O0). Predefinito Release; Qt Creator e chi passa

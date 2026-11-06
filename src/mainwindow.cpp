@@ -6029,6 +6029,7 @@ void MainWindow::showSettings(bool shortcutsPage) {
         statusBar()->showMessage(tr("Language changed: restart Mentis to apply it."), 5000);
     });
     connect(&dialog, &SettingsDialog::checkForUpdatesRequested, this, [this, &dialog] { updatePrompt()->checkNow(&dialog); });
+    connect(updatePrompt(), &UpdatePrompt::checkFinished, &dialog, &SettingsDialog::refreshLastUpdateCheck);
     bool tourRequested = false;  // FEAT-093: the tour starts once the dialog is closed
     connect(&dialog, &SettingsDialog::tourRequested, this, [&tourRequested] { tourRequested = true; });
     if (shortcutsPage) dialog.showShortcutsPage();  // FEAT-041: "Scorciatoie…" apre questa scheda

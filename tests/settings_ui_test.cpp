@@ -21,6 +21,7 @@
 #include <QDialogButtonBox>
 #include <QImage>
 #include <QListWidget>
+#include <QLocale>
 #include <QPainter>
 #include <QPushButton>
 #include <QSettings>
@@ -181,9 +182,20 @@ void SettingsUiTest::agentsAreOffUntilAllowed() {
 }
 
 // FEAT-090: Settings > General > Updates: on by default, saved at once, Defaults turns it back on;
-// "Check now" asks the window (which answers over the dialog).
+// "Check now" asks the window (which answers over the dialog); the last check under the version.
 void SettingsUiTest::updatesCard() {
+    Updates::Settings saved = Updates::Settings::load();
+    saved.lastCheck = QDateTime();
+    saved.save();
     SettingsDialog dialog;
+    auto *lastCheck = dialog.findChild<QLabel *>(QStringLiteral("UpdatesLastCheck"));
+    QVERIFY(lastCheck);
+    QCOMPARE(lastCheck->text(), QStringLiteral("Not checked yet"));
+    const QDateTime when(QDate(2026, 11, 6), QTime(11, 0));
+    saved.lastCheck = when;
+    saved.save();
+    dialog.refreshLastUpdateCheck();
+    QCOMPARE(lastCheck->text(), QStringLiteral("Last check: ") + QLocale().toString(when, QLocale::ShortFormat));
     auto *updates = dialog.findChild<ToggleSwitch *>(QStringLiteral("UpdatesSwitch"));
     QVERIFY(updates);
     QVERIFY(updates->isChecked());

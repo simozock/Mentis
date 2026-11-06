@@ -12,6 +12,16 @@ All notable changes to Mentis are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-11-06
+
+### Added
+
+- Settings > General > Updates shows the date and time of the last update check.
+
+### Fixed
+
+- Windows: after an update the desktop shortcut shows the new icon.
+
 ## [0.8.0] - 2026-11-05
 
 ### Added

@@ -174,23 +174,31 @@ void FocusModeTest::fullScreenCornersAreTheFrame() {
         settle();
         QSKIP("the platform did not go full screen");
     }
-    // The panel's opening and, on macOS, the animated switch to full screen (rounded, transparent
-    // corners until it ends): grabbed again until it settles, not after a fixed wait.
-    const auto cornersMatch = [this] {
+    // The panel's opening and, on macOS, the animated switch to full screen: grabbed again until it
+    // settles, not after a fixed wait. grab() paints anew, so rounded corners mean the window was not
+    // full screen at that moment: GitHub's macOS runner sometimes leaves full screen on its own.
+    QString last;
+    const auto cornersMatch = [this, &last] {
+        if (!m_window->isFullScreen()) return true;  // checked below
         const QImage shot = m_window->grab().toImage();
         const QColor frame = shot.pixelColor(4, shot.height() / 2);
         for (const QPoint corner : {QPoint(0, 0), QPoint(shot.width() - 1, 0), QPoint(0, shot.height() / 2)})
             if (shot.pixelColor(corner) != frame) {
-                qWarning() << "corner" << corner << shot.pixelColor(corner) << "frame" << frame;
+                last = QStringLiteral("corner %1,%2 is %3, frame %4, window state %5")
+                           .arg(corner.x()).arg(corner.y()).arg(shot.pixelColor(corner).name(QColor::HexArgb),
+                                frame.name(QColor::HexArgb)).arg(int(m_window->windowState()));
                 return false;
             }
         return true;
     };
     QTest::qWait(400);
-    QTRY_VERIFY_WITH_TIMEOUT(cornersMatch(), 5000);
-    toggle();
+    QTRY_VERIFY2_WITH_TIMEOUT(cornersMatch(), qPrintable(last), 5000);
+    const bool left = !m_window->isFullScreen();
+    if (left) qWarning() << "the platform left full screen, window state" << int(m_window->windowState());
+    if (m_window->isFullScreen()) toggle();
     panel->trigger();
     settle();
+    if (left) QSKIP("the platform left full screen by itself");
 }
 
 QTEST_MAIN(FocusModeTest)

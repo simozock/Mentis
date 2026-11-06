@@ -238,6 +238,27 @@ private slots:
         QVERIFY(!Updates::Settings::load().lastCheck.isValid());
     }
 
+    // Startup with no answer (releases deleted, repository moved, no network): nothing is shown.
+    void startupIsSilentOnErrors() {
+        Updates::Settings settings = Updates::Settings::load();
+        settings.checkAtStartup = true;  // the test before turns it off
+        settings.lastCheck = QDateTime();  // due
+        settings.save();
+        QWidget window;
+        window.resize(800, 600);
+        window.show();
+        UpdatePrompt prompt(&window);
+        QTemporaryDir dir;
+        prompt.releaseUrl = QUrl::fromLocalFile(dir.filePath("gone.json"));
+        QSignalSpy finished(&prompt, &UpdatePrompt::checkFinished);
+        prompt.checkAtStartup();
+        QVERIFY(finished.wait());
+        QApplication::processEvents();
+        QVERIFY(!QApplication::activeModalWidget());
+        QVERIFY(window.findChildren<ModalDialog *>().isEmpty());
+        QVERIFY(!Updates::Settings::load().lastCheck.isValid());  // no answer is not a check
+    }
+
     // "Check now" proposes even a skipped version; "Skip this version" remembers it.
     void checkNowAndSkip() {
         QTemporaryDir dir;

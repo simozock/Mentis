@@ -32,6 +32,7 @@
 #include <QHash>
 #include <QKeySequenceEdit>
 #include <QLabel>
+#include <QLocale>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMouseEvent>
@@ -597,10 +598,23 @@ QFrame *SettingsDialog::createUpdatesCard() {
     auto *checkNow = new QPushButton(tr("Check now"));
     checkNow->setObjectName(QStringLiteral("UpdatesCheckNow"));
     connect(checkNow, &QPushButton::clicked, this, &SettingsDialog::checkForUpdatesRequested);
+    // The description under the version: the last answer from GitHub (user, 2026-11-06). A space
+    // keeps settingsRow's label, filled at once.
+    QWidget *version = settingsRow(tr("Version %1").arg(Updates::currentVersion()), QStringLiteral(" "), checkNow);
+    m_lastUpdateCheck = version->findChild<QLabel *>(QStringLiteral("settingsHint"));
+    m_lastUpdateCheck->setObjectName(QStringLiteral("UpdatesLastCheck"));
+    refreshLastUpdateCheck();
     return settingsCard({
         settingsRow(tr("Check for updates at startup"),
                     tr("Once a day Mentis asks GitHub whether a new version was released."), enabled),
-        settingsRow(tr("Version %1").arg(Updates::currentVersion()), QString(), checkNow)});
+        version});
+}
+
+void SettingsDialog::refreshLastUpdateCheck() {
+    if (!m_lastUpdateCheck) return;
+    const QDateTime last = Updates::Settings::load().lastCheck;
+    m_lastUpdateCheck->setText(last.isValid() ? tr("Last check: %1").arg(QLocale().toString(last, QLocale::ShortFormat))
+                                              : tr("Not checked yet"));
 }
 
 // FEAT-045: the lines an agent's app needs to start this same program with --mcp, the same for every

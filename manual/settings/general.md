@@ -34,7 +34,7 @@ From the next start it keeps 50 undo steps in memory instead of 100.
 
 ## Updates
 
-**Check for updates at startup** and **Check now**, with your version: see
+**Check for updates at startup** and **Check now**, with your version and the last check: see
 [Install Mentis](../getting-started/install.md#updates).
 
 > [!NOTE]
