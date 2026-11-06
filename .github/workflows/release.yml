@@ -6,7 +6,7 @@ name: Release
 #   SHA256SUMS, the release.
 # - A push to main: the same packages as workflow artifacts, to try them; no signing, no release.
 # - Run by hand with an existing tag: only the macOS disk image, from that tag's code, added to its
-#   release with the updated SHA256SUMS (releases made before the macOS job, such as v0.7.0).
+#   release with the updated SHA256SUMS (a release made without it).
 # Signing (SignPath Foundation, installer/signpath/README.md) runs only for a tag and only when the
 # secret SIGNPATH_API_TOKEN exists: without it the release is unsigned. Each signing request waits
 # for a manual approval on SignPath (two per release: the program, then the installer).
@@ -257,8 +257,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # A tag moved onto a commit with the same code (GitHub history squashed, 2026-11-04) keeps
-          # its release and files as they are.
+          # A tag moved onto a commit with the same code keeps its release and files as they are.
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
             echo "The release ${GITHUB_REF_NAME} already exists: left as it is."
             exit 0

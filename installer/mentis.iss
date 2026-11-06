@@ -35,6 +35,9 @@ DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 SetupIconFile=..\assets\appicon\mentis.ico
 UninstallDisplayIcon={app}\bin\Mentis.exe
+; Explorer refreshes its icons at the end: the shortcuts point to the same Mentis.exe path, so after
+; an update whose icon changed they kept the old one from Windows' icon cache.
+ChangesAssociations=yes
 OutputDir=..\dist
 OutputBaseFilename=Mentis-{#AppVersion}-setup-x64
 ArchitecturesAllowed=x64compatible

@@ -9,6 +9,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDebug>
 #include <QImage>
 #include <QKeyEvent>
 #include <QStackedWidget>
@@ -173,11 +174,20 @@ void FocusModeTest::fullScreenCornersAreTheFrame() {
         settle();
         QSKIP("the platform did not go full screen");
     }
-    QTest::qWait(400);  // the panel opening animation
-    const QImage shot = m_window->grab().toImage();
-    const QColor frame = shot.pixelColor(4, shot.height() / 2);
-    for (const QPoint corner : {QPoint(0, 0), QPoint(shot.width() - 1, 0), QPoint(0, shot.height() / 2)})
-        QCOMPARE(shot.pixelColor(corner), frame);
+    // The panel's opening and, on macOS, the animated switch to full screen (rounded, transparent
+    // corners until it ends): grabbed again until it settles, not after a fixed wait.
+    const auto cornersMatch = [this] {
+        const QImage shot = m_window->grab().toImage();
+        const QColor frame = shot.pixelColor(4, shot.height() / 2);
+        for (const QPoint corner : {QPoint(0, 0), QPoint(shot.width() - 1, 0), QPoint(0, shot.height() / 2)})
+            if (shot.pixelColor(corner) != frame) {
+                qWarning() << "corner" << corner << shot.pixelColor(corner) << "frame" << frame;
+                return false;
+            }
+        return true;
+    };
+    QTest::qWait(400);
+    QTRY_VERIFY_WITH_TIMEOUT(cornersMatch(), 5000);
     toggle();
     panel->trigger();
     settle();
