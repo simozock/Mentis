@@ -1,0 +1,316 @@
+// FEAT-090: update rules, the two network steps on file:// URLs and the questions of UpdatePrompt.
+#include "modaldialog.h"
+#include "updateprompt.h"
+#include "updates.h"
+
+#include <QApplication>
+#include <QCryptographicHash>
+#include <QDir>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLabel>
+#include <QPushButton>
+#include <QSettings>
+#include <QSignalSpy>
+#include <QStandardPaths>
+#include <QTemporaryDir>
+#include <QTimer>
+#include <QtTest>
+
+namespace {
+
+QByteArray releaseJson(const QString &tag, const QUrl &installer, const QUrl &sums, const QString &installerName) {
+    QJsonArray assets;
+    if (!installer.isEmpty())
+        assets.append(QJsonObject{{"name", installerName}, {"browser_download_url", installer.toString()}});
+    if (!sums.isEmpty()) assets.append(QJsonObject{{"name", "SHA256SUMS"}, {"browser_download_url", sums.toString()}});
+    assets.append(QJsonObject{{"name", "Mentis-source.zip"}, {"browser_download_url", "https://example.invalid/x.zip"}});
+    return QJsonDocument(QJsonObject{{"tag_name", tag},
+                                     {"html_url", "https://github.com/simozock/Mentis/releases/tag/" + tag},
+                                     {"draft", false},
+                                     {"prerelease", false},
+                                     {"assets", assets}})
+        .toJson();
+}
+
+void writeFile(const QString &path, const QByteArray &data) {
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(data);
+}
+
+// Answers the modals as they open: title -> "primary" or "secondary". Others (the download) are left
+// alone. A timer, not nested waits: each answer runs inside the modal's own event loop.
+class AutoAnswer {
+public:
+    explicit AutoAnswer(QHash<QString, QString> answers) : m_answers(std::move(answers)) {
+        QObject::connect(&m_timer, &QTimer::timeout, [this] {
+            auto *modal = qobject_cast<ModalDialog *>(QApplication::activeModalWidget());
+            if (!modal || modal->property("answered").toBool()) return;
+            const QString title = modal->findChild<QLabel *>(QStringLiteral("ModalTitle"))->text();
+            if (!m_answers.contains(title)) return;
+            modal->setProperty("answered", true);
+            seen.append(title);
+            if (m_answers.value(title) == QLatin1String("secondary"))
+                modal->findChild<QPushButton *>(QStringLiteral("ModalSecondary"))->click();
+            else
+                modal->acceptButton()->click();
+        });
+        m_timer.start(10);
+    }
+    QStringList seen;
+
+private:
+    QHash<QString, QString> m_answers;
+    QTimer m_timer;
+};
+
+}  // namespace
+
+class UpdatesTest : public QObject {
+    Q_OBJECT
+private slots:
+    void initTestCase() {
+        QStandardPaths::setTestModeEnabled(true);
+        QCoreApplication::setOrganizationName(QStringLiteral("Mentis"));
+        QCoreApplication::setApplicationName(QStringLiteral("MentisUpdatesTest"));
+    }
+    void init() { QSettings().clear(); }
+
+    void versions() {
+        QVERIFY(Updates::isNewer("0.2.0", "0.1.0"));
+        QVERIFY(Updates::isNewer("v1.0.0", "0.9.9"));
+        QVERIFY(Updates::isNewer("0.1.10", "0.1.9"));  // numbers, not text
+        QVERIFY(!Updates::isNewer("0.1.0", "0.1.0"));
+        QVERIFY(!Updates::isNewer("0.0.9", "0.1.0"));
+        QVERIFY(!Updates::isNewer("1.0.0-beta", "0.1.0"));
+        QVERIFY(!Updates::isNewer("nightly", "0.1.0"));
+        QVERIFY(!Updates::isNewer("99999999999.0.0", "0.1.0"));
+        int parts[3];
+        QVERIFY(Updates::parseVersion(Updates::currentVersion(), parts));  // CMakeLists.txt's version
+    }
+
+    void releaseParsing() {
+        bool ok = false;
+        const Updates::Release release = Updates::parseRelease(
+            releaseJson("v1.2.3", QUrl("https://example.invalid/i.exe"), QUrl("https://example.invalid/S"),
+                        "Mentis-1.2.3-setup-x64.exe"),
+            &ok);
+        QVERIFY(ok);
+        QCOMPARE(release.version, QString("1.2.3"));
+        QCOMPARE(release.installerName, QString("Mentis-1.2.3-setup-x64.exe"));
+        QCOMPARE(release.installerUrl, QUrl("https://example.invalid/i.exe"));
+        QCOMPARE(release.checksumsUrl, QUrl("https://example.invalid/S"));
+        QCOMPARE(release.pageUrl, QUrl("https://github.com/simozock/Mentis/releases/tag/v1.2.3"));
+
+        // An installer of another version is not this release's installer.
+        const Updates::Release other = Updates::parseRelease(
+            releaseJson("v1.2.3", QUrl("https://example.invalid/i.exe"), QUrl(), "Mentis-1.2.2-setup-x64.exe"), &ok);
+        QVERIFY(ok);
+        QVERIFY(other.installerUrl.isEmpty());
+        QVERIFY(other.checksumsUrl.isEmpty());
+
+        Updates::parseRelease("{\"tag_name\":\"latest\"}", &ok);
+        QVERIFY(!ok);
+        Updates::parseRelease("{\"tag_name\":\"v2.0.0\",\"prerelease\":true}", &ok);
+        QVERIFY(!ok);
+        Updates::parseRelease("not json", &ok);
+        QVERIFY(!ok);
+    }
+
+    void checksums() {
+        const QByteArray hash(64, 'a');
+        const QByteArray sums = hash + "  Mentis-1.0.0-setup-x64.exe\n" + QByteArray(64, 'B') + " *other.zip\r\n";
+        QCOMPARE(Updates::checksumFor(sums, "Mentis-1.0.0-setup-x64.exe"), hash);
+        QCOMPARE(Updates::checksumFor(sums, "other.zip"), QByteArray(64, 'b'));
+        QVERIFY(Updates::checksumFor(sums, "missing.exe").isEmpty());
+        QVERIFY(Updates::checksumFor("short  Mentis-1.0.0-setup-x64.exe", "Mentis-1.0.0-setup-x64.exe").isEmpty());
+    }
+
+    void dailyRule() {
+        const QDateTime now(QDate(2026, 11, 2), QTime(12, 0));
+        QVERIFY(Updates::startupCheckDue(QDateTime(), now));
+        QVERIFY(!Updates::startupCheckDue(now.addSecs(-3600), now));
+        QVERIFY(Updates::startupCheckDue(now.addDays(-1), now));
+        QVERIFY(Updates::startupCheckDue(now.addDays(3), now));  // clock moved back
+    }
+
+    void settingsDefaults() {
+        const Updates::Settings settings = Updates::Settings::load();
+        QVERIFY(settings.checkAtStartup);
+        QVERIFY(!settings.lastCheck.isValid());
+        QVERIFY(settings.skippedVersion.isEmpty());
+    }
+
+    void checkerReadsRelease() {
+        QTemporaryDir dir;
+        writeFile(dir.filePath("latest.json"), releaseJson("v3.0.0", QUrl(), QUrl(), QString()));
+        UpdateChecker checker;
+        QSignalSpy finished(&checker, &UpdateChecker::finished);
+        checker.start(QUrl::fromLocalFile(dir.filePath("latest.json")));
+        QVERIFY(finished.wait());
+        QVERIFY(finished.at(0).at(0).toBool());
+        QCOMPARE(finished.at(0).at(1).value<Updates::Release>().version, QString("3.0.0"));
+
+        UpdateChecker missing;
+        QSignalSpy failed(&missing, &UpdateChecker::finished);
+        missing.start(QUrl::fromLocalFile(dir.filePath("absent.json")));
+        QVERIFY(failed.wait());
+        QVERIFY(!failed.at(0).at(0).toBool());
+    }
+
+    void downloaderVerifiesHash() {
+        QTemporaryDir source;
+        QTemporaryDir target;
+        const QString name = Updates::installerFileName("3.0.0");
+        const QByteArray installer(300000, 'x');
+        writeFile(source.filePath(name), installer);
+        Updates::Release release;
+        release.version = "3.0.0";
+        release.installerName = name;
+        release.installerUrl = QUrl::fromLocalFile(source.filePath(name));
+        release.checksumsUrl = QUrl::fromLocalFile(source.filePath("SHA256SUMS"));
+
+        writeFile(source.filePath("SHA256SUMS"), QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex() + "  " + name.toUtf8() + "\n");
+        {
+            UpdateDownloader downloader(release, target.path());
+            QSignalSpy finished(&downloader, &UpdateDownloader::finished);
+            downloader.start();
+            QVERIFY(finished.wait());
+            QCOMPARE(finished.at(0).at(0).value<UpdateDownloader::Error>(), UpdateDownloader::Error::None);
+            const QString path = finished.at(0).at(1).toString();
+            QFile file(path);
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QCOMPARE(file.readAll(), installer);
+        }
+
+        writeFile(source.filePath("SHA256SUMS"), QByteArray(64, '0') + "  " + name.toUtf8() + "\n");
+        {
+            UpdateDownloader downloader(release, target.path());
+            QSignalSpy finished(&downloader, &UpdateDownloader::finished);
+            downloader.start();
+            QVERIFY(finished.wait());
+            QCOMPARE(finished.at(0).at(0).value<UpdateDownloader::Error>(), UpdateDownloader::Error::Damaged);
+            QVERIFY(!QFile::exists(target.filePath(name)));  // a damaged file is not kept
+        }
+
+        writeFile(source.filePath("SHA256SUMS"), QByteArray(64, '0') + "  another-file.exe\n");
+        {
+            UpdateDownloader downloader(release, target.path());
+            QSignalSpy finished(&downloader, &UpdateDownloader::finished);
+            downloader.start();
+            QVERIFY(finished.wait());
+            QCOMPARE(finished.at(0).at(0).value<UpdateDownloader::Error>(), UpdateDownloader::Error::Damaged);
+        }
+    }
+
+    // Startup: a skipped version and a check made today ask nothing.
+    void startupRespectsSkipAndDay() {
+        QTemporaryDir dir;
+        writeFile(dir.filePath("latest.json"), releaseJson("v99.0.0", QUrl(), QUrl(), QString()));
+        QWidget window;
+        UpdatePrompt prompt(&window);
+        prompt.releaseUrl = QUrl::fromLocalFile(dir.filePath("latest.json"));
+        QSignalSpy finished(&prompt, &UpdatePrompt::checkFinished);
+
+        Updates::Settings settings;
+        settings.skippedVersion = "99.0.0";
+        settings.save();
+        prompt.checkAtStartup();
+        QVERIFY(finished.wait());
+        QVERIFY(Updates::Settings::load().lastCheck.isValid());
+
+        // Checked a moment ago: no request at all, finished at once.
+        settings = Updates::Settings::load();
+        settings.skippedVersion.clear();
+        settings.save();
+        finished.clear();
+        prompt.checkAtStartup();
+        QCOMPARE(finished.count(), 1);
+
+        settings.checkAtStartup = false;
+        settings.lastCheck = QDateTime();
+        settings.save();
+        finished.clear();
+        prompt.checkAtStartup();
+        QCOMPARE(finished.count(), 1);
+        QVERIFY(!Updates::Settings::load().lastCheck.isValid());
+    }
+
+    // "Check now" proposes even a skipped version; "Skip this version" remembers it.
+    void checkNowAndSkip() {
+        QTemporaryDir dir;
+        writeFile(dir.filePath("latest.json"), releaseJson("v99.0.0", QUrl(), QUrl(), QString()));
+        QWidget window;
+        window.resize(800, 600);
+        window.show();
+        UpdatePrompt prompt(&window);
+        prompt.releaseUrl = QUrl::fromLocalFile(dir.filePath("latest.json"));
+        QSignalSpy finished(&prompt, &UpdatePrompt::checkFinished);
+
+        Updates::Settings settings;
+        settings.skippedVersion = "99.0.0";
+        settings.save();
+        {
+            AutoAnswer answers({{"Update available", "secondary"}});
+            prompt.checkNow(&window);
+            QVERIFY(finished.wait());
+            QCOMPARE(answers.seen, QStringList{"Update available"});
+            QCOMPARE(Updates::Settings::load().skippedVersion, QString("99.0.0"));
+        }
+
+        // Up to date: a message.
+        writeFile(dir.filePath("latest.json"), releaseJson("v" + Updates::currentVersion(), QUrl(), QUrl(), QString()));
+        AutoAnswer answers({{"Updates", "primary"}});
+        prompt.checkNow(&window);
+        QVERIFY(finished.wait());
+        QCOMPARE(answers.seen, QStringList{"Updates"});
+    }
+
+    // The whole Windows path: Update, download, Restart and install; the windows are asked to close.
+    void downloadAndInstall() {
+        QTemporaryDir dir;
+        const QString name = Updates::installerFileName("99.0.0");
+        const QByteArray installer(1000, 'i');
+        writeFile(dir.filePath(name), installer);
+        writeFile(dir.filePath("SHA256SUMS"), QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex() + "  " + name.toUtf8() + "\n");
+        writeFile(dir.filePath("latest.json"), releaseJson("v99.0.0", QUrl::fromLocalFile(dir.filePath(name)),
+                                                           QUrl::fromLocalFile(dir.filePath("SHA256SUMS")), name));
+        QWidget window;
+        window.resize(800, 600);
+        window.show();
+        UpdatePrompt prompt(&window);
+        prompt.releaseUrl = QUrl::fromLocalFile(dir.filePath("latest.json"));
+        prompt.canInstall = [] { return true; };
+        bool windowsClosed = false;
+        QString started;
+        prompt.closeWindows = [&windowsClosed] { return windowsClosed; };
+        prompt.startInstaller = [&started](const QString &path) {
+            started = path;
+            return true;
+        };
+        QSignalSpy finished(&prompt, &UpdatePrompt::checkFinished);
+
+        // Update available -> Update; the download closes by itself; Update ready -> Restart and install.
+        AutoAnswer answers({{"Update available", "primary"}, {"Update ready", "primary"}});
+        // A window refuses to close: nothing starts and the app keeps quitting on its last window.
+        prompt.checkNow(&window);
+        QVERIFY(finished.wait());
+        QCOMPARE(answers.seen, (QStringList{"Update available", "Update ready"}));
+        QVERIFY(started.isEmpty());
+        QVERIFY(QGuiApplication::quitOnLastWindowClosed());
+
+        windowsClosed = true;
+        prompt.checkNow(&window);
+        QVERIFY(finished.wait());
+        QCOMPARE(QFileInfo(started).fileName(), name);
+        QFile file(started);
+        QVERIFY(file.open(QIODevice::ReadOnly));
+        QCOMPARE(file.readAll(), installer);
+        QGuiApplication::setQuitOnLastWindowClosed(true);
+    }
+};
+
+QTEST_MAIN(UpdatesTest)
+#include "updates_test.moc"

@@ -1,0 +1,464 @@
+<RCC>
+  <qresource prefix="/">
+    <file>assets/appicon/mentis-16.png</file>
+    <file>assets/appicon/mentis-24.png</file>
+    <file>assets/appicon/mentis-32.png</file>
+    <file>assets/appicon/mentis-48.png</file>
+    <file>assets/appicon/mentis-64.png</file>
+    <file>assets/appicon/mentis-128.png</file>
+    <file>assets/appicon/mentis-256.png</file>
+    <file>assets/appicon/mentis-512.png</file>
+    <file>assets/mascot/brain-smile.png</file>
+    <file>assets/mascot/brain-hello.png</file>
+    <file>assets/mascot/brain-look.png</file>
+    <file>assets/mascot/brain-think.png</file>
+    <file>assets/mascot/brain-cheer.png</file>
+    <file>assets/menu.svg</file>
+    <file>assets/home.svg</file>
+    <file>assets/sibling.svg</file>
+    <file>assets/child.svg</file>
+    <file>assets/relation.svg</file>
+    <file>assets/summary.svg</file>
+    <file>assets/boundary.svg</file>
+    <file>assets/plus.svg</file>
+    <file>assets/fit.svg</file>
+    <file>assets/outliner.svg</file>
+    <file>assets/panel.svg</file>
+    <file>assets/window-minimize.svg</file>
+    <file>assets/window-maximize.svg</file>
+    <file>assets/window-close.svg</file>
+    <file>assets/window-minimize-light.svg</file>
+    <file>assets/window-maximize-light.svg</file>
+    <file>assets/window-close-light.svg</file>
+    <file>assets/indent-right.svg</file>
+    <file>assets/indent-left.svg</file>
+    <file>assets/icons/boundary.svg</file>
+    <file>assets/icons/child.svg</file>
+    <file>assets/icons/fit.svg</file>
+    <file>assets/icons/home.svg</file>
+    <file>assets/icons/indent-left.svg</file>
+    <file>assets/icons/indent-right.svg</file>
+    <file>assets/icons/menu.svg</file>
+    <file>assets/icons/outliner.svg</file>
+    <file>assets/icons/panel.svg</file>
+    <file>assets/icons/plus.svg</file>
+    <file>assets/icons/relation.svg</file>
+    <file>assets/icons/sibling.svg</file>
+    <file>assets/icons/summary.svg</file>
+    <file>assets/icons/window-close-light.svg</file>
+    <file>assets/icons/window-close.svg</file>
+    <file>assets/icons/window-maximize-light.svg</file>
+    <file>assets/icons/window-maximize.svg</file>
+    <file>assets/icons/window-minimize-light.svg</file>
+    <file>assets/icons/window-minimize.svg</file>
+    <file>assets/hugeicons/arrow-down.svg</file>
+    <file>assets/hugeicons/boundary.svg</file>
+    <file>assets/hugeicons/child.svg</file>
+    <file>assets/hugeicons/fit.svg</file>
+    <file>assets/hugeicons/focus.svg</file>
+    <file>assets/hugeicons/help.svg</file>
+    <file>assets/hugeicons/help-light.svg</file>
+    <file>assets/hugeicons/arrow-right-light.svg</file>
+    <file>assets/hugeicons/arrow-down-light.svg</file>
+    <file>assets/hugeicons/arrow-left.svg</file>
+    <file>assets/hugeicons/arrow-right.svg</file>
+    <file>assets/hugeicons/home.svg</file>
+    <file>assets/hugeicons/indent-left.svg</file>
+    <file>assets/hugeicons/indent-right.svg</file>
+    <file>assets/hugeicons/menu-formula.svg</file>
+    <file>assets/hugeicons/menu-image.svg</file>
+    <file>assets/hugeicons/link.svg</file>
+    <file>assets/hugeicons/link-web.svg</file>
+    <file>assets/hugeicons/menu-link.svg</file>
+    <file>assets/hugeicons/menu-link-web.svg</file>
+    <file>assets/hugeicons/search.svg</file>
+    <file>assets/hugeicons/pen.svg</file>
+    <file>assets/hugeicons/editor-select.svg</file>
+    <file>assets/hugeicons/editor-crop.svg</file>
+    <file>assets/hugeicons/editor-rectangle.svg</file>
+    <file>assets/hugeicons/editor-ellipse.svg</file>
+    <file>assets/hugeicons/editor-line.svg</file>
+    <file>assets/hugeicons/editor-pen.svg</file>
+    <file>assets/hugeicons/editor-polygon.svg</file>
+    <file>assets/hugeicons/editor-star.svg</file>
+    <file>assets/hugeicons/editor-rotate-left.svg</file>
+    <file>assets/hugeicons/editor-rotate-right.svg</file>
+    <file>assets/hugeicons/editor-flip-horizontal.svg</file>
+    <file>assets/hugeicons/editor-flip-vertical.svg</file>
+    <file>assets/hugeicons/editor-bring-forward.svg</file>
+    <file>assets/hugeicons/editor-send-backward.svg</file>
+    <file>assets/hugeicons/editor-bring-to-front.svg</file>
+    <file>assets/hugeicons/editor-send-to-back.svg</file>
+    <file>assets/hugeicons/editor-delete.svg</file>
+    <file>assets/hugeicons/editor-bold.svg</file>
+    <file>assets/hugeicons/editor-undo.svg</file>
+    <file>assets/hugeicons/editor-redo.svg</file>
+    <file>assets/hugeicons/clock.svg</file>
+    <file>assets/hugeicons/alert.svg</file>
+    <file>assets/hugeicons/user-group.svg</file>
+    <file>assets/hugeicons/folder-open.svg</file>
+    <file>assets/hugeicons/templates.svg</file>
+    <file>assets/hugeicons/image.svg</file>
+    <file>assets/hugeicons/checkbox.svg</file>
+    <file>assets/hugeicons/menu-text.svg</file>
+    <file>assets/hugeicons/menu.svg</file>
+    <file>assets/hugeicons/outliner.svg</file>
+    <file>assets/hugeicons/text-font.svg</file>
+    <file>assets/hugeicons/text-bold.svg</file>
+    <file>assets/hugeicons/text-italic.svg</file>
+    <file>assets/hugeicons/text-strikethrough.svg</file>
+    <file>assets/hugeicons/text-underline.svg</file>
+    <file>assets/hugeicons/text-align-left.svg</file>
+    <file>assets/hugeicons/text-align-center.svg</file>
+    <file>assets/hugeicons/text-align-right.svg</file>
+    <file>assets/hugeicons/text-align-justify.svg</file>
+    <file>assets/hugeicons/panel.svg</file>
+    <file>assets/hugeicons/panel-left.svg</file>
+    <file>assets/hugeicons/camera.svg</file>
+    <file>assets/hugeicons/plus.svg</file>
+    <file>assets/fonts/roboto/Roboto[wdth,wght].ttf</file>
+    <file>assets/fonts/montserrat/Montserrat[wght].ttf</file>
+    <file>assets/fonts/arvo/Arvo-Regular.ttf</file>
+    <file>assets/fonts/arvo/Arvo-Bold.ttf</file>
+    <file>assets/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Regular.ttf</file>
+    <file>assets/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Italic.ttf</file>
+    <file>assets/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-Bold.ttf</file>
+    <file>assets/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-BoldItalic.ttf</file>
+    <file>assets/fonts/opendyslexic/OpenDyslexic-Regular.otf</file>
+    <file>assets/fonts/opendyslexic/OpenDyslexic-Italic.otf</file>
+    <file>assets/fonts/opendyslexic/OpenDyslexic-Bold.otf</file>
+    <file>assets/fonts/opendyslexic/OpenDyslexic-Bold-Italic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-ExtraLight.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-ExtraLightItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-Light.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-LightItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-Regular.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-RegularItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-Medium.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-MediumItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-SemiBold.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-SemiBoldItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-Bold.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-BoldItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-ExtraBold.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-next/AtkinsonHyperlegibleNext-ExtraBoldItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-ExtraLight.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-ExtraLightItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-Light.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-LightItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-Regular.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-RegularItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-Medium.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-MediumItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-SemiBold.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-SemiBoldItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-Bold.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-BoldItalic.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-ExtraBold.otf</file>
+    <file>assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-ExtraBoldItalic.otf</file>
+    <file>assets/structures/inherit.svg</file>
+    <file>assets/structures/mindmap.svg</file>
+    <file>assets/structures/logic.svg</file>
+    <file>assets/structures/brace.svg</file>
+    <file>assets/structures/org.svg</file>
+    <file>assets/structures/tree.svg</file>
+    <file>assets/structures/timeline.svg</file>
+    <file>assets/structures/fishbone.svg</file>
+    <file>assets/structures/treetable.svg</file>
+    <file>assets/hugeicons/relation.svg</file>
+    <file>assets/hugeicons/sibling.svg</file>
+    <file>assets/hugeicons/summary.svg</file>
+    <file>assets/hugeicons/window-close-light.svg</file>
+    <file>assets/hugeicons/export-download.svg</file>
+    <file>assets/hugeicons/export-copy.svg</file>
+    <file>assets/hugeicons/present.svg</file>
+    <file>assets/hugeicons/window-close.svg</file>
+    <file>assets/hugeicons/window-maximize-light.svg</file>
+    <file>assets/hugeicons/window-maximize.svg</file>
+    <file>assets/hugeicons/window-minimize-light.svg</file>
+    <file>assets/hugeicons/window-minimize.svg</file>
+    <file>assets/hugeicons/database-sync.svg</file>
+    <file>assets/hugeicons/checkmark-badge-02.svg</file>
+    <file>assets/hugeicons/settings-general.svg</file>
+    <file>assets/hugeicons/settings-editor.svg</file>
+    <file>assets/hugeicons/settings-appearance.svg</file>
+    <file>assets/hugeicons/settings-shortcuts.svg</file>
+    <file>assets/hugeicons/menu-plus.svg</file>
+    <file>assets/hugeicons/menu-todo.svg</file>
+    <file>assets/hugeicons/menu-checkbox.svg</file>
+    <file>assets/hugeicons/note.svg</file>
+    <file>assets/hugeicons/menu-note.svg</file>
+    <file>assets/hugeicons/menu-label.svg</file>
+    <file>assets/hugeicons/text-highlight.svg</file>
+    <file>assets/hugeicons/text-code.svg</file>
+    <file>assets/hugeicons/attachment.svg</file>
+    <file>assets/hugeicons/menu-attachment.svg</file>
+    <file>assets/hugeicons/menu-sticker.svg</file>
+    <file>assets/hugeicons/sticker.svg</file>
+    <file>assets/hugeicons/format-painter.svg</file>
+    <file>assets/hugeicons/menu-rotate.svg</file>
+    <file>assets/hugeicons/menu-marker.svg</file>
+    <file>assets/hugeicons/list-number.svg</file>
+    <file>assets/hugeicons/heading.svg</file>
+  </qresource>
+  <qresource prefix="/stickers">
+    <file alias="collections.txt">assets/stickers/collections.txt</file>
+    <file alias="mentis/smile.png">assets/stickers/mentis/smile.png</file>
+    <file alias="mentis/happy.png">assets/stickers/mentis/happy.png</file>
+    <file alias="mentis/idea.png">assets/stickers/mentis/idea.png</file>
+    <file alias="mentis/excited.png">assets/stickers/mentis/excited.png</file>
+    <file alias="mentis/party.png">assets/stickers/mentis/party.png</file>
+    <file alias="mentis/shy.png">assets/stickers/mentis/shy.png</file>
+    <file alias="mentis/tired.png">assets/stickers/mentis/tired.png</file>
+    <file alias="mentis/thinking.png">assets/stickers/mentis/thinking.png</file>
+    <file alias="mentis/thinker.png">assets/stickers/mentis/thinker.png</file>
+    <file alias="mentis/explorer.png">assets/stickers/mentis/explorer.png</file>
+    <file alias="mentis/knight.png">assets/stickers/mentis/knight.png</file>
+    <file alias="mentis/masked.png">assets/stickers/mentis/masked.png</file>
+    <file alias="mentis/traveller.png">assets/stickers/mentis/traveller.png</file>
+    <file alias="education/achievement.svg">assets/stickers/education/achievement.svg</file>
+    <file alias="education/backpack.svg">assets/stickers/education/backpack.svg</file>
+    <file alias="education/board.svg">assets/stickers/education/board.svg</file>
+    <file alias="education/book.svg">assets/stickers/education/book.svg</file>
+    <file alias="education/certificate.svg">assets/stickers/education/certificate.svg</file>
+    <file alias="education/clock.svg">assets/stickers/education/clock.svg</file>
+    <file alias="education/discuss.svg">assets/stickers/education/discuss.svg</file>
+    <file alias="education/drawing.svg">assets/stickers/education/drawing.svg</file>
+    <file alias="education/e-learning.svg">assets/stickers/education/e-learning.svg</file>
+    <file alias="education/globe.svg">assets/stickers/education/globe.svg</file>
+    <file alias="education/knowledge.svg">assets/stickers/education/knowledge.svg</file>
+    <file alias="education/mathematics.svg">assets/stickers/education/mathematics.svg</file>
+    <file alias="education/quiz.svg">assets/stickers/education/quiz.svg</file>
+    <file alias="education/reading.svg">assets/stickers/education/reading.svg</file>
+    <file alias="education/research.svg">assets/stickers/education/research.svg</file>
+    <file alias="education/schedule.svg">assets/stickers/education/schedule.svg</file>
+    <file alias="education/school-bell.svg">assets/stickers/education/school-bell.svg</file>
+    <file alias="education/school.svg">assets/stickers/education/school.svg</file>
+    <file alias="education/sports.svg">assets/stickers/education/sports.svg</file>
+    <file alias="education/student.svg">assets/stickers/education/student.svg</file>
+    <file alias="education/video-courses.svg">assets/stickers/education/video-courses.svg</file>
+    <file alias="education/webinar.svg">assets/stickers/education/webinar.svg</file>
+    <file alias="business/benefit.svg">assets/stickers/business/benefit.svg</file>
+    <file alias="business/briefcase.svg">assets/stickers/business/briefcase.svg</file>
+    <file alias="business/calculator.svg">assets/stickers/business/calculator.svg</file>
+    <file alias="business/chess.svg">assets/stickers/business/chess.svg</file>
+    <file alias="business/company.svg">assets/stickers/business/company.svg</file>
+    <file alias="business/data-report.svg">assets/stickers/business/data-report.svg</file>
+    <file alias="business/data-trends.svg">assets/stickers/business/data-trends.svg</file>
+    <file alias="business/decline-in-performance.svg">assets/stickers/business/decline-in-performance.svg</file>
+    <file alias="business/direction.svg">assets/stickers/business/direction.svg</file>
+    <file alias="business/experiment.svg">assets/stickers/business/experiment.svg</file>
+    <file alias="business/handbag.svg">assets/stickers/business/handbag.svg</file>
+    <file alias="business/handshake.svg">assets/stickers/business/handshake.svg</file>
+    <file alias="business/hourglass.svg">assets/stickers/business/hourglass.svg</file>
+    <file alias="business/idea.svg">assets/stickers/business/idea.svg</file>
+    <file alias="business/like.svg">assets/stickers/business/like.svg</file>
+    <file alias="business/magnet.svg">assets/stickers/business/magnet.svg</file>
+    <file alias="business/money.svg">assets/stickers/business/money.svg</file>
+    <file alias="business/notes.svg">assets/stickers/business/notes.svg</file>
+    <file alias="business/performance-increase.svg">assets/stickers/business/performance-increase.svg</file>
+    <file alias="business/record.svg">assets/stickers/business/record.svg</file>
+    <file alias="business/reward.svg">assets/stickers/business/reward.svg</file>
+    <file alias="business/safe.svg">assets/stickers/business/safe.svg</file>
+    <file alias="business/salesman.svg">assets/stickers/business/salesman.svg</file>
+    <file alias="business/savings.svg">assets/stickers/business/savings.svg</file>
+    <file alias="business/target.svg">assets/stickers/business/target.svg</file>
+    <file alias="thinking/arms-crossed.svg">assets/stickers/thinking/arms-crossed.svg</file>
+    <file alias="thinking/confused.svg">assets/stickers/thinking/confused.svg</file>
+    <file alias="thinking/curious.svg">assets/stickers/thinking/curious.svg</file>
+    <file alias="thinking/doubtful.svg">assets/stickers/thinking/doubtful.svg</file>
+    <file alias="thinking/pondering.svg">assets/stickers/thinking/pondering.svg</file>
+    <file alias="thinking/puzzled.svg">assets/stickers/thinking/puzzled.svg</file>
+    <file alias="thinking/scratching-head.svg">assets/stickers/thinking/scratching-head.svg</file>
+    <file alias="thinking/shrugging.svg">assets/stickers/thinking/shrugging.svg</file>
+    <file alias="thinking/surprised.svg">assets/stickers/thinking/surprised.svg</file>
+    <file alias="thinking/wondering.svg">assets/stickers/thinking/wondering.svg</file>
+    <file alias="objects/alarm-clock.svg">assets/stickers/objects/alarm-clock.svg</file>
+    <file alias="objects/bag.svg">assets/stickers/objects/bag.svg</file>
+    <file alias="objects/calculator.svg">assets/stickers/objects/calculator.svg</file>
+    <file alias="objects/calendar.svg">assets/stickers/objects/calendar.svg</file>
+    <file alias="objects/camera.svg">assets/stickers/objects/camera.svg</file>
+    <file alias="objects/game.svg">assets/stickers/objects/game.svg</file>
+    <file alias="objects/lamp.svg">assets/stickers/objects/lamp.svg</file>
+    <file alias="objects/mail.svg">assets/stickers/objects/mail.svg</file>
+    <file alias="objects/map.svg">assets/stickers/objects/map.svg</file>
+    <file alias="objects/message.svg">assets/stickers/objects/message.svg</file>
+    <file alias="objects/music.svg">assets/stickers/objects/music.svg</file>
+    <file alias="objects/photo.svg">assets/stickers/objects/photo.svg</file>
+    <file alias="objects/radio.svg">assets/stickers/objects/radio.svg</file>
+    <file alias="objects/recording.svg">assets/stickers/objects/recording.svg</file>
+    <file alias="objects/rocket.svg">assets/stickers/objects/rocket.svg</file>
+    <file alias="objects/shapes.svg">assets/stickers/objects/shapes.svg</file>
+    <file alias="objects/telephone.svg">assets/stickers/objects/telephone.svg</file>
+    <file alias="objects/television.svg">assets/stickers/objects/television.svg</file>
+    <file alias="objects/wallet.svg">assets/stickers/objects/wallet.svg</file>
+    <file alias="objects/weather.svg">assets/stickers/objects/weather.svg</file>
+    <file alias="animals/alpaca.svg">assets/stickers/animals/alpaca.svg</file>
+    <file alias="animals/anteater.svg">assets/stickers/animals/anteater.svg</file>
+    <file alias="animals/bat.svg">assets/stickers/animals/bat.svg</file>
+    <file alias="animals/beetle.svg">assets/stickers/animals/beetle.svg</file>
+    <file alias="animals/butterfly.svg">assets/stickers/animals/butterfly.svg</file>
+    <file alias="animals/camel.svg">assets/stickers/animals/camel.svg</file>
+    <file alias="animals/cat.svg">assets/stickers/animals/cat.svg</file>
+    <file alias="animals/chameleon.svg">assets/stickers/animals/chameleon.svg</file>
+    <file alias="animals/cobra.svg">assets/stickers/animals/cobra.svg</file>
+    <file alias="animals/cow.svg">assets/stickers/animals/cow.svg</file>
+    <file alias="animals/crab.svg">assets/stickers/animals/crab.svg</file>
+    <file alias="animals/crocodile.svg">assets/stickers/animals/crocodile.svg</file>
+    <file alias="animals/dog.svg">assets/stickers/animals/dog.svg</file>
+    <file alias="animals/duck.svg">assets/stickers/animals/duck.svg</file>
+    <file alias="animals/elephant.svg">assets/stickers/animals/elephant.svg</file>
+    <file alias="animals/elk.svg">assets/stickers/animals/elk.svg</file>
+    <file alias="animals/fish.svg">assets/stickers/animals/fish.svg</file>
+    <file alias="animals/frog.svg">assets/stickers/animals/frog.svg</file>
+    <file alias="animals/giraffe.svg">assets/stickers/animals/giraffe.svg</file>
+    <file alias="animals/hippo.svg">assets/stickers/animals/hippo.svg</file>
+    <file alias="animals/husky.svg">assets/stickers/animals/husky.svg</file>
+    <file alias="animals/kangaroo.svg">assets/stickers/animals/kangaroo.svg</file>
+    <file alias="animals/lion.svg">assets/stickers/animals/lion.svg</file>
+    <file alias="animals/macaw.svg">assets/stickers/animals/macaw.svg</file>
+    <file alias="animals/manatee.svg">assets/stickers/animals/manatee.svg</file>
+    <file alias="animals/monkey.svg">assets/stickers/animals/monkey.svg</file>
+    <file alias="animals/mouse.svg">assets/stickers/animals/mouse.svg</file>
+    <file alias="animals/octopus.svg">assets/stickers/animals/octopus.svg</file>
+    <file alias="animals/ostrich.svg">assets/stickers/animals/ostrich.svg</file>
+    <file alias="animals/owl.svg">assets/stickers/animals/owl.svg</file>
+    <file alias="animals/panda.svg">assets/stickers/animals/panda.svg</file>
+    <file alias="animals/pelican.svg">assets/stickers/animals/pelican.svg</file>
+    <file alias="animals/penguin.svg">assets/stickers/animals/penguin.svg</file>
+    <file alias="animals/pig.svg">assets/stickers/animals/pig.svg</file>
+    <file alias="animals/rabbit.svg">assets/stickers/animals/rabbit.svg</file>
+    <file alias="animals/raccoon.svg">assets/stickers/animals/raccoon.svg</file>
+    <file alias="animals/rhino.svg">assets/stickers/animals/rhino.svg</file>
+    <file alias="animals/rooster.svg">assets/stickers/animals/rooster.svg</file>
+    <file alias="animals/sea-ray.svg">assets/stickers/animals/sea-ray.svg</file>
+    <file alias="animals/shark.svg">assets/stickers/animals/shark.svg</file>
+    <file alias="animals/sheep.svg">assets/stickers/animals/sheep.svg</file>
+    <file alias="animals/sloth.svg">assets/stickers/animals/sloth.svg</file>
+    <file alias="animals/snake.svg">assets/stickers/animals/snake.svg</file>
+    <file alias="animals/spider.svg">assets/stickers/animals/spider.svg</file>
+    <file alias="animals/squirrel.svg">assets/stickers/animals/squirrel.svg</file>
+    <file alias="animals/swan.svg">assets/stickers/animals/swan.svg</file>
+    <file alias="animals/tiger.svg">assets/stickers/animals/tiger.svg</file>
+    <file alias="animals/toucan.svg">assets/stickers/animals/toucan.svg</file>
+    <file alias="animals/turtle.svg">assets/stickers/animals/turtle.svg</file>
+    <file alias="animals/whale.svg">assets/stickers/animals/whale.svg</file>
+    <file alias="cute-animals/bear.svg">assets/stickers/cute-animals/bear.svg</file>
+    <file alias="cute-animals/cow.svg">assets/stickers/cute-animals/cow.svg</file>
+    <file alias="cute-animals/crocodile.svg">assets/stickers/cute-animals/crocodile.svg</file>
+    <file alias="cute-animals/dinosaur.svg">assets/stickers/cute-animals/dinosaur.svg</file>
+    <file alias="cute-animals/elk.svg">assets/stickers/cute-animals/elk.svg</file>
+    <file alias="cute-animals/fox.svg">assets/stickers/cute-animals/fox.svg</file>
+    <file alias="cute-animals/hedgehog.svg">assets/stickers/cute-animals/hedgehog.svg</file>
+    <file alias="cute-animals/jellyfish.svg">assets/stickers/cute-animals/jellyfish.svg</file>
+    <file alias="cute-animals/lion.svg">assets/stickers/cute-animals/lion.svg</file>
+    <file alias="cute-animals/penguin.svg">assets/stickers/cute-animals/penguin.svg</file>
+    <file alias="cute-animals/polar-bear.svg">assets/stickers/cute-animals/polar-bear.svg</file>
+    <file alias="cute-animals/rabbit.svg">assets/stickers/cute-animals/rabbit.svg</file>
+    <file alias="cute-animals/raccoon.svg">assets/stickers/cute-animals/raccoon.svg</file>
+    <file alias="cute-animals/shrimp.svg">assets/stickers/cute-animals/shrimp.svg</file>
+    <file alias="cute-animals/squirrel.svg">assets/stickers/cute-animals/squirrel.svg</file>
+    <file alias="cute-animals/turtle.svg">assets/stickers/cute-animals/turtle.svg</file>
+    <file alias="cute-animals/whale.svg">assets/stickers/cute-animals/whale.svg</file>
+    <file alias="cute-animals/wild-boar.svg">assets/stickers/cute-animals/wild-boar.svg</file>
+    <file alias="cute-animals/zebra.svg">assets/stickers/cute-animals/zebra.svg</file>
+    <file alias="food/apple.svg">assets/stickers/food/apple.svg</file>
+    <file alias="food/beef.svg">assets/stickers/food/beef.svg</file>
+    <file alias="food/beer.svg">assets/stickers/food/beer.svg</file>
+    <file alias="food/bread.svg">assets/stickers/food/bread.svg</file>
+    <file alias="food/cactus.svg">assets/stickers/food/cactus.svg</file>
+    <file alias="food/candle.svg">assets/stickers/food/candle.svg</file>
+    <file alias="food/candy-cane.svg">assets/stickers/food/candy-cane.svg</file>
+    <file alias="food/carrot.svg">assets/stickers/food/carrot.svg</file>
+    <file alias="food/cheese.svg">assets/stickers/food/cheese.svg</file>
+    <file alias="food/chicken.svg">assets/stickers/food/chicken.svg</file>
+    <file alias="food/corn.svg">assets/stickers/food/corn.svg</file>
+    <file alias="food/drumstick.svg">assets/stickers/food/drumstick.svg</file>
+    <file alias="food/egg.svg">assets/stickers/food/egg.svg</file>
+    <file alias="food/fish.svg">assets/stickers/food/fish.svg</file>
+    <file alias="food/grape.svg">assets/stickers/food/grape.svg</file>
+    <file alias="food/hamburger.svg">assets/stickers/food/hamburger.svg</file>
+    <file alias="food/hawthorn.svg">assets/stickers/food/hawthorn.svg</file>
+    <file alias="food/hot-dog.svg">assets/stickers/food/hot-dog.svg</file>
+    <file alias="food/ice-cream.svg">assets/stickers/food/ice-cream.svg</file>
+    <file alias="food/lemon.svg">assets/stickers/food/lemon.svg</file>
+    <file alias="food/lollipop.svg">assets/stickers/food/lollipop.svg</file>
+    <file alias="food/orange.svg">assets/stickers/food/orange.svg</file>
+    <file alias="food/pizza.svg">assets/stickers/food/pizza.svg</file>
+    <file alias="food/strawberry.svg">assets/stickers/food/strawberry.svg</file>
+    <file alias="health-and-fitness/avocado.svg">assets/stickers/health-and-fitness/avocado.svg</file>
+    <file alias="health-and-fitness/banana.svg">assets/stickers/health-and-fitness/banana.svg</file>
+    <file alias="health-and-fitness/boxing-glove.svg">assets/stickers/health-and-fitness/boxing-glove.svg</file>
+    <file alias="health-and-fitness/cherry.svg">assets/stickers/health-and-fitness/cherry.svg</file>
+    <file alias="health-and-fitness/coffee.svg">assets/stickers/health-and-fitness/coffee.svg</file>
+    <file alias="health-and-fitness/dumbbell.svg">assets/stickers/health-and-fitness/dumbbell.svg</file>
+    <file alias="health-and-fitness/fried-egg.svg">assets/stickers/health-and-fitness/fried-egg.svg</file>
+    <file alias="health-and-fitness/kiwi-fruit.svg">assets/stickers/health-and-fitness/kiwi-fruit.svg</file>
+    <file alias="health-and-fitness/milk.svg">assets/stickers/health-and-fitness/milk.svg</file>
+    <file alias="health-and-fitness/peach.svg">assets/stickers/health-and-fitness/peach.svg</file>
+    <file alias="health-and-fitness/running-shoe.svg">assets/stickers/health-and-fitness/running-shoe.svg</file>
+    <file alias="health-and-fitness/scale.svg">assets/stickers/health-and-fitness/scale.svg</file>
+    <file alias="health-and-fitness/soda.svg">assets/stickers/health-and-fitness/soda.svg</file>
+    <file alias="health-and-fitness/steak.svg">assets/stickers/health-and-fitness/steak.svg</file>
+    <file alias="health-and-fitness/watermelon.svg">assets/stickers/health-and-fitness/watermelon.svg</file>
+    <file alias="health-and-fitness/yogurt.svg">assets/stickers/health-and-fitness/yogurt.svg</file>
+    <file alias="medical/ambulance.svg">assets/stickers/medical/ambulance.svg</file>
+    <file alias="medical/bandage.svg">assets/stickers/medical/bandage.svg</file>
+    <file alias="medical/beaker.svg">assets/stickers/medical/beaker.svg</file>
+    <file alias="medical/capsule.svg">assets/stickers/medical/capsule.svg</file>
+    <file alias="medical/doctor.svg">assets/stickers/medical/doctor.svg</file>
+    <file alias="medical/emergency-call.svg">assets/stickers/medical/emergency-call.svg</file>
+    <file alias="medical/first-aid-kit.svg">assets/stickers/medical/first-aid-kit.svg</file>
+    <file alias="medical/heartbeat.svg">assets/stickers/medical/heartbeat.svg</file>
+    <file alias="medical/hospital-location.svg">assets/stickers/medical/hospital-location.svg</file>
+    <file alias="medical/hospital.svg">assets/stickers/medical/hospital.svg</file>
+    <file alias="medical/infusion.svg">assets/stickers/medical/infusion.svg</file>
+    <file alias="medical/medical-record.svg">assets/stickers/medical/medical-record.svg</file>
+    <file alias="medical/medicine-bottle.svg">assets/stickers/medical/medicine-bottle.svg</file>
+    <file alias="medical/microscope.svg">assets/stickers/medical/microscope.svg</file>
+    <file alias="medical/nurse.svg">assets/stickers/medical/nurse.svg</file>
+    <file alias="medical/ointment.svg">assets/stickers/medical/ointment.svg</file>
+    <file alias="medical/stethoscope.svg">assets/stickers/medical/stethoscope.svg</file>
+    <file alias="medical/syringe.svg">assets/stickers/medical/syringe.svg</file>
+    <file alias="medical/test-tube.svg">assets/stickers/medical/test-tube.svg</file>
+    <file alias="medical/wheelchair.svg">assets/stickers/medical/wheelchair.svg</file>
+    <file alias="travel/bank-card.svg">assets/stickers/travel/bank-card.svg</file>
+    <file alias="travel/binoculars.svg">assets/stickers/travel/binoculars.svg</file>
+    <file alias="travel/camper-van.svg">assets/stickers/travel/camper-van.svg</file>
+    <file alias="travel/castle.svg">assets/stickers/travel/castle.svg</file>
+    <file alias="travel/compass.svg">assets/stickers/travel/compass.svg</file>
+    <file alias="travel/diving-tanks.svg">assets/stickers/travel/diving-tanks.svg</file>
+    <file alias="travel/hat.svg">assets/stickers/travel/hat.svg</file>
+    <file alias="travel/life-buoy.svg">assets/stickers/travel/life-buoy.svg</file>
+    <file alias="travel/luggage.svg">assets/stickers/travel/luggage.svg</file>
+    <file alias="travel/map-pin.svg">assets/stickers/travel/map-pin.svg</file>
+    <file alias="travel/phone.svg">assets/stickers/travel/phone.svg</file>
+    <file alias="travel/polaroid.svg">assets/stickers/travel/polaroid.svg</file>
+    <file alias="travel/stamp.svg">assets/stickers/travel/stamp.svg</file>
+    <file alias="travel/street-sign.svg">assets/stickers/travel/street-sign.svg</file>
+    <file alias="travel/suitcase.svg">assets/stickers/travel/suitcase.svg</file>
+    <file alias="travel/tram.svg">assets/stickers/travel/tram.svg</file>
+    <file alias="travel/travel-guide.svg">assets/stickers/travel/travel-guide.svg</file>
+    <file alias="landmarks/arc-de-triomphe.svg">assets/stickers/landmarks/arc-de-triomphe.svg</file>
+    <file alias="landmarks/big-ben.svg">assets/stickers/landmarks/big-ben.svg</file>
+    <file alias="landmarks/burj-al-arab.svg">assets/stickers/landmarks/burj-al-arab.svg</file>
+    <file alias="landmarks/christ-the-redeemer.svg">assets/stickers/landmarks/christ-the-redeemer.svg</file>
+    <file alias="landmarks/colosseum.svg">assets/stickers/landmarks/colosseum.svg</file>
+    <file alias="landmarks/eiffel-tower.svg">assets/stickers/landmarks/eiffel-tower.svg</file>
+    <file alias="landmarks/great-wall.svg">assets/stickers/landmarks/great-wall.svg</file>
+    <file alias="landmarks/leaning-tower-of-pisa.svg">assets/stickers/landmarks/leaning-tower-of-pisa.svg</file>
+    <file alias="landmarks/london-bridge.svg">assets/stickers/landmarks/london-bridge.svg</file>
+    <file alias="landmarks/moai.svg">assets/stickers/landmarks/moai.svg</file>
+    <file alias="landmarks/mount-fuji.svg">assets/stickers/landmarks/mount-fuji.svg</file>
+    <file alias="landmarks/oriental-pearl-tower.svg">assets/stickers/landmarks/oriental-pearl-tower.svg</file>
+    <file alias="landmarks/parthenon.svg">assets/stickers/landmarks/parthenon.svg</file>
+    <file alias="landmarks/pyramid.svg">assets/stickers/landmarks/pyramid.svg</file>
+    <file alias="landmarks/sphinx.svg">assets/stickers/landmarks/sphinx.svg</file>
+    <file alias="landmarks/statue-of-liberty.svg">assets/stickers/landmarks/statue-of-liberty.svg</file>
+    <file alias="landmarks/stonehenge.svg">assets/stickers/landmarks/stonehenge.svg</file>
+    <file alias="landmarks/sydney-opera-house.svg">assets/stickers/landmarks/sydney-opera-house.svg</file>
+    <file alias="landmarks/taj-mahal.svg">assets/stickers/landmarks/taj-mahal.svg</file>
+    <file alias="landmarks/torii.svg">assets/stickers/landmarks/torii.svg</file>
+  </qresource>
+</RCC>
+

@@ -1,0 +1,296 @@
+name: Release
+
+# The packages of Mentis and the GitHub release that the app's update check reads (FEAT-090).
+# - A tag vX.Y.Z (pushed only on the maintainer's command): Windows installer
+#   Mentis-X.Y.Z-setup-x64.exe, Linux Mentis-X.Y.Z-x86_64.AppImage, macOS Mentis-X.Y.Z-macos.dmg,
+#   SHA256SUMS, the release.
+# - A push to main: the same packages as workflow artifacts, to try them; no signing, no release.
+# - Run by hand with an existing tag: only the macOS disk image, from that tag's code, added to its
+#   release with the updated SHA256SUMS (releases made before the macOS job, such as v0.7.0).
+# Signing (SignPath Foundation, installer/signpath/README.md) runs only for a tag and only when the
+# secret SIGNPATH_API_TOKEN exists: without it the release is unsigned. Each signing request waits
+# for a manual approval on SignPath (two per release: the program, then the installer).
+on:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release (vX.Y.Z) that gets the macOS disk image
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Version
+        id: version
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+        run: |
+          version="$(sed -n 's/^project(Mentis VERSION \([0-9.]*\) .*/\1/p' CMakeLists.txt)"
+          if [[ -n "${TAG}" && "${TAG}" != "v${version}" ]]; then
+            echo "The tag ${TAG} does not match project(Mentis VERSION ${version}) in CMakeLists.txt" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  windows:
+    if: github.event_name != 'workflow_dispatch'
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SIGN: ${{ startsWith(github.ref, 'refs/tags/') && secrets.SIGNPATH_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          cache: true
+      - uses: lukka/get-cmake@latest
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+      - name: Build
+        run: cmake --build build --config Release
+      # Qt's deployment wants an absolute prefix ("Given qt.conf path is not an absolute path").
+      - name: Stage
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}/stage"
+      # Only the SQLite driver: Mentis uses no other database (the others weigh about 2 MB).
+      - name: Remove unused SQL drivers
+        shell: bash
+        run: find stage/plugins/sqldrivers -name 'qsql*.dll' ! -name 'qsqlite.dll' -delete
+      # Only our own binaries are signed (SignPath Foundation's terms), not the Qt libraries.
+      - name: Upload the program to sign
+        id: unsigned-program
+        if: env.SIGN == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: program-unsigned
+          path: |
+            stage/bin/Mentis.exe
+            stage/bin/MentisMathText.dll
+          if-no-files-found: error
+      - name: Sign the program
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: program
+          github-artifact-id: ${{ steps.unsigned-program.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-program
+      - name: Use the signed program
+        if: env.SIGN == 'true'
+        shell: bash
+        run: cp -f signed-program/Mentis.exe signed-program/MentisMathText.dll stage/bin/
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" "/DStageDir=$PWD\stage" installer\mentis.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload the installer to sign
+        id: unsigned-installer
+        if: env.SIGN == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer-unsigned
+          path: dist/Mentis-${{ env.VERSION }}-setup-x64.exe
+          if-no-files-found: error
+      - name: Sign the installer
+        if: env.SIGN == 'true'
+        uses: signpath/github-action-submit-signing-request@v3
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: signed-installer
+      - name: Use the signed installer
+        if: env.SIGN == 'true'
+        shell: bash
+        run: cp -f "signed-installer/Mentis-${VERSION}-setup-x64.exe" dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/Mentis-${{ env.VERSION }}-setup-x64.exe
+          if-no-files-found: error
+
+  # The AppImage is built on the oldest supported Ubuntu: it runs on systems with the same glibc or
+  # a newer one. linuxdeploy and its Qt plugin collect Qt, its plugins and the libraries
+  # (https://github.com/linuxdeploy/linuxdeploy-plugin-qt).
+  linux:
+    if: github.event_name != 'workflow_dispatch'
+    needs: version
+    runs-on: ubuntu-22.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 \
+            libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: linux_gcc_64
+          cache: true
+      - uses: lukka/get-cmake@latest
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DMENTIS_DEPLOY_QT=OFF -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib
+      - name: Build
+        run: cmake --build build
+      - name: AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so
+          LDAI_OUTPUT: Mentis-${{ env.VERSION }}-x86_64.AppImage
+          OUTPUT: Mentis-${{ env.VERSION }}-x86_64.AppImage
+        run: |
+          DESTDIR="$PWD/AppDir" cmake --install build
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy-*.AppImage
+          cp assets/appicon/mentis-256.png mentis.png
+          # Only the SQLite driver: the others (Mimer, ODBC, PostgreSQL...) need client libraries
+          # that are not installed, and linuxdeploy-plugin-qt stops on them.
+          find "${QT_ROOT_DIR}/plugins/sqldrivers" -name 'libqsql*.so' ! -name 'libqsqlite.so' -delete
+          export QMAKE="${QT_ROOT_DIR}/bin/qmake"
+          export LD_LIBRARY_PATH="$PWD/AppDir/usr/lib:${LD_LIBRARY_PATH}"
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/Mentis \
+            --desktop-file assets/linux/mentis.desktop --icon-file mentis.png --plugin qt --output appimage
+          test -s "Mentis-${VERSION}-x86_64.AppImage"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: Mentis-${{ env.VERSION }}-x86_64.AppImage
+          if-no-files-found: error
+
+  # One universal bundle (Apple silicon and Intel) in a disk image. Not notarized: the system asks
+  # once before the first launch (release notes). macdeployqt collects Qt and MentisMathText
+  # (https://doc.qt.io/qt-6/macos-deployment.html); the ad-hoc signature is what Apple silicon needs
+  # to run binaries that macdeployqt has rewritten.
+  macos:
+    needs: version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: clang_64
+          cache: true
+      - uses: lukka/get-cmake@latest
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DMENTIS_DEPLOY_QT=OFF
+          "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      - name: Build
+        run: cmake --build build
+      - name: Disk image
+        run: |
+          app=build/Mentis.app
+          # "Mentis --mcp" runs on the offscreen platform (FEAT-045), which macdeployqt leaves out.
+          mkdir -p "$app/Contents/PlugIns/platforms"
+          cp "${QT_ROOT_DIR}/plugins/platforms/libqoffscreen.dylib" "$app/Contents/PlugIns/platforms/"
+          "${QT_ROOT_DIR}/bin/macdeployqt" "$app" -libpath=build \
+            -executable="$app/Contents/PlugIns/platforms/libqoffscreen.dylib"
+          # Only the SQLite driver: Mentis uses no other database.
+          find "$app/Contents/PlugIns/sqldrivers" -name 'libqsql*.dylib' ! -name 'libqsqlite.dylib' -delete
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          test -f "$app/Contents/Frameworks/libMentisMathText.dylib"
+          lipo -archs "$app/Contents/MacOS/Mentis" | grep -q x86_64
+          mkdir -p dmg && cp -R "$app" dmg/ && ln -s /Applications dmg/Applications
+          hdiutil create -volname "Mentis ${VERSION}" -srcfolder dmg -ov -format UDZO "Mentis-${VERSION}-macos.dmg"
+          test -s "Mentis-${VERSION}-macos.dmg"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: Mentis-${{ env.VERSION }}-macos.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [version, windows, linux, macos]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum "Mentis-${VERSION}-setup-x64.exe" "Mentis-${VERSION}-x86_64.AppImage" "Mentis-${VERSION}-macos.dmg" > SHA256SUMS
+          cat SHA256SUMS
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A tag moved onto a commit with the same code (GitHub history squashed, 2026-11-04) keeps
+          # its release and files as they are.
+          if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
+            echo "The release ${GITHUB_REF_NAME} already exists: left as it is."
+            exit 0
+          fi
+          # The code signing policy goes on every release page (SignPath Foundation's terms).
+          gh release create "${GITHUB_REF_NAME}" dist/* --title "Mentis ${VERSION}" \
+            --notes-file .github/release-notes.md --generate-notes
+
+  # Run by hand: the macOS disk image joins a release made without it.
+  add-macos:
+    if: github.event_name == 'workflow_dispatch'
+    needs: [version, macos]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos
+          path: dist
+      - name: Add to the release
+        run: |
+          cd dist
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --pattern SHA256SUMS
+          { grep -v -- "-macos.dmg" SHA256SUMS || true; sha256sum "Mentis-${VERSION}-macos.dmg"; } > sums
+          mv sums SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" --clobber "Mentis-${VERSION}-macos.dmg" SHA256SUMS
+          # The notes in front of GitHub's generated list of changes, now with the macOS part.
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json body --jq .body > body.md
+          { cat ../.github/release-notes.md; echo; awk '/^## What.s Changed|^\*\*Full Changelog/{found=1} found' body.md; } > notes.md
+          gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --notes-file notes.md

@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "Debug veloce (senza test)",
+      "description": "Per lavorare e fare debug da Qt Creator: Ninja (compila in parallelo) e nessun test, quindi si compila solo l'app.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "OFF"
+      }
+    },
+    {
+      "name": "debug-tests",
+      "displayName": "Debug con test",
+      "description": "Come Debug veloce, ma compila anche i test (per eseguirli o farne il debug).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug-tests",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release con test",
+      "description": "Build ottimizzata con tutti i test, come quella usata per verificare le schede.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "debug-tests", "configurePreset": "debug-tests" },
+    { "name": "release", "configurePreset": "release" }
+  ],
+  "testPresets": [
+    { "name": "debug-tests", "configurePreset": "debug-tests", "output": { "outputOnFailure": true } },
+    { "name": "release", "configurePreset": "release", "output": { "outputOnFailure": true } }
+  ]
+}

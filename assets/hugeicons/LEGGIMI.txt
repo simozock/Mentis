@@ -1,0 +1,90 @@
+Icone dell'interfaccia: Hugeicons, stile Stroke Rounded (set gratuito).
+Pacchetto npm @hugeicons/core-free-icons 4.3.5, licenza MIT (LICENSE-hugeicons.md).
+Convertite in SVG senza modifiche ai tracciati; colore del tratto #27303b (scuro), #e5e9ef (versioni -light e menu-*) o #ffffff (settings-*, interfaccia scura di FEAT-035).
+Corrispondenze:
+  menu.svg -> Menu01Icon
+  home.svg -> Home03Icon
+  sibling.svg -> ListPlusIcon
+  child.svg -> HierarchySquare02Icon
+  relation.svg -> BendToolIcon
+  summary.svg -> BracesIcon
+  boundary.svg -> SquareDashedIcon
+  plus.svg -> PlusSignIcon
+  fit.svg -> FullScreenIcon
+  focus.svg -> not Hugeicons: lotus drawn by the user (FEAT-087, focus mode, 2026-11-01), stroke 1.5;
+    approved exception in docs/design/ui-foundations.md
+  panel.svg -> PanelRightIcon
+  panel-left.svg -> PanelLeftIcon (FEAT-080: Gantt side panel, on the left)
+  indent-right.svg -> ListIndentIncreaseIcon
+  indent-left.svg -> ListIndentDecreaseIcon
+  outliner.svg -> LeftToRightListBulletIcon
+  text-font.svg -> TextFontIcon
+  text-bold.svg -> TextBoldIcon
+  text-italic.svg -> ItalicIcon
+  text-strikethrough.svg -> TextStrikethroughIcon
+  text-underline.svg -> TextUnderlineIcon
+  text-align-left.svg -> TextAlignLeftIcon
+  text-align-center.svg -> TextAlignCenterIcon
+  text-align-right.svg -> TextAlignRightIcon
+  text-align-justify.svg -> TextAlignJustifyIcon
+  link.svg, menu-link.svg -> Link01Icon (FEAT-027: collegamento ad argomento)
+  link-web.svg, menu-link-web.svg -> LinkSquare02Icon (FEAT-027: collegamento a pagina web)
+  search.svg -> Search01Icon (FEAT-027: ricerca nel modale degli argomenti)
+  window-minimize.svg -> MinusSignIcon
+  window-maximize.svg -> SquareIcon
+  window-close.svg -> Cancel01Icon
+  window-minimize-light.svg -> MinusSignIcon
+  window-maximize-light.svg -> SquareIcon
+  window-close-light.svg -> Cancel01Icon
+  menu-image.svg -> Image01Icon
+  menu-formula.svg -> AbsoluteIcon
+  menu-text.svg -> TextIcon
+  database-sync.svg -> DatabaseSyncIcon
+  checkmark-badge-02.svg -> CheckmarkBadge02Icon
+  arrow-down.svg -> ArrowDown01Icon
+  settings-general.svg -> Settings01Icon (FEAT-035: scheda Generale)
+  settings-editor.svg -> PencilEdit02Icon (FEAT-035: scheda Editor)
+  settings-shortcuts.svg -> KeyboardIcon (FEAT-035: scheda Scorciatoie)
+  menu-plus.svg -> PlusSignIcon (FEAT-032: nuovo tema colore; anche + > Argomento mobile, 2026-10-21)
+  menu-todo.svg -> CheckListIcon (FEAT-048: menu Cose da fare)
+  menu-checkbox.svg -> CheckmarkSquare02Icon (FEAT-048: casella di spunta)
+  note.svg, menu-note.svg -> Note01Icon (FEAT-059: nota)
+  list-number.svg -> LeftToRightListNumberIcon (FEAT-059: elenco numerato)
+  heading.svg -> Heading02Icon (FEAT-059: titolo nella nota)
+Disegnate per Mentis, non Hugeicons (stesso tratto 1.5, angoli arrotondati, stessi colori):
+  menu-label.svg (FEAT-060: etichetta), text-highlight.svg e text-code.svg (FEAT-068: evidenziato e
+  codice), attachment.svg e menu-attachment.svg (FEAT-049: graffetta), menu-sticker.svg, sticker.svg
+  (stesso disegno scuro, per il bottone della barra) e
+  menu-marker.svg (FEAT-051: adesivo e marcatore), menu-rotate.svg (rotazione di 90 gradi di immagini,
+  adesivi e formule).
+  pen.svg (FEAT-061: campo Sostituisci), clock.svg, folder-open.svg e templates.svg (FEAT-072 F5:
+  Home, Recenti, Apri file locale, Altri modelli).
+  export-download.svg e export-copy.svg (FEAT-054: bottoni PNG/SVG/PDF e Copia negli appunti, tratto #ffffff).
+  present.svg (FEAT-063: Presenta, nel gruppo in alto a destra).
+  format-painter.svg (FEAT-085: Copia formato, ultimo bottone della barra dell'argomento). Le icone dei 5 layout del Pitch sono
+  disegnate nel codice (src/pitchpage.cpp, layoutIcon).
+Copie scure di icone Hugeicons (stesso tracciato, tratto #27303b) per la barra dell'argomento (FEAT-072 F3):
+  image.svg -> Image01Icon, checkbox.svg -> CheckmarkSquare02Icon.
+  alert.svg -> Alert02Icon (Gantt: pulsante Percorso critico nella barra in alto, 2026-10-28).
+  user-group.svg -> UserGroupIcon (FEAT-079: pulsante Risorse nella barra in alto del Gantt, 2026-10-28).
+  camera.svg -> Camera01Icon (pulsante Baseline nella barra in alto del Gantt, 2026-10-30).
+  editor-select.svg -> Cursor01Icon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-crop.svg -> CropIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-rectangle.svg -> RectangularIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-ellipse.svg -> CircleIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-line.svg -> SolidLine01Icon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-pen.svg -> PenTool03Icon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-polygon.svg -> PentagonIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-star.svg -> StarIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-rotate-left.svg -> ImageCounterClockwiseIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-rotate-right.svg -> ImageRotationClockwiseIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-flip-horizontal.svg -> FlipHorizontalIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-flip-vertical.svg -> FlipVerticalIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-bring-forward.svg -> LayerBringForwardIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-send-backward.svg -> LayerSendBackwardIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-bring-to-front.svg -> LayerBringToFrontIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-send-to-back.svg -> LayerSendToBackIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-delete.svg -> Delete02Icon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-bold.svg -> TextBoldIcon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-undo.svg -> Undo03Icon (FEAT-070: sticker editor, stroke #e5e9ef)
+  editor-redo.svg -> Redo03Icon (FEAT-070: sticker editor, stroke #e5e9ef)

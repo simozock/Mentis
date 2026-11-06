@@ -1,0 +1,20 @@
+Icone dell'interfaccia: Lucide (https://lucide.dev), pacchetto lucide-static 1.55.0.
+Licenza ISC (alcune icone derivate da Feather, MIT): vedi LICENSE-lucide.txt.
+Modifiche: colore del tratto (#4b5563, oppure #e5e9ef per le versioni -light) e spessore 1.5 invece di 2.
+Corrispondenze nome app -> icona Lucide:
+  menu.svg -> menu
+  home.svg -> house
+  sibling.svg -> between-horizontal-end
+  child.svg -> git-branch-plus
+  relation.svg -> spline
+  summary.svg -> braces
+  boundary.svg -> square-dashed
+  plus.svg -> plus
+  fit.svg -> maximize
+  panel.svg -> panel-right
+  indent-right.svg -> list-indent-increase
+  indent-left.svg -> list-indent-decrease
+  outliner.svg -> list-tree
+  window-minimize.svg -> minus
+  window-maximize.svg -> square
+  window-close.svg -> x

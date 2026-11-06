@@ -1,0 +1,12 @@
+JKQTMathText - renderer di formule LaTeX usato da Mentis
+================================================================
+Origine:  https://github.com/jkriege2/JKQtPlotter (cartelle lib/jkqtcommon e lib/jkqtmathtext)
+Commit:   vedi UPSTREAM_COMMIT
+Autore:   Jan W. Krieger
+Licenza:  GNU LGPL 2.1 o successiva (LICENSE-LGPL-2.1.txt)
+Font:     Fira Math (SIL Open Font License 1.1, jkqtmathtext/resources/firaMath/LICENSE)
+
+I sorgenti non sono stati modificati. Sono stati tolti solo i file di build originali
+(sostituiti da CMakeLists.txt) e i font XITS (11 MB, non usati).
+Viene compilata come libreria condivisa separata (MentisMathText), in modo da
+rispettare la LGPL anche in caso di distribuzione commerciale.

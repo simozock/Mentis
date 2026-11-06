@@ -1,0 +1,3 @@
+Roboto (variabile, wdth e wght). Fonte: https://github.com/google/fonts (ofl/roboto), scaricato il 2026-10-23.
+Licenza: SIL Open Font License 1.1 (OFL.txt). File inclusi senza modifiche.
+Uso: carattere della variante 2 della mappa mentale (FEAT-072).

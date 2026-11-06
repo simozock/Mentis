@@ -1,0 +1,5 @@
+<!-- Drawn for Mentis (FEAT-054), Hugeicons Stroke Rounded style -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <rect x="8.5" y="8.5" width="12" height="12" rx="2.5" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round" />
+  <path d="M15.5 8.5V6C15.5 4.61929 14.3807 3.5 13 3.5H6C4.61929 3.5 3.5 4.61929 3.5 6V13C3.5 14.3807 4.61929 15.5 6 15.5H8.5" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

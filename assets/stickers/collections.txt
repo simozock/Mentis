@@ -1,0 +1,13 @@
+# Ordine e nomi delle raccolte di base: cartella|nome mostrato (IconLibrary).
+mentis|Mentis
+education|Education
+business|Business
+thinking|Thinking
+objects|Objects
+animals|Animals
+cute-animals|Cute animals
+food|Food
+health-and-fitness|Health and fitness
+medical|Medical
+travel|Travel
+landmarks|Landmarks

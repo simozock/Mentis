@@ -1,0 +1,23 @@
+name: Feature request
+description: Propose an idea for Mentis. The most requested ones enter the roadmap.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do
+      description: The problem or the study task you want to solve, in your own words.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: How it could work
+      description: What you would see and do in Mentis. Examples and sketches are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: How you do it today, or other ways you considered.

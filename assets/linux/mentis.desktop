@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Mentis
+GenericName=Mind map
+Comment=Mind maps, outlines and Gantt plans for studying
+Comment[it]=Mappe mentali, scalette e diagrammi di Gantt per studiare
+Exec=Mentis %f
+Icon=mentis
+Terminal=false
+Categories=Office;Education;
+Keywords=mind map;outline;study;gantt;

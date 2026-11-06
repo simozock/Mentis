@@ -1,0 +1,3 @@
+Atkinson Hyperlegible Next (Braille Institute). Fonte: https://www.brailleinstitute.org/freefont/, file forniti dall'utente il 2026-10-23.
+Licenza: SIL Open Font License 1.1 (OFL.txt, copiato da atkinson-hyperlegible: lo scaricamento non lo includeva). File inclusi senza modifiche.
+Uso: carattere ad alta leggibilita' offerto negli elenchi dei font (FEAT-069).

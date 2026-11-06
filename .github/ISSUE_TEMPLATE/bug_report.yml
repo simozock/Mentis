@@ -1,0 +1,58 @@
+name: Bug report
+description: Something does not work as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! For a security problem, do not open an issue: see SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did and what went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open a new mind map
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Mentis version
+      description: Printed by `Mentis --version` (on Windows, the version of the installer you used).
+      placeholder: "0.8.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: Operating system version
+      placeholder: "Windows 11, macOS 14, Ubuntu 24.04..."
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots, files or other details
+      description: Drag a screenshot or a small .mentis file that shows the problem here.

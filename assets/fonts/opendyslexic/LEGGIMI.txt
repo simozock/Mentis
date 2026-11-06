@@ -1,0 +1,3 @@
+OpenDyslexic (Abbie Gonzalez). Fonte: https://github.com/antijingoist/opendyslexic (compiled), scaricato il 2026-10-23.
+Licenza: SIL Open Font License 1.1 (OFL.txt). File inclusi senza modifiche.
+Uso: carattere per la dislessia scelto dall'utente nel pannello Stile.

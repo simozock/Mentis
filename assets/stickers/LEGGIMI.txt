@@ -1,0 +1,37 @@
+Adesivi di base (FEAT-051, tappa 2): icone di SVG Repo (https://www.svgrepo.com), licenza CC0
+(pubblico dominio, https://www.svgrepo.com/page/licensing/#CC0): nessun obbligo di attribuzione,
+i crediti qui sono di cortesia. Scaricate dall'utente il 2026-10-20 dalle raccolte indicate sotto;
+licenza controllata dall'agente sulle pagine delle icone (stesso contenuto, byte per byte).
+Scelte con l'utente il 2026-10-20 (243 adesivi in 11 raccolte, 1505 KB).
+
+Modifiche: viewBox stretto al disegno (quadrato centrato, 4%% d'aria) e width/height 256px; nomi dei
+file corretti dove erano sbagliati o poco chiari (es. matemathic -> mathematics, mianyang -> sheep);
+tolti i doppioni fra raccolte (apple, fish, grape, lemon da Health and fitness; camera, calendar,
+globe da Travel). Ordine e nomi delle raccolte in collections.txt; nomi in inglese.
+
+education            Education             22  da "education flat line"
+business             Business              25  da "outlined business"
+thinking             Thinking              10  da "person thinking vectors"
+objects              Objects               20  da "stylized"
+animals              Animals               50  da "animal outlined"
+cute-animals         Cute animals          19  da "cute animal vectors"
+food                 Food                  24  da "food line filled vectors"
+health-and-fitness   Health and fitness    16  da "fitness and health food vectors"
+medical              Medical               20  da "medical duotone line icons"
+travel               Travel                17  da "tourism and travel vectors"
+landmarks            Landmarks             20  da "world famous tourist attractions vectors"
+
+Medical (2026-11-01, user's request): the line icons had empty insides that showed the map
+through them. Each file has a white shape at the back with the outer outline of the whole
+drawing (its shapes united, holes filled; points reduced within 0.4 viewBox units), so the
+insides are filled and the outside stays transparent. Two by hand: the stethoscope's tube
+loop stays empty (fill-rule evenodd), the map under the hospital pin is closed behind the pin.
+
+Mentis (2026-11-05, user's request): the mascot, the brain with glasses of the app icon, from the
+user's own drawings. Thirteen PNG files, 512 px, in mentis/; first in collections.txt: nine plain
+expressions and four costumes (explorer, knight, masked, traveller; the traveller's baked
+chequered background made transparent).
+
+Thinking (2026-11-05, user's request): the files thinking-1..10 have descriptive English names
+(wondering, arms-crossed, scratching-head, puzzled, curious, pondering, confused, surprised,
+doubtful, shrugging), so the panel's search finds them.

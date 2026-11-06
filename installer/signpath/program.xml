@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SignPath artifact configuration "program": the ZIP that release.yml uploads with the program's
+     own binaries. Reference: https://docs.signpath.io/artifact-configuration/reference -->
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <zip-file>
+    <pe-file path="Mentis.exe" product-name="Mentis">
+      <authenticode-sign />
+    </pe-file>
+    <pe-file path="MentisMathText.dll">
+      <authenticode-sign />
+    </pe-file>
+  </zip-file>
+</artifact-configuration>

@@ -1,0 +1,42 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      # Every system runs to the end: one failure does not hide the others.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            qt_arch: win64_msvc2022_64
+          - os: macos-latest
+            qt_arch: clang_64
+          - os: ubuntu-latest
+            qt_arch: linux_gcc_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: ${{ matrix.qt_arch }}
+          cache: true
+      - uses: lukka/get-cmake@latest
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DMENTIS_BUILD_BENCHMARKS=ON
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Benchmark smoke
+        if: runner.os == 'Linux'
+        run: ./build/MentisBenchmark 1000
+      - name: Deterministic UI snapshot
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a ./build/Mentis --ui-snapshot build/ui-home.png
+          test -s build/ui-home.png

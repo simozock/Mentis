@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/simozock/Mentis/discussions
+    about: Ask a question or discuss an idea with the community.
+  - name: Security problem
+    url: https://github.com/simozock/Mentis/security/advisories/new
+    about: Report a vulnerability privately.
