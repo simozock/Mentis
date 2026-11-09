@@ -488,6 +488,8 @@
   "MainWindow": {
     "Mentis": "",
     "Autosave failed: %1": "",
+    "Too many levels": "",
+    "A map can have at most %1 levels, to keep Mentis fast and reliable. This change would go past them, so it was not made.\n\nTry reorganising the map: it can probably do with fewer levels of indentation, for example with topics side by side instead of one inside the other.": "",
     "Agent: opened the map": "",
     "An agent wants to replace the file %1.": "",
     "Replace": "",

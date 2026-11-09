@@ -1,0 +1,11 @@
+# The workflows' actions are pinned to full commit SHAs (a tag can be moved to other code; the
+# release job holds the signing token). Dependabot proposes the updates as pull requests.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

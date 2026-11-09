@@ -590,7 +590,7 @@ public:
         }
         // A topic without a date opens on today.
         if (auto *date = qobject_cast<QDateEdit *>(editor); date && !index.data(Qt::EditRole).toDate().isValid()) {
-            date->setDate(QDate::currentDate());
+            date->setDate(GanttToday::date());
             return;
         }
         QStyledItemDelegate::setEditorData(editor, index);
@@ -791,7 +791,7 @@ void GanttChart::setZoomPercent(int percent, double anchorX) {
 }
 
 QDate GanttChart::openingDay() const {
-    const QDate today = QDate::currentDate();
+    const QDate today = GanttToday::date();
     if (m_schedule.end.isValid() && m_schedule.end < today) return m_schedule.end;
     if (m_schedule.start.isValid() && m_schedule.start > today) return m_schedule.start;
     return today;
@@ -846,7 +846,7 @@ void GanttChart::setData(const GanttPlan &plan, const GanttSchedule &schedule, c
 // From two weeks before the first task (or today) to two months after the last, aligned to a Monday
 // (a month's first day in Months). A new origin keeps the visible dates where they were.
 void GanttChart::updateRange() {
-    const QDate today = QDate::currentDate();
+    const QDate today = GanttToday::date();
     QDate first = m_schedule.start.isValid() ? std::min(m_schedule.start, today) : today;
     QDate last = m_schedule.end.isValid() ? std::max(m_schedule.end, today) : today;
     first = first.addDays(-14);
@@ -1219,7 +1219,7 @@ void GanttChart::paintEvent(QPaintEvent *) {
         painter.drawLine(QPointF(0, bottom), QPointF(area.width(), bottom));
     }
     painter.setRenderHint(QPainter::Antialiasing);
-    const double today = x(QDate::currentDate()) + dw / 2.0;
+    const double today = x(GanttToday::date()) + dw / 2.0;
     painter.setPen(QPen(kToday, 1.5));
     painter.drawLine(QPointF(today, kHeaderHeight), QPointF(today, area.height()));
     const int firstRow = std::max(0, rowAt(kHeaderHeight));
@@ -3204,7 +3204,7 @@ bool GanttView::chainSelected() {
             linked = plan.addDependency(dependency) || linked;  // existing or cyclic links are skipped
         }
         // User, 2026-10-29: a chain whose first task has no date starts today; the others follow it.
-        if (!plan.schedule().tasks.value(ids.first()).dated) linked = plan.setStart(ids.first(), QDate::currentDate()) || linked;
+        if (!plan.schedule().tasks.value(ids.first()).dated) linked = plan.setStart(ids.first(), GanttToday::date()) || linked;
         return linked;
     });
 }

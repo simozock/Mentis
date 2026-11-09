@@ -19,6 +19,15 @@
 #include <memory>
 #include <vector>
 
+// BUG-046: the deepest tree a map may hold, in levels from the central topic (1). The app walks the
+// tree recursively: past ~1500 levels the stack ran out (measured 2026-11-09, Release; Debug frames
+// are larger, hence the margin). No real map comes near it. A deeper map is not opened, a branch
+// that would go past it is not pasted, Markdown nests no deeper.
+inline constexpr int kMaxTreeDepth = 500;
+// Levels of a topic's JSON (1 without children), counted without recursion; it stops counting
+// once past kMaxTreeDepth.
+int jsonTreeDepth(const QJsonObject &node);
+
 // FEAT-018: larghezza massima che si puo' dare a un nodo a mano (trascinando il bordo o, in
 // futuro, dal pannello). Decisione dell'utente 2026-10-15: 3000 px, oltre non si va.
 inline constexpr qreal kMaxManualNodeWidthPx = 3000;
@@ -302,6 +311,11 @@ public:
     QModelIndex indexFromNode(MindNode *node) const;
     // Senza titolo = quello predefinito (2026-10-21, richiesta dell'utente, vedi defaultTitle); con un
     // titolo, anche vuoto, quello.
+    // BUG-046: levels from the central topic (1) down to node, and of node's branch (1 without
+    // children); without recursion. Edits that would pass kMaxTreeDepth are refused with
+    // depthLimitReached: adding a child, indenting, moving, inserting a parent, pasting a branch.
+    static int levelOf(const MindNode *node);
+    static int branchLevels(const MindNode *node);
     MindNode *addChild(MindNode *parent);
     MindNode *addChild(MindNode *parent, const QString &title);
     MindNode *addSibling(MindNode *node);
@@ -393,6 +407,7 @@ public:
 
 signals:
     void structureChanged();
+    void depthLimitReached();  // BUG-046: an edit refused, the map would pass kMaxTreeDepth
     // FEAT-019: nodi i cui valori effettivi di stile sono cambiati (la scena li ridisegna).
     void stylesChanged(const QList<MindNode *> &nodes);
     // FEAT-019: modifica di stile fatta dall'utente (setStyle, clearStyle, setActivePalette).

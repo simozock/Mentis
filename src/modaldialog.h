@@ -3,6 +3,7 @@
 #include <QDialog>
 
 class QLabel;
+class QPixmap;
 class QPushButton;
 class QVBoxLayout;
 
@@ -44,6 +45,10 @@ public:
                                const QString &secondaryText);
     // Messaggio con il solo bottone OK.
     static void inform(QWidget *parent, const QString &title, const QString &text);
+    // BUG-046: inform with the mascot (face, already at kMascotPx) at the left of the text, centred
+    // vertically, as in the tour's bubble (docs/design/ui-components.md, "Modali").
+    static void informWithMascot(QWidget *parent, const QPixmap &face, const QString &title, const QString &text);
+    static constexpr int kMascotPx = 72;
     // Una riga di testo; ok = false se annullato. text: the field's starting text, selected (FEAT-004 rename).
     static QString askText(QWidget *parent, const QString &title, const QString &label, const QString &acceptText, bool *ok,
                            const QString &text = QString());

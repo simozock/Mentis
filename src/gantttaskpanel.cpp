@@ -639,7 +639,7 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
     });
     connect(m_addStart, &QPushButton::clicked, this, [this] {
         editLeaves([&](GanttPlan &plan, const QString &id) {
-            return !m_schedule.tasks.value(id).dated && plan.setStart(id, QDate::currentDate());
+            return !m_schedule.tasks.value(id).dated && plan.setStart(id, GanttToday::date());
         });
     });
     connect(m_duration, &NumberField::valueChosen, this, [this](double value) {

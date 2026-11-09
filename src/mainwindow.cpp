@@ -8,6 +8,7 @@
 #include "pitchexport.h"
 #include "custompalettes.h"
 #include "filevalidation.h"
+#include "nodelinks.h"
 #include "noteeditor.h"
 #include "formuladialog.h"
 #include "markers.h"
@@ -2368,6 +2369,19 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_document(new Do
     // La scena ora segue da sola i segnali del modello (righe inserite/rimosse, dati
     // cambiati, reset): il rebuild() qui la ricostruiva una seconda volta a ogni modifica.
     connect(m_model, &MindMapModel::structureChanged, this, [this] { refreshOutline(); updateBottomBar(); setDirty(); });
+    // BUG-046: one message per action, after it (several topics indented at once refuse each).
+    connect(m_model, &MindMapModel::depthLimitReached, this, [this] {
+        if (m_depthLimitPending) return;
+        m_depthLimitPending = true;
+        QTimer::singleShot(0, this, [this] {
+            ModalDialog::informWithMascot(
+                this, Mascot::face(Mascot::Face::Cry, ModalDialog::kMascotPx), tr("Too many levels"),
+                tr("A map can have at most %1 levels, to keep Mentis fast and reliable. This change would go past them, "
+                   "so it was not made.\n\nTry reorganising the map: it can probably do with fewer levels of "
+                   "indentation, for example with topics side by side instead of one inside the other.").arg(kMaxTreeDepth));
+            m_depthLimitPending = false;
+        });
+    });
     // FEAT-019: ogni modifica di stile (anche su piu' nodi) diventa subito un passo di storico,
     // senza unirsi alla modifica successiva nell'attesa del timer.
     connect(m_model, &MindMapModel::styleEdited, this, [this] {
@@ -2527,7 +2541,7 @@ McpServer::ToolResult MainWindow::runAgentTool(const QString &tool, const QJsonO
     if (m_pages->currentWidget() != m_editorPage) showEditor();
     if (m_document->currentSheet() != shownSheet) onSheetShown();
     else refreshOutline();
-    for (const QString key : {QStringLiteral("id"), QStringLiteral("firstId"), QStringLiteral("rootId")}) {
+    for (const QString &key : {QStringLiteral("id"), QStringLiteral("firstId"), QStringLiteral("rootId")}) {
         if (MindNode *node = m_model->nodeById(result.structured.value(key).toString())) {
             m_scene->selectNode(node);
             m_view->ensureVisible(m_scene->nodeSceneRect(node), 48, 48);
@@ -5459,12 +5473,14 @@ void MainWindow::showMarkerMenu(MindNode *node, const QString &marker, const QPo
 // ---------------------------------------------------------------- FEAT-049: file allegati
 
 bool MainWindow::isRiskyFile(const QString &name) {
-    static const QStringList risky{QStringLiteral("exe"), QStringLiteral("bat"), QStringLiteral("cmd"), QStringLiteral("com"),
-                                   QStringLiteral("ps1"), QStringLiteral("psm1"), QStringLiteral("vbs"), QStringLiteral("vbe"),
-                                   QStringLiteral("js"), QStringLiteral("jse"), QStringLiteral("wsf"), QStringLiteral("msi"),
-                                   QStringLiteral("msp"), QStringLiteral("scr"), QStringLiteral("jar"), QStringLiteral("lnk"),
-                                   QStringLiteral("reg"), QStringLiteral("hta"), QStringLiteral("cpl"), QStringLiteral("sh"),
-                                   QStringLiteral("app"), QStringLiteral("dmg"), QStringLiteral("pkg"), QStringLiteral("appimage")};
+    // Windows types from Outlook's blocked attachments
+    // (https://support.microsoft.com/office/434752e1-02d3-4e90-9124-8b81e49a8519), plus scripts,
+    // disk images and the launchers of macOS and Linux (BUG-043).
+    static const QStringList risky = QStringLiteral(
+        "exe com bat cmd pif scr cpl dll msi msp mst msc ps1 ps1xml ps2 ps2xml psc1 psc2 psd1 psm1 "
+        "vb vbs vbe js jse ws wsc wsf wsh hta sct shb jar lnk url scf inf ins isp reg chm gadget "
+        "application appref-ms settingcontent-ms library-ms website xbap mde iso img vhd vhdx "
+        "py pyw pyc sh command app dmg pkg workflow appimage desktop run").split(QLatin1Char(' '));
     return risky.contains(QFileInfo(name).suffix().toLower());
 }
 
@@ -5558,7 +5574,10 @@ void MainWindow::showFilesMenu(MindNode *node, const QPoint &screenPos) {
 QString MainWindow::openNodeFile(MindNode *node, int index) {
     if (!node || index < 0 || index >= node->files.size()) return {};
     const NodeFile file = node->files[index];
-    if (isRiskyFile(file.name) &&
+    // BUG-043: the copy is named attach01.pdf... (the name in the map comes from the document); the
+    // type check reads that same name, so the extension it sees is the one the system opens.
+    const QString diskName = FileValidation::diskFileName(file.name, index + 1);
+    if (isRiskyFile(diskName) &&
         ModalDialog::ask(this, tr("Open program or script?"),
                          tr("\"%1\" is a program or a script: it can change your computer. Open it only if you trust where it comes from.").arg(file.name),
                          tr("Open")) != ModalDialog::Choice::Primary)
@@ -5568,10 +5587,10 @@ QString MainWindow::openNodeFile(MindNode *node, int index) {
         ModalDialog::inform(this, tr("File not available"), tr("\"%1\" cannot be read from the document.").arg(file.name));
         return {};
     }
-    // Copia temporanea in una cartella propria (nome originale, per l'applicazione che la apre).
+    // Temporary copy in a folder of its own.
     const QString folder = QStandardPaths::writableLocation(QStandardPaths::TempLocation) + QStringLiteral("/Mentis-files/")
                            + QUuid::createUuid().toString(QUuid::WithoutBraces);
-    const QString copy = folder + QLatin1Char('/') + file.name;
+    const QString copy = folder + QLatin1Char('/') + diskName;
     if (!QDir().mkpath(folder) || !QFile::copy(source, copy)) {
         ModalDialog::inform(this, tr("File not available"), tr("\"%1\" cannot be copied to open it.").arg(file.name));
         return {};
@@ -6399,7 +6418,7 @@ void MainWindow::followLink(MindNode *node, NodeItem::LinkKind kind) {
     if (!node) return;
     if (kind == NodeItem::LinkKind::Web) {
         const QUrl url(node->webLink);
-        const bool opened = m_openUrl ? m_openUrl(url) : QDesktopServices::openUrl(url);
+        const bool opened = NodeLinks::canOpen(url) && (m_openUrl ? m_openUrl(url) : QDesktopServices::openUrl(url));  // BUG-043
         if (!opened) statusBar()->showMessage(tr("Cannot open %1").arg(node->webLink), 3000);
         return;
     }
@@ -7415,7 +7434,7 @@ void MainWindow::showLabelMenu(MindNode *node, const QString &label, const QPoin
     menu.setWindowFlags(menu.windowFlags() | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
     menu.setAttribute(Qt::WA_TranslucentBackground);
     menu.setStyleSheet(m_outlineAddMenu->styleSheet() + " QMenu::item{padding-left:12px;}");
-    QAction *remove = menu.addAction(tr("Remove", "label"));
+    menu.addAction(tr("Remove", "label"));  // the other choice: below, after Highlight
     QAction *highlight = menu.addAction(tr("Highlight related topics"));
     const QString id = node->id;
     QAction *chosen = menu.exec(screenPos);

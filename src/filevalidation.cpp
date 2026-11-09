@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QLocale>
+#include <QRegularExpression>
 #include <QStringList>
 
 namespace FileValidation {
@@ -71,6 +72,13 @@ QString imageFilter() {
     }
     if (patterns.contains(QStringLiteral("*.jpg")) && !patterns.contains(QStringLiteral("*.jpeg"))) patterns.append(QStringLiteral("*.jpeg"));
     return QCoreApplication::translate("FileValidation", "Images (%1)").arg(patterns.join(QLatin1Char(' ')));
+}
+
+QString diskFileName(const QString &name, int number) {
+    static const QRegularExpression plainSuffix(QStringLiteral("^[A-Za-z0-9]{1,16}$"));
+    const QString suffix = QFileInfo(name).suffix();
+    return QStringLiteral("attach%1").arg(number, 2, 10, QLatin1Char('0'))
+        + (plainSuffix.match(suffix).hasMatch() ? QLatin1Char('.') + suffix : QString());
 }
 
 }  // namespace FileValidation

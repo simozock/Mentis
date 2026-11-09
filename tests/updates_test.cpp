@@ -6,9 +6,6 @@
 #include <QApplication>
 #include <QCryptographicHash>
 #include <QDir>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
@@ -20,24 +17,20 @@
 
 namespace {
 
-QByteArray releaseJson(const QString &tag, const QUrl &installer, const QUrl &sums, const QString &installerName) {
-    QJsonArray assets;
-    if (!installer.isEmpty())
-        assets.append(QJsonObject{{"name", installerName}, {"browser_download_url", installer.toString()}});
-    if (!sums.isEmpty()) assets.append(QJsonObject{{"name", "SHA256SUMS"}, {"browser_download_url", sums.toString()}});
-    assets.append(QJsonObject{{"name", "Mentis-source.zip"}, {"browser_download_url", "https://example.invalid/x.zip"}});
-    return QJsonDocument(QJsonObject{{"tag_name", tag},
-                                     {"html_url", "https://github.com/simozock/Mentis/releases/tag/" + tag},
-                                     {"draft", false},
-                                     {"prerelease", false},
-                                     {"assets", assets}})
-        .toJson();
-}
-
 void writeFile(const QString &path, const QByteArray &data) {
     QFile file(path);
     QVERIFY(file.open(QIODevice::WriteOnly));
     file.write(data);
+}
+
+// A release laid out like github.com: <root>/releases/tag/<tag> is the page releases/latest
+// redirects to, the assets under <root>/releases/download/<tag>/. Returns the page's file:// URL.
+QUrl releasePage(const QTemporaryDir &root, const QString &tag) {
+    QDir(root.path()).mkpath(QStringLiteral("releases/tag"));
+    QDir(root.path()).mkpath(QStringLiteral("releases/download/") + tag);
+    const QString page = root.filePath(QStringLiteral("releases/tag/") + tag);
+    writeFile(page, "<html></html>");
+    return QUrl::fromLocalFile(page);
 }
 
 // Answers the modals as they open: title -> "primary" or "secondary". Others (the download) are left
@@ -91,31 +84,42 @@ private slots:
         QVERIFY(Updates::parseVersion(Updates::currentVersion(), parts));  // CMakeLists.txt's version
     }
 
-    void releaseParsing() {
+    void releasePages() {
         bool ok = false;
-        const Updates::Release release = Updates::parseRelease(
-            releaseJson("v1.2.3", QUrl("https://example.invalid/i.exe"), QUrl("https://example.invalid/S"),
-                        "Mentis-1.2.3-setup-x64.exe"),
-            &ok);
+        const Updates::Release release =
+            Updates::releaseFromPage(QUrl("https://github.com/simozock/Mentis/releases/tag/v1.2.3"), &ok);
         QVERIFY(ok);
         QCOMPARE(release.version, QString("1.2.3"));
         QCOMPARE(release.installerName, QString("Mentis-1.2.3-setup-x64.exe"));
-        QCOMPARE(release.installerUrl, QUrl("https://example.invalid/i.exe"));
-        QCOMPARE(release.checksumsUrl, QUrl("https://example.invalid/S"));
+        QCOMPARE(release.installerUrl,
+                 QUrl("https://github.com/simozock/Mentis/releases/download/v1.2.3/Mentis-1.2.3-setup-x64.exe"));
+        QCOMPARE(release.checksumsUrl, QUrl("https://github.com/simozock/Mentis/releases/download/v1.2.3/SHA256SUMS"));
         QCOMPARE(release.pageUrl, QUrl("https://github.com/simozock/Mentis/releases/tag/v1.2.3"));
 
-        // An installer of another version is not this release's installer.
-        const Updates::Release other = Updates::parseRelease(
-            releaseJson("v1.2.3", QUrl("https://example.invalid/i.exe"), QUrl(), "Mentis-1.2.2-setup-x64.exe"), &ok);
+        // No release published: GitHub redirects to the release list.
+        const Updates::Release none = Updates::releaseFromPage(QUrl("https://github.com/simozock/Mentis/releases"), &ok);
         QVERIFY(ok);
-        QVERIFY(other.installerUrl.isEmpty());
-        QVERIFY(other.checksumsUrl.isEmpty());
+        QVERIFY(none.version.isEmpty());
 
-        Updates::parseRelease("{\"tag_name\":\"latest\"}", &ok);
+        Updates::releaseFromPage(QUrl("https://github.com/simozock/Mentis/releases/tag/nightly"), &ok);
         QVERIFY(!ok);
-        Updates::parseRelease("{\"tag_name\":\"v2.0.0\",\"prerelease\":true}", &ok);
+        Updates::releaseFromPage(QUrl("https://github.com/simozock/Mentis/releases/tag/v2.0.0-beta"), &ok);
         QVERIFY(!ok);
-        Updates::parseRelease("not json", &ok);
+        Updates::releaseFromPage(QUrl("https://github.com/login"), &ok);
+        QVERIFY(!ok);
+
+        // The redirect: relative or absolute on the same host; another host or scheme is refused.
+        const QUrl asked("https://github.com/simozock/Mentis/releases/latest");
+        QCOMPARE(Updates::releaseFromRedirect(asked, QUrl("/simozock/Mentis/releases/tag/v1.2.3"), &ok).version,
+                 QString("1.2.3"));
+        QVERIFY(ok);
+        Updates::releaseFromRedirect(asked, QUrl("https://github.com/simozock/Mentis/releases/tag/v1.2.3"), &ok);
+        QVERIFY(ok);
+        Updates::releaseFromRedirect(asked, QUrl("https://example.invalid/simozock/Mentis/releases/tag/v1.2.3"), &ok);
+        QVERIFY(!ok);
+        Updates::releaseFromRedirect(asked, QUrl("http://github.com/simozock/Mentis/releases/tag/v1.2.3"), &ok);
+        QVERIFY(!ok);
+        Updates::releaseFromRedirect(asked, QUrl(), &ok);
         QVERIFY(!ok);
     }
 
@@ -145,17 +149,16 @@ private slots:
 
     void checkerReadsRelease() {
         QTemporaryDir dir;
-        writeFile(dir.filePath("latest.json"), releaseJson("v3.0.0", QUrl(), QUrl(), QString()));
         UpdateChecker checker;
         QSignalSpy finished(&checker, &UpdateChecker::finished);
-        checker.start(QUrl::fromLocalFile(dir.filePath("latest.json")));
+        checker.start(releasePage(dir, "v3.0.0"));
         QVERIFY(finished.wait());
         QVERIFY(finished.at(0).at(0).toBool());
         QCOMPARE(finished.at(0).at(1).value<Updates::Release>().version, QString("3.0.0"));
 
         UpdateChecker missing;
         QSignalSpy failed(&missing, &UpdateChecker::finished);
-        missing.start(QUrl::fromLocalFile(dir.filePath("absent.json")));
+        missing.start(QUrl::fromLocalFile(dir.filePath("releases/tag/v4.0.0")));
         QVERIFY(failed.wait());
         QVERIFY(!failed.at(0).at(0).toBool());
     }
@@ -208,10 +211,9 @@ private slots:
     // Startup: a skipped version and a check made today ask nothing.
     void startupRespectsSkipAndDay() {
         QTemporaryDir dir;
-        writeFile(dir.filePath("latest.json"), releaseJson("v99.0.0", QUrl(), QUrl(), QString()));
         QWidget window;
         UpdatePrompt prompt(&window);
-        prompt.releaseUrl = QUrl::fromLocalFile(dir.filePath("latest.json"));
+        prompt.releaseUrl = releasePage(dir, "v99.0.0");
         QSignalSpy finished(&prompt, &UpdatePrompt::checkFinished);
 
         Updates::Settings settings;
@@ -249,7 +251,7 @@ private slots:
         window.show();
         UpdatePrompt prompt(&window);
         QTemporaryDir dir;
-        prompt.releaseUrl = QUrl::fromLocalFile(dir.filePath("gone.json"));
+        prompt.releaseUrl = QUrl::fromLocalFile(dir.filePath("releases/tag/v99.0.0"));
         QSignalSpy finished(&prompt, &UpdatePrompt::checkFinished);
         prompt.checkAtStartup();
         QVERIFY(finished.wait());
@@ -262,12 +264,11 @@ private slots:
     // "Check now" proposes even a skipped version; "Skip this version" remembers it.
     void checkNowAndSkip() {
         QTemporaryDir dir;
-        writeFile(dir.filePath("latest.json"), releaseJson("v99.0.0", QUrl(), QUrl(), QString()));
         QWidget window;
         window.resize(800, 600);
         window.show();
         UpdatePrompt prompt(&window);
-        prompt.releaseUrl = QUrl::fromLocalFile(dir.filePath("latest.json"));
+        prompt.releaseUrl = releasePage(dir, "v99.0.0");
         QSignalSpy finished(&prompt, &UpdatePrompt::checkFinished);
 
         Updates::Settings settings;
@@ -282,7 +283,7 @@ private slots:
         }
 
         // Up to date: a message.
-        writeFile(dir.filePath("latest.json"), releaseJson("v" + Updates::currentVersion(), QUrl(), QUrl(), QString()));
+        prompt.releaseUrl = releasePage(dir, "v" + Updates::currentVersion());
         AutoAnswer answers({{"Updates", "primary"}});
         prompt.checkNow(&window);
         QVERIFY(finished.wait());
@@ -294,15 +295,15 @@ private slots:
         QTemporaryDir dir;
         const QString name = Updates::installerFileName("99.0.0");
         const QByteArray installer(1000, 'i');
-        writeFile(dir.filePath(name), installer);
-        writeFile(dir.filePath("SHA256SUMS"), QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex() + "  " + name.toUtf8() + "\n");
-        writeFile(dir.filePath("latest.json"), releaseJson("v99.0.0", QUrl::fromLocalFile(dir.filePath(name)),
-                                                           QUrl::fromLocalFile(dir.filePath("SHA256SUMS")), name));
+        const QUrl page = releasePage(dir, "v99.0.0");
+        const QString assets = dir.filePath("releases/download/v99.0.0/");
+        writeFile(assets + name, installer);
+        writeFile(assets + "SHA256SUMS", QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex() + "  " + name.toUtf8() + "\n");
         QWidget window;
         window.resize(800, 600);
         window.show();
         UpdatePrompt prompt(&window);
-        prompt.releaseUrl = QUrl::fromLocalFile(dir.filePath("latest.json"));
+        prompt.releaseUrl = page;
         prompt.canInstall = [] { return true; };
         bool windowsClosed = false;
         QString started;

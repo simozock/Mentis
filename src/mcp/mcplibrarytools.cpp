@@ -111,7 +111,7 @@ QList<McpServer::Tool> libraryTools(std::function<Access()> access) {
         {{"collection", collectionProperty}, {"collection_name", stringProperty(QStringLiteral("Name of a new collection"))},
          {"name", stringProperty(QStringLiteral("Name of the sticker, e.g. lotus"))}, {"svg", stringProperty(QStringLiteral("SVG text"))},
          {"file", stringProperty(QStringLiteral("Absolute path of an SVG or PNG"))}},
-        {QStringLiteral("name")}, false, [](const Access &allowed, const QJsonObject &args, Kind kind) {
+        {QStringLiteral("name")}, false, [](const Access &, const QJsonObject &args, Kind kind) {
             QString error;
             const std::optional<QString> name = text(args, QStringLiteral("name"), true, &error, 100);
             const std::optional<QString> svg = name ? text(args, QStringLiteral("svg"), false, &error, int(IconLibrary::kMaxFileBytes)) : std::nullopt;

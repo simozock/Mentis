@@ -51,3 +51,14 @@ Testing/
 .cache/
 /dist/
 /stage/
+
+# Videos and sound rendered by tools (promotional videos go to Downloadsideo mentis): never in
+# the repository (user's decision 2026-11-09).
+*.mp4
+*.mov
+*.webm
+*.mkv
+*.avi
+*.wav
+*.mp3
+*.m4a

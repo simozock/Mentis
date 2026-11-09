@@ -2,6 +2,7 @@
 
 #include "markdownshortcuts.h"
 #include "nodelinks.h"
+#include "richresources.h"
 #include "richtitle.h"
 #include "uitheme.h"
 
@@ -13,10 +14,13 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QKeyEvent>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QTextBlock>
 #include <QTextCursor>
+#include <QTextDocument>
+#include <QTextDocumentFragment>
 #include <QTextEdit>
 #include <QTextList>
 #include <QToolButton>
@@ -40,6 +44,37 @@ QIcon lightIcon(const QString &file) {
     tint.end();
     return QIcon(pixmap);
 }
+}  // namespace
+
+
+namespace {
+// BUG-044: pasted images are embedded in the note (data: URLs), so they stay in the map and show
+// on any computer, and nothing in the pasted HTML is read from a file or the network (RichResources).
+class NoteTextEdit final : public QTextEdit {
+public:
+    using QTextEdit::QTextEdit;
+
+protected:
+    bool canInsertFromMimeData(const QMimeData *source) const override {
+        return source->hasImage() || QTextEdit::canInsertFromMimeData(source);
+    }
+    void insertFromMimeData(const QMimeData *source) override {
+        const QImage picture = source->hasImage() ? qvariant_cast<QImage>(source->imageData()) : QImage();
+        if (source->hasHtml()) {
+            QTextDocument pasted;
+            pasted.setHtml(RichResources::safeToParse(source->html()));
+            RichResources::embedImages(pasted, picture);
+            pasted.setHtml(RichResources::withoutExternal(pasted.toHtml()));  // backgrounds too, before it is drawn
+            textCursor().insertFragment(QTextDocumentFragment(&pasted));
+        } else if (const QString image = RichResources::dataUrl(picture); !image.isEmpty()) {
+            textCursor().insertImage(image);
+        } else {
+            QTextEdit::insertFromMimeData(source);
+            return;
+        }
+        ensureCursorVisible();
+    }
+};
 }  // namespace
 
 NoteEditor::NoteEditor(QWidget *parent, Mode mode) : QFrame(parent), m_mode(mode) {
@@ -107,7 +142,7 @@ NoteEditor::NoteEditor(QWidget *parent, Mode mode) : QFrame(parent), m_mode(mode
     connect(m_linkField, &QLineEdit::returnPressed, this, [this] { applyLink(m_linkField->text()); });
     connect(confirm, &QToolButton::clicked, this, [this] { applyLink(m_linkField->text()); });
     hostLayout->addWidget(m_linkRow);
-    m_text = new QTextEdit(this);
+    m_text = new NoteTextEdit(this);
     m_text->setObjectName(QStringLiteral("NoteText"));
     m_text->setAcceptRichText(true);
     m_text->setPlaceholderText(tr("Write a note"));
@@ -415,7 +450,10 @@ bool NoteEditor::eventFilter(QObject *watched, QEvent *event) {
         auto *mouse = static_cast<QMouseEvent *>(event);
         if (mouse->modifiers() & Qt::ControlModifier) {
             const QString href = m_text->anchorAt(mouse->position().toPoint());
-            if (!href.isEmpty()) { QDesktopServices::openUrl(QUrl(href)); return true; }
+            if (!href.isEmpty()) {
+                if (NodeLinks::canOpen(QUrl(href))) QDesktopServices::openUrl(QUrl(href));  // BUG-043
+                return true;
+            }
         }
     }
     if (watched == m_linkField && event->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {

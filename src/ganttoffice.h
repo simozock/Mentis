@@ -19,7 +19,7 @@ QByteArray docx(const GanttExportSource &source, GanttPages::Content content, Ga
 // Sheets Gantt (bars as conditional formatting), Costs, People and Per week, as content asks.
 // today: the highlighted period at first.
 QByteArray xlsx(const GanttExportSource &source, GanttPages::Content content, GanttChart::Scale unit, const QString &title,
-                const QDate &today = QDate::currentDate());
+                const QDate &today = GanttToday::date());
 QString markdown(const GanttExportSource &source, GanttPages::Content content);
 
 // Write the file; empty = written, else the error (no half file is left).

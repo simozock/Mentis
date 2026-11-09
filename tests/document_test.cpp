@@ -21,6 +21,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <functional>
+
 namespace {
 QStringList childTitles(const MindNode *node) {
     QStringList titles;
@@ -43,6 +45,10 @@ private slots:
     void duplicateSheetGetsFreshIds();
     void saveAndReopenReadsSheetsLazily();
     void lockedAndBrokenFilesLeaveTheDocumentAsItWas();
+    void triggersAndViewsAreRefused();
+    void cyclesRepeatsAndDeepTreesAreRefused();
+    void editsStopAtTheDepthLimit();
+    void repeatedOrEmptyIdsAreRefused();
     void markdownIsLaidOutBeforeTheHistoryStarts();
     void autosaveWritesANamedDocument();
     void stickerDeletedFromTheLibraryStaysInTheMap();
@@ -377,6 +383,201 @@ void DocumentTest::markdownIsLaidOutBeforeTheHistoryStarts() {
     QVERIFY(!document.isDirty());            // la modifica di afterLoad fa parte dello stato iniziale
     QCOMPARE(document.sheetContent(0).value(document.model()->root()->id).value(QStringLiteral("title")).toString(),
              QStringLiteral("Disposta"));
+}
+
+// BUG-044: Mentis never creates triggers or views; a file with them (someone else's) is neither
+// read nor written, so its SQL never runs.
+void DocumentTest::triggersAndViewsAreRefused() {
+    MindMapModel model;
+    model.addChild(model.root(), QStringLiteral("Ricevuto"));
+    const QStringList extras{
+        QStringLiteral("CREATE TRIGGER evil AFTER INSERT ON nodes BEGIN INSERT OR REPLACE INTO metadata(key,value) VALUES('ran','yes'); END"),
+        QStringLiteral("CREATE VIEW evil AS SELECT * FROM nodes")};
+    for (const QString &extra : extras) {
+        const QString file = path(QStringLiteral("schema-%1.mentis").arg(extras.indexOf(extra)));
+        QString error;
+        QVERIFY2(BmapStorage::save(file, model, BmapStorage::SaveReason::Explicit, &error), qPrintable(error));
+        const QString connection = QStringLiteral("bug044-%1").arg(extras.indexOf(extra));
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+            db.setDatabaseName(file);
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            QVERIFY(query.exec(extra));
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+        MindMapModel back;
+        error.clear();
+        QVERIFY(!BmapStorage::load(file, back, &error));
+        QVERIFY(!error.isEmpty());
+        QVERIFY(!BmapStorage::save(file, model, BmapStorage::SaveReason::Explicit, &error));
+        QVERIFY(BmapStorage::loadPreview(file).isEmpty());
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+            db.setDatabaseName(file);
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            QVERIFY(query.exec(QStringLiteral("SELECT 1 FROM metadata WHERE key='ran'")));
+            QVERIFY(!query.next());  // the trigger never ran
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(connection);
+    }
+}
+
+// BUG-046: a topic met twice (a cycle, a repeated id) or a tree deeper than kMaxTreeDepth made the
+// app crash at opening (endless recursion, stack overflow): refused. Below the limit all opens.
+void DocumentTest::cyclesRepeatsAndDeepTreesAreRefused() {
+    const auto chain = [](MindMapModel &model, int levels) {  // levels counted with the central topic
+        MindNode *node = model.root();
+        for (int i = 1; i < levels; ++i) node = model.addChild(node, QStringLiteral("Livello %1").arg(i));
+    };
+    const auto craft = [this](const QString &name, const QStringList &sql) {
+        MindMapModel model;
+        model.addChild(model.root(), QStringLiteral("Uno"));
+        const QString file = path(name);
+        if (!BmapStorage::save(file, model, BmapStorage::SaveReason::Explicit)) return QString();
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("bug046"));
+            db.setDatabaseName(file);
+            if (!db.open()) return QString();
+            QSqlQuery query(db);
+            for (const QString &statement : sql) if (!query.exec(statement)) return QString();
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("bug046"));
+        return file;
+    };
+    const QString uno = QStringLiteral("(SELECT id FROM nodes WHERE CAST(payload AS TEXT) LIKE '%\"Uno\"%')");
+    const QString rootId = QStringLiteral("(SELECT json_extract(CAST(payload AS TEXT),'$.rootId') FROM map_state)");
+    // The central topic made a child of its own child.
+    const QString cycle = craft(QStringLiteral("ciclo.mentis"), {
+        QStringLiteral("UPDATE nodes SET payload=json_set(CAST(payload AS TEXT),'$.parentId',%1) WHERE id=%2").arg(uno, rootId)});
+    // "Uno" a second time under the central topic.
+    const QString repeated = craft(QStringLiteral("ripetuto.mentis"), {
+        QStringLiteral("INSERT INTO nodes(id,map_id,parent_id,sort_order,payload) SELECT 'copia',map_id,parent_id,1,payload FROM nodes WHERE id=%1").arg(uno)});
+    for (const QString &file : {cycle, repeated}) {
+        QVERIFY(!file.isEmpty());
+        MindMapModel back;
+        QString error;
+        QVERIFY(!BmapStorage::load(file, back, &error));
+        QVERIFY(!error.isEmpty());
+    }
+    {
+        MindMapModel model;
+        chain(model, kMaxTreeDepth);  // the app builds no deeper: one more level is added with SQL
+        const QString file = path(QStringLiteral("profondo.mentis"));
+        QVERIFY(BmapStorage::save(file, model, BmapStorage::SaveReason::Explicit));
+        MindMapModel back;
+        QVERIFY(BmapStorage::load(file, back));
+        QVERIFY(back.fromJson(model.toJson()));
+        const QString deeper = craft(QStringLiteral("troppo-profondo.mentis"), {
+            QStringLiteral("DELETE FROM nodes"),
+            QStringLiteral("DELETE FROM map_state")});
+        QVERIFY(!deeper.isEmpty());
+        QFile::remove(deeper);
+        QVERIFY(QFile::copy(file, deeper));
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("bug046"));
+            db.setDatabaseName(deeper);
+            QVERIFY(db.open());
+            QSqlQuery query(db);
+            QVERIFY(query.exec(QStringLiteral(
+                "INSERT INTO nodes(id,map_id,parent_id,sort_order,payload) SELECT 'oltre',map_id,id,0,"
+                "json_object('id','oltre','title','Oltre','parentId',id,'row',0) FROM nodes "
+                "WHERE id NOT IN (SELECT parent_id FROM nodes WHERE parent_id IS NOT NULL)")));
+            QCOMPARE(query.numRowsAffected(), 1);
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("bug046"));
+        QVERIFY(!BmapStorage::load(deeper, back));
+        QJsonObject json = model.toJson();  // the same one level deeper, as JSON
+        QJsonObject leaf{{QStringLiteral("title"), QStringLiteral("Oltre")}};
+        std::function<QJsonObject(QJsonObject)> deepen = [&](QJsonObject node) {
+            QJsonArray children = node.value(QStringLiteral("children")).toArray();
+            node.insert(QStringLiteral("children"), children.isEmpty() ? QJsonArray{leaf} : QJsonArray{deepen(children.first().toObject())});
+            return node;
+        };
+        json.insert(QStringLiteral("root"), deepen(json.value(QStringLiteral("root")).toObject()));
+        QVERIFY(!back.fromJson(json));
+    }
+    // A branch that would go past the limit is not pasted; one that stays within it is.
+    MindMapModel model;
+    chain(model, 300);
+    MindMapModel branch;
+    chain(branch, 201);
+    MindNode *deepest = model.root();
+    while (!deepest->children.empty()) deepest = deepest->children.front().get();
+    QVERIFY(!model.insertSubtree(deepest, 0, branch.subtreeToJson(branch.root())));
+    QVERIFY(model.insertSubtree(deepest->parent, 0, branch.subtreeToJson(branch.root())));
+    // Markdown nests no deeper than the limit.
+    QString markdown;
+    for (int i = 0; i < kMaxTreeDepth + 100; ++i) markdown += QString(i * 2, QLatin1Char(' ')) + QStringLiteral("- voce %1\n").arg(i);
+    MindMapModel imported;
+    QVERIFY(imported.fromMarkdown(markdown));
+    QVERIFY(jsonTreeDepth(imported.subtreeToJson(imported.root())) <= kMaxTreeDepth);
+}
+
+// BUG-046: adding a child, indenting, moving and inserting a parent stop at kMaxTreeDepth and say
+// so (depthLimitReached); within the limit they work.
+void DocumentTest::editsStopAtTheDepthLimit() {
+    MindMapModel model;
+    MindNode *deepest = model.root();
+    for (int level = 1; level < kMaxTreeDepth; ++level) deepest = model.addChild(deepest, QStringLiteral("Livello %1").arg(level));
+    QCOMPARE(MindMapModel::levelOf(deepest), kMaxTreeDepth);
+    QCOMPARE(MindMapModel::branchLevels(model.root()), kMaxTreeDepth);
+    QSignalSpy refused(&model, &MindMapModel::depthLimitReached);
+    QVERIFY(!model.addChild(deepest, QStringLiteral("Oltre")));
+    QCOMPARE(refused.count(), 1);
+    MindNode *sibling = model.addSibling(deepest);  // same level: allowed
+    QVERIFY(sibling);
+    QVERIFY(!model.indentNode(sibling));  // under deepest: level 501
+    QVERIFY(!model.insertParent(deepest));
+    MindNode *shallow = model.addChild(model.root(), QStringLiteral("Ramo"));
+    MindNode *leaf = model.addChild(shallow, QStringLiteral("Foglia"));
+    QVERIFY(!model.moveNode(shallow, deepest->parent));  // its two levels would end at 501
+    QCOMPARE(refused.count(), 4);
+    QVERIFY(model.moveNode(leaf, deepest->parent));  // one level: ends at 500
+    QVERIFY(model.indentNode(model.addSibling(shallow)));  // near the top: fine
+    QCOMPARE(refused.count(), 4);
+}
+
+// BUG-047 (found by fuzzing): a map whose topic ids repeat, a summary topic's included, or one of
+// them empty, made the history's flat form loop until the stack ran out. Refused; a missing or
+// non-text id still gets a new one.
+void DocumentTest::repeatedOrEmptyIdsAreRefused() {
+    const auto map = [](const QJsonArray &children, const QJsonArray &summaries = {}) {
+        return QJsonObject{{QStringLiteral("root"), QJsonObject{{QStringLiteral("id"), QStringLiteral("r")},
+                                                                {QStringLiteral("title"), QStringLiteral("Radice")},
+                                                                {QStringLiteral("children"), children}}},
+                           {QStringLiteral("summaries"), summaries}};
+    };
+    const auto topic = [](const QJsonValue &id) {
+        QJsonObject json{{QStringLiteral("title"), QStringLiteral("Argomento")}};
+        if (!id.isUndefined()) json.insert(QStringLiteral("id"), id);
+        return json;
+    };
+    MindMapModel model;
+    QVERIFY(model.fromJson(map({topic(QStringLiteral("a")), topic(QStringLiteral("b"))})));
+    QVERIFY(model.fromJson(map({topic(QJsonValue::Undefined), topic(QJsonValue(7))})));  // new ids
+    QVERIFY(!model.fromJson(map({topic(QStringLiteral("a")), topic(QStringLiteral("a"))})));
+    QVERIFY(!model.fromJson(map({topic(QStringLiteral(""))})));
+    QVERIFY(!model.fromJson(map({topic(QStringLiteral("r"))})));  // the central topic's id
+    const QJsonArray summary{QJsonObject{{QStringLiteral("id"), QStringLiteral("s")},
+                                         {QStringLiteral("topics"), QJsonArray{QStringLiteral("a")}},
+                                         {QStringLiteral("topic"), topic(QStringLiteral("a"))}}};
+    QVERIFY(!model.fromJson(map({topic(QStringLiteral("a"))}, summary)));
+    // The flat form with a cycle (a topic its own ancestor) is refused, not rebuilt forever.
+    QVERIFY(model.fromJson(map({topic(QStringLiteral("a"))})));
+    QHash<QString, QJsonObject> flat = model.toFlatSnapshot();
+    QJsonObject a = flat.value(QStringLiteral("a"));
+    QJsonObject root = flat.value(QStringLiteral("r"));
+    root.insert(QStringLiteral("parent"), QStringLiteral("a"));
+    flat.insert(QStringLiteral("r"), root);
+    QVERIFY(flat.contains(QStringLiteral("a")) && a.value(QStringLiteral("parent")).toString() == QStringLiteral("r"));
+    MindMapModel back;
+    QVERIFY(!back.fromFlatSnapshot(flat));
 }
 
 void DocumentTest::autosaveWritesANamedDocument() {

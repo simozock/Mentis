@@ -5,9 +5,6 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -40,32 +37,43 @@ bool isNewer(const QString &candidate, const QString &current) {
 
 QString installerFileName(const QString &version) { return QStringLiteral("Mentis-%1-setup-x64.exe").arg(version); }
 
-Release parseRelease(const QByteArray &json, bool *ok) {
+Release releaseFromPage(const QUrl &page, bool *ok) {
     *ok = false;
     Release release;
-    const QJsonObject object = QJsonDocument::fromJson(json).object();
-    const QString tag = object.value(QStringLiteral("tag_name")).toString();
-    int parts[3];
-    // releases/latest never returns these, but a mirror or a future API might.
-    if (!parseVersion(tag, parts) || object.value(QStringLiteral("draft")).toBool()
-        || object.value(QStringLiteral("prerelease")).toBool())
+    QString path = page.path();
+    if (path.endsWith(QLatin1Char('/'))) path.chop(1);
+    if (path.endsWith(QLatin1String("/releases"))) {  // the repository has no release yet
+        *ok = true;
         return release;
-    release.version = QStringLiteral("%1.%2.%3").arg(parts[0]).arg(parts[1]).arg(parts[2]);
-    release.pageUrl = QUrl(object.value(QStringLiteral("html_url")).toString());
-    const QString installer = installerFileName(release.version);
-    for (const QJsonValue &value : object.value(QStringLiteral("assets")).toArray()) {
-        const QJsonObject asset = value.toObject();
-        const QString name = asset.value(QStringLiteral("name")).toString();
-        const QUrl url(asset.value(QStringLiteral("browser_download_url")).toString());
-        if (name == installer) {
-            release.installerUrl = url;
-            release.installerName = name;
-        } else if (name == QLatin1String("SHA256SUMS")) {
-            release.checksumsUrl = url;
-        }
     }
+    static const QLatin1String marker("/releases/tag/");
+    const qsizetype at = path.lastIndexOf(marker);
+    if (at < 0) return release;
+    const QString tag = path.mid(at + marker.size());
+    int parts[3];
+    if (!parseVersion(tag, parts)) return release;
+    release.version = QStringLiteral("%1.%2.%3").arg(parts[0]).arg(parts[1]).arg(parts[2]);
+    release.pageUrl = page;
+    // https://docs.github.com/en/repositories/releasing-projects-on-github/linking-to-releases
+    QUrl download = page;
+    download.setQuery(QString());
+    download.setFragment(QString());
+    const QString downloadPath = path.left(at) + QStringLiteral("/releases/download/") + tag + QLatin1Char('/');
+    release.installerName = installerFileName(release.version);
+    download.setPath(downloadPath + release.installerName);
+    release.installerUrl = download;
+    download.setPath(downloadPath + QStringLiteral("SHA256SUMS"));
+    release.checksumsUrl = download;
     *ok = true;
     return release;
+}
+
+Release releaseFromRedirect(const QUrl &asked, const QUrl &location, bool *ok) {
+    const QUrl target = asked.resolved(location);
+    *ok = false;
+    // The installer and its checksums are fetched from the target's host: only the asked one.
+    if (location.isEmpty() || target.scheme() != asked.scheme() || target.host() != asked.host()) return {};
+    return releaseFromPage(target, ok);
 }
 
 QByteArray checksumFor(const QByteArray &sums, const QString &fileName) {
@@ -127,10 +135,7 @@ namespace {
 
 QNetworkRequest githubRequest(const QUrl &url) {
     QNetworkRequest request(url);
-    // GitHub's REST API refuses requests without a User-Agent.
-    // https://docs.github.com/en/rest/using-the-rest-api/getting-started-with-the-rest-api#user-agent
     request.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Mentis/%1").arg(Updates::currentVersion()));
-    request.setRawHeader("Accept", "application/vnd.github+json");
     request.setTransferTimeout(30000);
     return request;
 }
@@ -140,18 +145,24 @@ QNetworkRequest githubRequest(const QUrl &url) {
 UpdateChecker::UpdateChecker(QObject *parent) : QObject(parent), m_network(new QNetworkAccessManager(this)) {}
 
 QUrl UpdateChecker::defaultUrl() {
-    return QUrl(QStringLiteral("https://api.github.com/repos/simozock/Mentis/releases/latest"));
+    return QUrl(QStringLiteral("https://github.com/simozock/Mentis/releases/latest"));
 }
 
 void UpdateChecker::start(const QUrl &url) {
-    QNetworkReply *reply = m_network->get(githubRequest(url));
+    QNetworkRequest request = githubRequest(url);
+    // Only the redirect's target is needed, not the release page's HTML.
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    QNetworkReply *reply = m_network->get(request);
     connect(reply, &QNetworkReply::finished, this, [this, reply] {
         reply->deleteLater();
         bool ok = false;
         Updates::Release release;
-        if (reply->error() == QNetworkReply::NoError) release = Updates::parseRelease(reply->readAll(), &ok);
-        // 404: the repository has no published release yet, so nothing is newer.
-        else if (reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 404) ok = true;
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status >= 300 && status < 400)
+            release = Updates::releaseFromRedirect(
+                reply->url(), reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl(), &ok);
+        else if (reply->error() == QNetworkReply::NoError)  // a page served directly (file:// in tests)
+            release = Updates::releaseFromPage(reply->url(), &ok);
         emit finished(ok, release);
     });
 }

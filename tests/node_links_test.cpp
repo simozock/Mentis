@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QSignalSpy>
 #include <QTest>
+#include <QUrl>
 
 class NodeLinksTest final : public QObject {
     Q_OBJECT
@@ -14,6 +15,8 @@ class NodeLinksTest final : public QObject {
 private slots:
     void webAddressesAreCompletedOrRejected_data();
     void webAddressesAreCompletedOrRejected();
+    void onlyWebAndMailLinksOpen_data();
+    void onlyWebAndMailLinksOpen();
     void linksAreSavedCopiedAndOptional();
     void setLinksIsAllOrNothingAndSignalsOnce();
     void oneStepCanChangeTwoSheets();
@@ -40,6 +43,29 @@ void NodeLinksTest::webAddressesAreCompletedOrRejected() {
     QFETCH(QString, typed);
     QFETCH(QString, address);
     QCOMPARE(NodeLinks::webAddress(typed), address);
+}
+
+// BUG-043: a link read from someone else's document is checked again before it is opened.
+void NodeLinksTest::onlyWebAndMailLinksOpen_data() {
+    QTest::addColumn<QString>("link");
+    QTest::addColumn<bool>("opens");
+    QTest::newRow("https") << QStringLiteral("https://example.com/a") << true;
+    QTest::newRow("http") << QStringLiteral("http://example.com") << true;
+    QTest::newRow("mailto") << QStringLiteral("mailto:ada@example.com") << true;
+    QTest::newRow("file") << QStringLiteral("file:///C:/Windows/System32/cmd.exe") << false;
+    QTest::newRow("unc") << QStringLiteral("\\\\server\\share\\a.txt") << false;
+    QTest::newRow("smb") << QStringLiteral("smb://server/share") << false;
+    QTest::newRow("javascript") << QStringLiteral("javascript:alert(1)") << false;
+    QTest::newRow("relative") << QStringLiteral("tool.exe") << false;
+    QTest::newRow("https without host") << QStringLiteral("https:///path") << false;
+    QTest::newRow("mailto empty") << QStringLiteral("mailto:") << false;
+    QTest::newRow("empty") << QString() << false;
+}
+
+void NodeLinksTest::onlyWebAndMailLinksOpen() {
+    QFETCH(QString, link);
+    QFETCH(bool, opens);
+    QCOMPARE(NodeLinks::canOpen(QUrl(link)), opens);
 }
 
 void NodeLinksTest::linksAreSavedCopiedAndOptional() {

@@ -24,6 +24,11 @@ Check image(const QString &path);
 // File qualunque (FEAT-049): esiste, si legge, non e' vuoto; solo la dimensione puo' essere grande.
 Check anyFile(const QString &path);
 
+// BUG-043: the name of an attachment's copy on disk (opened, exported): "attach" and number, at
+// least two digits, plus the extension of name when it is plain letters and digits (at most 16),
+// such as "attach01.pdf". The name in the map can hold anything (it comes from the document).
+QString diskFileName(const QString &name, int number);
+
 // Filtro della finestra di scelta: le immagini che Qt sa leggere su questo computer (senza il
 // plugin WebP, per esempio, i .webp non compaiono).
 QString imageFilter();

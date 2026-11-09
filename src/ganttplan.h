@@ -16,6 +16,14 @@
 
 #include <array>
 
+// The day the Gantt calls today (QDate::currentDate): where the chart opens, the today line, the
+// start of an undated task, the date printed on exports. Tests fix it, so that what they check does
+// not depend on the day they run (2026-11-09: a test failed once its plan's week left the view).
+namespace GanttToday {
+QDate date();
+void setForTests(const QDate &day);  // an invalid date gives the real one back
+}  // namespace GanttToday
+
 struct GanttTask {
     QString id;
     QString name;
@@ -50,7 +58,9 @@ struct GanttCalendar {
     static constexpr int kDefaultMinutesPerDay = 8 * 60;
     static constexpr int kMaxMinutesPerDay = 24 * 60;
     static constexpr int kMinutesStep = 15;  // quarter hours (user, 2026-10-29: 8 h 15, 8 h 30)
-    QSet<int> workingDays{1, 2, 3, 4, 5, 6, 7};
+    // Filled by a loop: GCC 15 reported a dangling pointer in QSet's initializer_list constructor
+    // here (-Wdangling-pointer, a false positive; 2026-11-09).
+    QSet<int> workingDays = [] { QSet<int> days; for (int day = Qt::Monday; day <= Qt::Sunday; ++day) days.insert(day); return days; }();
     QSet<QDate> holidays;
     // FEAT-079: length of a working day in minutes (15-1440, quarter hours), for the costs to come;
     // the schedule does not use it.

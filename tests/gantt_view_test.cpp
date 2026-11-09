@@ -170,6 +170,9 @@ void GanttViewTest::initTestCase() {
     QCoreApplication::setOrganizationName(QStringLiteral("MentisTest"));
     QCoreApplication::setApplicationName(QStringLiteral("MentisGanttViewTest"));
     QSettings().clear();  // CI starts from nothing: a run here must too (the export windows remember)
+    // The plans are around kMonday: "today" is that week's Friday on any day the tests run (the
+    // chart opens on today; from 2026-11-09 a bar left the view).
+    GanttToday::setForTests(kMonday.addDays(4));
     TourSettings::setTourOffered();  // no tour invitation dimming the window (FEAT-093)
     TourSettings::setTipsEnabled(false);
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
@@ -1156,11 +1159,11 @@ void GanttViewTest::chainWithoutDatesStartsToday() {
     // The first task has no date: it starts today and the others follow it, one step.
     QVERIFY(m_view->chainSelected());
     const GanttPlan plan = m_document->model()->gantt();
-    QCOMPARE(plan.task("A")->start, QDate::currentDate());
+    QCOMPARE(plan.task("A")->start, GanttToday::date());
     QVERIFY(plan.task("B")->start.isNull());  // placed by its link
     const GanttSchedule schedule = plan.schedule();
     QVERIFY(schedule.tasks.value("B").dated);
-    QCOMPARE(schedule.tasks.value("B").start, QDate::currentDate().addDays(2));
+    QCOMPARE(schedule.tasks.value("B").start, GanttToday::date().addDays(2));
     QCOMPARE(plan.task("C")->start, kMonday);  // a date of its own is kept
     m_document->undo();
     QVERIFY(m_document->model()->gantt().task("A")->start.isNull());
@@ -1436,7 +1439,7 @@ void GanttViewTest::actions() {
     // Go to today: today three days from the left (user, 2026-10-30).
     m_view->chart()->horizontalScrollBar()->setValue(0);
     button("ganttToday")->click();
-    QCOMPARE(m_view->chart()->xOf(QDate::currentDate()), double(GanttChart::kOpenDaysBefore * m_view->chart()->dayWidth()));
+    QCOMPARE(m_view->chart()->xOf(GanttToday::date()), double(GanttChart::kOpenDaysBefore * m_view->chart()->dayWidth()));
 }
 
 void GanttViewTest::zoom() {
@@ -2127,7 +2130,9 @@ void GanttViewTest::fillStyle() {
     QVERIFY(!tasks->itemIcon(1).isNull() && tasks->itemText(1).isEmpty());
     QCOMPARE(tasks->itemData(1, Qt::ToolTipRole).toString(), QString("Hand-drawn fill"));
 
-    // Peach pixels along the middle row of the bar, away from its ends.
+    // Peach pixels along the middle row of the bar, away from its ends. The plan's week in view: the
+    // chart opens on today, which from 2026-11-09 left the bar's start off the left edge.
+    chart->scrollToDay(kMonday);
     const QColor peach(0xf9, 0xbd, 0x89);
     const auto peachColumns = [chart, &peach] {
         const QRectF bar = chart->barRect("A");
@@ -2640,7 +2645,7 @@ void GanttViewTest::taskPanel() {
     panel->clearStartButton()->click();
     QVERIFY(panel->addStartButton()->isVisibleTo(panel) && !panel->startField()->isVisibleTo(panel));
     panel->addStartButton()->click();
-    QCOMPARE(m_document->model()->nodeById("C")->ganttStart, QDate::currentDate());
+    QCOMPARE(m_document->model()->nodeById("C")->ganttStart, GanttToday::date());
     QVERIFY(panel->clearStartButton()->isVisibleTo(panel));
     panel->clearStartButton()->click();
     QVERIFY(!m_document->model()->nodeById("C")->ganttStart.isValid());
@@ -3880,7 +3885,7 @@ void GanttViewTest::resourcesButton() {
 void GanttViewTest::opensNearToday() {
     GanttChart *chart = m_view->chart();
     const auto daysFromLeft = [chart](const QDate &day) { return chart->xOf(day) / chart->dayWidth(); };
-    const QDate today = QDate::currentDate();
+    const QDate today = GanttToday::date();
     QCOMPARE(chart->openingDay(), today);  // no tasks
     QCOMPARE(daysFromLeft(today), double(GanttChart::kOpenDaysBefore));
     chart->horizontalScrollBar()->setValue(0);

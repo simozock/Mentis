@@ -18,7 +18,7 @@ struct MindNode;
 
 // FEAT-093: the guided tour with the mascot and the tips at the first use of an area.
 namespace Mascot {
-enum class Face { Smile, Hello, Look, Think, Cheer };
+enum class Face { Smile, Hello, Look, Think, Cheer, Cry };  // Cry: BUG-046, the depth limit
 QPixmap face(Face face, int sizePx);  // from :/assets/mascot, for the device pixel ratio
 }  // namespace Mascot
 

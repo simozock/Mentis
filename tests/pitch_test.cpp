@@ -64,6 +64,7 @@ private slots:
     void initTestCase();
     void cleanupTestCase();
     void slidesFollowTheMap();
+    void manyChildrenKeepTheirTitleSlide();
     void longListsContinue();
     void deliverySetsTheSteps();
     void settingsAreSavedAndUndone();
@@ -98,6 +99,26 @@ void PitchTest::initTestCase() {
 }
 
 void PitchTest::cleanupTestCase() { m_window.reset(); }
+
+// BUG-045: a topic with many children (several list slides) crashed: the title's extras were a
+// reference into a cache that moved when it grew. A normal map with 100 topics crashed at opening.
+void PitchTest::manyChildrenKeepTheirTitleSlide() {
+    for (const int count : {50, 100, 150, 200, 300, 500}) {
+        MindMapModel model;
+        for (int i = 0; i < count; ++i) model.addChild(model.root(), QStringLiteral("Argomento %1").arg(i));
+        const Pitch::Slide preview = Pitch::previewSlide(model, model.root());
+        QCOMPARE(preview.kind, Pitch::Slide::Kind::List);
+        const QList<Pitch::Slide> all = Pitch::slides(model);
+        qsizetype items = 0;
+        for (const Pitch::Slide &slide : all)
+            if (slide.kind == Pitch::Slide::Kind::List) {
+                QCOMPARE(slide.title, model.root()->title);
+                items += slide.items.size();
+                QCOMPARE(slide.itemExtras.size(), slide.items.size());
+            }
+        QCOMPARE(items, qsizetype(count));
+    }
+}
 
 void PitchTest::slidesFollowTheMap() {
     MindMapModel model;

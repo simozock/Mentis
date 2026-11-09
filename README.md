@@ -135,8 +135,8 @@ follows the GDPR and the Swiss Federal Act on Data Protection (FADP / LPD).
 
 Mentis is also an [MCP](https://modelcontextprotocol.io) server: `Mentis --mcp` lets an AI agent
 (Claude, Codex and other MCP clients) read and build your maps — create maps and sheets, add and
-move topics, set styles, import and export Markdown — in folders you allow, and on the maps open in
-the app.
+move topics, set styles, import and export Markdown — once you turn it on in Settings: then the
+agent can work on any map on your computer, and on the maps open in the app.
 
 ## 📦 Download and build
 
@@ -146,7 +146,7 @@ source: see **[BUILD.md](BUILD.md)**.
 
 > [!NOTE]
 > **Privacy.** Mentis connects to the internet only to check for updates: once a day, at startup,
-> it asks GitHub (`api.github.com`) for the latest release, and it downloads an installer only when
+> it asks GitHub (`github.com`) for the latest release, and it downloads an installer only when
 > you choose to update. The check can be turned off in Settings > General > Updates. Mentis sends no
 > other information to any networked system unless you ask it to (for example by opening a link).
 

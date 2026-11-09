@@ -1067,3 +1067,13 @@ GanttPlan GanttPlan::fromJson(const QJsonObject &json, int *repairs) {
     if (repairs) *repairs = fixed;
     return plan;
 }
+
+namespace GanttToday {
+namespace {
+QDate fixedDay;
+}  // namespace
+
+QDate date() { return fixedDay.isValid() ? fixedDay : QDate::currentDate(); }
+
+void setForTests(const QDate &day) { fixedDay = day; }
+}  // namespace GanttToday

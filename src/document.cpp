@@ -1,7 +1,9 @@
 #include "document.h"
 
 #include <functional>
+#include "filevalidation.h"
 #include "markers.h"
+#include "richresources.h"
 
 #include <QCryptographicHash>
 
@@ -221,7 +223,7 @@ MapHistory::Snapshot withFreshIds(const MapHistory::Snapshot &content) {
     };
     for (auto it = content.cbegin(); it != content.cend(); ++it) if (it.key() != kMapKey) add(it.key());
     const QJsonObject map = content.value(kMapKey);
-    for (const QString key : {QStringLiteral("relations"), QStringLiteral("summaries"), QStringLiteral("boundaries")})
+    for (const QString &key : {QStringLiteral("relations"), QStringLiteral("summaries"), QStringLiteral("boundaries")})
         for (const QJsonValue &entry : map.value(key).toArray()) {
             add(entry.toObject().value(QStringLiteral("id")).toString());
             add(entry.toObject().value(QStringLiteral("topic")).toObject().value(QStringLiteral("id")).toString());
@@ -1092,7 +1094,7 @@ bool Document::setTitle(MindNode *node, const QString &title) {
 bool Document::setFormattedTitle(MindNode *node, const QString &title, const QString &html) {
     if (!node || (node->title == title && node->titleHtml == html)) return false;
     node->title = title;
-    node->titleHtml = html;
+    node->titleHtml = RichResources::withoutExternal(html);  // BUG-044
     markChanged();
     emit nodesChanged({node});
     return true;
@@ -1102,7 +1104,7 @@ bool Document::setNote(MindNode *node, const QString &plain, const QString &html
     if (!node) return false;
     const bool empty = plain.trimmed().isEmpty();
     const QString nextPlain = empty ? QString() : plain;
-    const QString nextHtml = empty ? QString() : html;
+    const QString nextHtml = empty ? QString() : RichResources::withoutExternal(html);  // BUG-044
     if (node->notes == nextPlain && node->notesHtml == nextHtml) return false;
     node->notes = nextPlain;
     node->notesHtml = nextHtml;
@@ -1704,14 +1706,18 @@ Document::ExportResult Document::exportMarkdown(const QString &markdownPath) {
         return QFileInfo(path).isFile() ? path : QString();
     };
     // Copia in assets/ (una volta per file) e restituisce il percorso relativo; vuoto se fallisce.
-    const auto copyAsset = [&](const QString &source, const QString &originalName) -> QString {
+    // attachment: FEAT-049 files are numbered attach01, attach02... over the whole export (BUG-043:
+    // their names come from the document); images keep their name (FEAT-054).
+    int attachments = 0;
+    const auto copyAsset = [&](const QString &source, const QString &originalName, bool attachment = false) -> QString {
         const QString key = QFileInfo(source).canonicalFilePath();
         if (const auto it = copied.constFind(key); it != copied.cend()) return it.value();
         if (!QDir().mkpath(assetsPath)) {
             result = {false, tr("Cannot create the folder %1.").arg(QDir::toNativeSeparators(assetsPath)), {}};
             return {};
         }
-        const QFileInfo info(originalName.isEmpty() ? QFileInfo(source).fileName() : originalName);
+        const QFileInfo info(attachment ? FileValidation::diskFileName(originalName, ++attachments)
+                             : originalName.isEmpty() ? QFileInfo(source).fileName() : originalName);
         QString name = info.fileName();
         // Due file diversi con lo stesso nome: "foto-2.png", "foto-3.png"...
         for (int n = 2; usedNames.contains(name.toLower()); ++n)
@@ -1742,7 +1748,7 @@ Document::ExportResult Document::exportMarkdown(const QString &markdownPath) {
         for (int i = 0; i < node->files.size(); ++i) {  // FEAT-049: nella cartella assets/ accanto al .md
             const QString source = fileSource(node, i);
             if (source.isEmpty()) missing = true;
-            else if (const QString relative = copyAsset(source, node->files[i].name); !relative.isEmpty())
+            else if (const QString relative = copyAsset(source, node->files[i].name, true); !relative.isEmpty())
                 lines << QStringLiteral("[%1](%2)").arg(node->files[i].name, relative);
         }
         if (missing) result.skipped.append(node->title);

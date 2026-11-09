@@ -261,7 +261,9 @@ private:
 QList<Slide> listSlides(const MindNode *node, ExtrasCache &cache) {
     const QList<const MindNode *> children = orderedChildren(node);
     const Layout layout = layoutFromKey(node->pitchLayout);
-    const Extras &titleExtras = cache.of(node);
+    // BUG-045: a copy (cheap, QImage is shared). A reference into the cache's QHash dangled once
+    // cache.of(children[i]) below made the hash grow, and the next slide copied freed memory.
+    const Extras titleExtras = cache.of(node);
     QList<Slide> result;
     for (qsizetype first = 0; first < children.size();) {
         // A slide with a figure among its items keeps fewer of them (stage A2).

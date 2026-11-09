@@ -3,6 +3,7 @@
 #include <QTimer>
 #include <QImage>
 #include <QBuffer>
+#include "richresources.h"
 #include "branchpath.h"
 #include "mapvariants.h"
 #include "mapstructure.h"
@@ -387,7 +388,7 @@ void MindMapScene::addNodeRecursive(MindNode *node) {
         const qreal halfBefore = i->anchorHalfWidth();  // FEAT-034
         const QSizeF sizeBefore = i->shapeRect().size();
         i->node()->title = title;
-        i->node()->titleHtml = html;
+        i->node()->titleHtml = RichResources::withoutExternal(html);  // BUG-044
         // P8 (2026-10-13): per i figli il dataChanged emesso qui sotto aggiorna già il nodo
         // (vedi il costruttore): prima l'aggiornamento avveniva due volte. La radice non ha
         // indice nel modello, quindi per lei si aggiorna qui.

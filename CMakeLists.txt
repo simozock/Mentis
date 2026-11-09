@@ -133,6 +133,8 @@ qt_add_library(MentisCore STATIC
     src/nodeshape.cpp
     src/nodesketch.cpp
     src/richtitle.cpp
+    src/richresources.h
+    src/richresources.cpp
     src/nodestyle.cpp
     src/mindmapscene.h
     src/mindmapscene.cpp
@@ -286,6 +288,20 @@ qt_add_executable(Mentis
 
 target_link_libraries(Mentis PRIVATE MentisCore MentisResources)
 
+# Compiler warnings for the app's own code (2026-11-09, user's request), not third_party: -Wall
+# -Wextra on GCC and Clang, without -Wmissing-field-initializers (aggregates that leave fields at
+# their defaults on purpose: 246 of the 258 warnings measured). MSVC keeps its default level.
+# MENTIS_WARNINGS_AS_ERRORS (CI on Linux) makes a new warning fail the build.
+option(MENTIS_WARNINGS_AS_ERRORS "Treat the app's compiler warnings as errors (GCC, Clang)" OFF)
+function(mentis_warnings target)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wno-missing-field-initializers
+                               $<$<BOOL:${MENTIS_WARNINGS_AS_ERRORS}>:-Werror>)
+    endif()
+endfunction()
+mentis_warnings(MentisCore)
+mentis_warnings(Mentis)
+
 # FEAT-045 / ADR-005: the guide for agents is the MCP server's instructions.
 qt_add_resources(MentisCore "mcpguide" PREFIX "/mcp" BASE "src/mcp" FILES src/mcp/mentis-mcp-guide.md)
 target_include_directories(MentisCore PUBLIC src/mcp)
@@ -374,6 +390,29 @@ elseif(APPLE)
     target_sources(Mentis PRIVATE assets/appicon/mentis.icns)
 endif()
 
+# libFuzzer (2026-11-09): one executable per target of tests/fuzz/fuzztargets.h, with AddressSanitizer
+# and UndefinedBehaviorSanitizer; clang only (CI on Linux, job "fuzz"). MentisCore gets the same
+# instrumentation so that its code is explored and checked too.
+option(MENTIS_BUILD_FUZZERS "Build the libFuzzer targets (clang)" OFF)
+if(MENTIS_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "MENTIS_BUILD_FUZZERS needs clang")
+    endif()
+    target_compile_options(MentisCore PRIVATE -fsanitize=fuzzer-no-link,address,undefined)
+    foreach(mentis_fuzz_target markdown richText mapJson document)
+        set(mentis_fuzzer MentisFuzz_${mentis_fuzz_target})
+        qt_add_executable(${mentis_fuzzer} tests/fuzz/libfuzzer.cpp tests/fuzz/fuzztargets.cpp)
+        target_link_libraries(${mentis_fuzzer} PRIVATE MentisCore)
+        if(mentis_fuzz_target STREQUAL "document")
+            target_compile_definitions(${mentis_fuzzer} PRIVATE MENTIS_FUZZ_DOCUMENT=1)
+        else()
+            target_compile_definitions(${mentis_fuzzer} PRIVATE MENTIS_FUZZ_TARGET=${mentis_fuzz_target})
+        endif()
+        target_compile_options(${mentis_fuzzer} PRIVATE -fsanitize=fuzzer,address,undefined)
+        target_link_options(${mentis_fuzzer} PRIVATE -fsanitize=fuzzer,address,undefined)
+    endforeach()
+endif()
+
 if(MENTIS_BUILD_BENCHMARKS)
     qt_add_executable(MentisBenchmark tests/performance_benchmark.cpp)
     target_link_libraries(MentisBenchmark PRIVATE MentisCore)
@@ -384,10 +423,13 @@ if(MENTIS_BUILD_MEDIA)
     find_package(Qt6 REQUIRED COMPONENTS Test)
     qt_add_executable(MentisReadmeMedia tools/media/readme_media.cpp)
     target_link_libraries(MentisReadmeMedia PRIVATE MentisCore MentisResources Qt6::Test)
-    # Promotional videos (MP4): Qt Multimedia encodes the frames, no external encoder.
-    find_package(Qt6 REQUIRED COMPONENTS Multimedia)
-    qt_add_executable(MentisPromoVideos tools/media/promo_videos.cpp)
-    target_link_libraries(MentisPromoVideos PRIVATE MentisCore MentisResources Qt6::Test Qt6::Multimedia)
+    # Promotional videos (MP4): Qt Multimedia encodes the frames, no external encoder. The tool is
+    # not published on GitHub (tools/media/PROMO.md): only where its file is.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/media/promo_videos.cpp")
+        find_package(Qt6 REQUIRED COMPONENTS Multimedia)
+        qt_add_executable(MentisPromoVideos tools/media/promo_videos.cpp)
+        target_link_libraries(MentisPromoVideos PRIVATE MentisCore MentisResources Qt6::Test Qt6::Multimedia)
+    endif()
 endif()
 
 include(GNUInstallDirs)
@@ -710,6 +752,17 @@ if(BUILD_TESTING)
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()
 
+    # Fuzzing (2026-11-09): seeded mutations through the targets of tests/fuzz/fuzztargets.h.
+    qt_add_executable(MentisFuzzTest tests/fuzz_test.cpp tests/fuzz/fuzztargets.cpp)
+    target_include_directories(MentisFuzzTest PRIVATE tests)
+    target_link_libraries(MentisFuzzTest PRIVATE MentisCore Qt6::Test)
+    add_test(NAME MentisFuzz COMMAND MentisFuzzTest)
+    set_tests_properties(MentisFuzz PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(WIN32)
+        set_tests_properties(MentisFuzz PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endif()
+
     # Storico su mappe grandi: istantanea con cache per nodo e stati annullati/ripristinati.
     qt_add_executable(MentisHistorySnapshotTest tests/history_snapshot_test.cpp)
     target_link_libraries(MentisHistorySnapshotTest PRIVATE MentisCore Qt6::Test)
@@ -759,7 +812,7 @@ if(BUILD_TESTING)
         endforeach()
     endfunction()
     # Files, document, history and autosave: they guard the user's data, so they run with every change.
-    mentis_test_area(core StorageRoundTrip Document DocumentFlow HistorySnapshot FileValidation)
+    mentis_test_area(core StorageRoundTrip Document DocumentFlow HistorySnapshot FileValidation Fuzz)
     mentis_test_area(map Tour MapLayout BalancedLayout NodeOperations NodeWidth NodeContent SelectionCommands StackingOrder
                      Relationship Numbering NodeSearch StickersMarkers TaskBox Labels Notes NodeFiles Formula NodeLinks
                      NodeLinksUi ImageStyle WheelGuard)

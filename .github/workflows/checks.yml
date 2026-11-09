@@ -1,0 +1,113 @@
+name: Checks
+
+# Deeper checks (2026-11-09, user's request), on Linux only, where the tools exist:
+# - sanitizers: the whole test suite built with AddressSanitizer and UndefinedBehaviorSanitizer
+#   (memory used after it was freed, out of bounds, undefined behaviour);
+# - clang-tidy: static analysis of src/ (bugprone, clang-analyzer), as a report;
+# - fuzz: libFuzzer on the targets of tests/fuzz/fuzztargets.h, five minutes each.
+# They do not block yet (continue-on-error): the first runs show what is there to sort out.
+# Locally the same targets run as the MentisFuzz test (seeded mutations, docs/engineering).
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'  # every Monday: the fuzzers find more with time
+
+permissions:
+  contents: read
+
+jobs:
+  sanitizers:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06  # v4.5.0
+        with:
+          version: '6.8.3'
+          arch: linux_gcc_64
+          cache: true
+      - uses: lukka/get-cmake@30aea713799f46b5b60e60f5fa83f849abd52c22  # v4.5.0-rc3 (was @latest)
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined"
+          "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+          "-DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined"
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        env:
+          # Qt keeps some memory until the process ends: leaks are not what this job looks for.
+          ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure -j 4
+
+  clang-tidy:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06  # v4.5.0
+        with:
+          version: '6.8.3'
+          arch: linux_gcc_64
+          cache: true
+      - uses: lukka/get-cmake@30aea713799f46b5b60e60f5fa83f849abd52c22  # v4.5.0-rc3 (was @latest)
+      - name: Install clang-tidy
+        run: sudo apt-get update && sudo apt-get install -y clang-tidy
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_TESTING=OFF
+      - name: Generate moc and resources
+        run: cmake --build build --target MentisCore_autogen Mentis_autogen
+      - name: Analyse src/
+        run: |
+          jq -r '.[].file' build/compile_commands.json | grep '/src/' | sort -u \
+            | xargs -P 4 -n 1 clang-tidy -p build --quiet --header-filter='/src/' \
+                --checks='-*,bugprone-*,clang-analyzer-*,-bugprone-easily-swappable-parameters,-bugprone-narrowing-conversions' \
+            > clang-tidy.txt 2>&1 || true
+          grep -c 'warning:' clang-tidy.txt || true
+          grep 'warning:' clang-tidy.txt | sed 's/.*\[\(.*\)\]$/\1/' | sort | uniq -c | sort -rn | head -30
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: clang-tidy
+          path: clang-tidy.txt
+
+  fuzz:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06  # v4.5.0
+        with:
+          version: '6.8.3'
+          arch: linux_gcc_64
+          cache: true
+      - uses: lukka/get-cmake@30aea713799f46b5b60e60f5fa83f849abd52c22  # v4.5.0-rc3 (was @latest)
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DMENTIS_BUILD_FUZZERS=ON -DBUILD_TESTING=OFF
+      - name: Build
+        run: cmake --build build --target MentisFuzz_markdown MentisFuzz_richText MentisFuzz_mapJson MentisFuzz_document
+      - name: Fuzz
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          mkdir -p crashes
+          status=0
+          for target in markdown richText mapJson document; do
+            mkdir -p "corpus/${target}"
+            cp tests/fuzz/corpus/${target}/* "corpus/${target}/"
+            # -timeout: an input that takes longer counts as a failure (a frozen app).
+            ./build/MentisFuzz_${target} "corpus/${target}" -max_total_time=300 -max_len=65536 -timeout=10 \
+              -artifact_prefix="crashes/${target}-" || status=1
+          done
+          exit $status
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: fuzz-crashes
+          path: crashes

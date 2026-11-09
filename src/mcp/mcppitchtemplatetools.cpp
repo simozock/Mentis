@@ -148,7 +148,7 @@ QList<McpServer::Tool> pitchTemplateTools(std::function<Access()> access) {
                          {"footer", stringProperty(QStringLiteral("Text at the foot of every slide"))},
                          {"numbers", QJsonObject{{"type", "boolean"}, {"description", "Slide numbers at the foot"}}}},
                         {}), false,
-                 guarded([](const Access &allowed, const QJsonObject &args) {
+                 guarded([](const Access &, const QJsonObject &args) {
                      const QString id = args.value(QStringLiteral("id")).toString();
                      std::optional<Pitch::Template> start;
                      if (id.isEmpty()) {
@@ -169,7 +169,7 @@ QList<McpServer::Tool> pitchTemplateTools(std::function<Access()> access) {
                  QStringLiteral("Adds a .mentis-theme file to the app's library (one with the same id is "
                                 "replaced); returns the template."),
                  schema({{"file", stringProperty(QStringLiteral("Absolute path of the .mentis-theme file"))}}, {QStringLiteral("file")}), false,
-                 guarded([](const Access &allowed, const QJsonObject &args) {
+                 guarded([](const Access &, const QJsonObject &args) {
                      QString error;
                      const std::optional<QString> path = existingFile(args.value(QStringLiteral("file")).toString(), &error);
                      if (!path) return ToolResult::error(error);

@@ -492,6 +492,7 @@ private:
     // da leggere, non si puo' dire eliminato (decisione 2026-10-16).
     QSet<QString> m_seenNodeIds;
     std::function<bool(const QUrl &)> m_openUrl;
+    bool m_depthLimitPending = false;  // BUG-046: the depth message is waiting to be shown
     std::function<QString()> m_pickImageFile;
     std::function<QStringList()> m_pickAttachFiles;                 // FEAT-049
     void showMarkerMenu(MindNode *node, const QString &marker, const QPoint &screenPos);

@@ -12,6 +12,33 @@ All notable changes to Mentis are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Installers of new releases come with GitHub build provenance attestations, so you can check
+  they were built from this repository (`gh attestation verify <file> --repo simozock/Mentis`).
+- A map received from someone else can no longer write files outside Mentis's own folders
+  through crafted attachment names or image ids, nor open `file:` or network-share links: only
+  web and mail links open. Attachments are opened and exported as `attach01.pdf`,
+  `attach02.docx`... while the map keeps their names. More file types (such as `.dll`, `.url`, disk images) ask before
+  opening.
+- A received map that contains database triggers or views is refused as not valid: their SQL
+  could change the map behind your back each time you saved.
+- Titles and notes no longer load images or style sheets from files or network shares, which on
+  Windows could send your credentials to another computer just by opening a map. Images pasted
+  into a note are now embedded in it, so they stay in the map and show on any computer.
+
+### Fixed
+
+- Mentis could crash when a topic had many children (about 100), at opening the map or
+  in the presentation preview.
+- A damaged or crafted map with a loop between topics, a repeated topic or more than 500 levels
+  is refused instead of crashing the app. Adding or indenting topics past 500 levels is stopped
+  with a message that suggests reorganising the map.
+- Found by the new fuzzing tests: a crafted map with repeated topic ids crashed the app on Undo,
+  and one with tables nested very deep in a title or a note froze it; both are handled now.
+- The update check no longer fails with "Could not check for updates" when GitHub's API limit
+  for the network is used up: it reads the latest release from github.com instead.
+
 ## [0.8.1] - 2026-11-06
 
 ### Added

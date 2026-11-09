@@ -1,4 +1,5 @@
 #include "markdownimport.h"
+#include "mindmapmodel.h"
 #include "richtitle.h"
 #include "markdownshortcuts.h"
 
@@ -206,6 +207,7 @@ public:
             return false;
         }
         depth = std::max(0, std::min(depth, m_stack.empty() ? 0 : m_stack.back().first + 1));
+        depth = std::min(depth, kMaxTreeDepth - 2);  // BUG-046: deeper lines stay at the last level (under a central topic)
         while (!m_stack.empty() && m_stack.back().first >= depth) m_stack.pop_back();
         // I puntatori nello stack sono solo antenati: aggiungere un fratello non li invalida.
         std::vector<Item> &siblings = m_stack.empty() ? m_result.items : m_stack.back().second->children;

@@ -488,6 +488,8 @@
   "MainWindow": {
     "Mentis": "Mentis",
     "Autosave failed: %1": "Salvataggio automatico non riuscito: %1",
+    "Too many levels": "Troppi livelli",
+    "A map can have at most %1 levels, to keep Mentis fast and reliable. This change would go past them, so it was not made.\n\nTry reorganising the map: it can probably do with fewer levels of indentation, for example with topics side by side instead of one inside the other.": "Una mappa può avere al massimo %1 livelli, per mantenere Mentis veloce e affidabile. Questa modifica li supererebbe, quindi non è stata fatta.\n\nProva a riorganizzare la mappa: probabilmente si possono ridurre i rientri, per esempio mettendo gli argomenti uno accanto all'altro invece che uno dentro l'altro.",
     "Agent: opened the map": "Agente: mappa aperta",
     "An agent wants to replace the file %1.": "Un agente vuole sostituire il file %1.",
     "Replace": "Sostituisci",

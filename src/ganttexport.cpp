@@ -258,7 +258,7 @@ void GanttPages::layoutChart() {
                 end = end.isValid() ? std::max(end, task.end) : task.end;
             }
     if (!start.isValid()) {
-        start = QDate::currentDate();
+        start = GanttToday::date();
         end = start.addDays(13);
     }
     start = start.addDays(-1);
@@ -591,7 +591,7 @@ void GanttPages::drawFooter(QPainter &painter, int index) const {
     painter.drawText(QRectF(kMarginPx, y, width / 3, 14), Qt::AlignLeft | Qt::AlignVCenter,
                      QStringLiteral("%1 · %2").arg(m_source.sheetName, what));
     painter.drawText(QRectF(kMarginPx + width * 2 / 3, y, width / 3, 14), Qt::AlignRight | Qt::AlignVCenter,
-                     tr("%1 · page %2 of %3").arg(QLocale().toString(QDate::currentDate(), QLocale::ShortFormat)).arg(index + 1).arg(count()));
+                     tr("%1 · page %2 of %3").arg(QLocale().toString(GanttToday::date(), QLocale::ShortFormat)).arg(index + 1).arg(count()));
     if (piece.kind != Kind::Chart) return;
     // The legend of the colours, in the middle: the compared snapshot's, or the critical path.
     QList<QPair<QColor, QString>> items;

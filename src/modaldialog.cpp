@@ -5,6 +5,7 @@
 
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QPixmap>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
@@ -178,6 +179,25 @@ void ModalDialog::inform(QWidget *parent, const QString &title, const QString &t
     message->setWordWrap(true);
     message->setTextInteractionFlags(Qt::TextSelectableByMouse);  // si puo' copiare il messaggio d'errore
     dialog.contentLayout()->addWidget(message);
+    dialog.cancelButton()->hide();
+    dialog.exec();
+}
+
+void ModalDialog::informWithMascot(QWidget *parent, const QPixmap &face, const QString &title, const QString &text) {
+    ModalDialog dialog(parent, title, tr("OK"), 480);
+    auto *row = new QHBoxLayout;
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(12);  // as MascotBubble: 12 px from the text
+    auto *mascot = new QLabel;
+    mascot->setObjectName(QStringLiteral("ModalMascot"));
+    mascot->setPixmap(face);
+    mascot->setFixedSize(kMascotPx, kMascotPx);
+    row->addWidget(mascot, 0, Qt::AlignVCenter);
+    auto *message = new QLabel(text);
+    message->setWordWrap(true);
+    message->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    row->addWidget(message, 1);
+    dialog.contentLayout()->addLayout(row);
     dialog.cancelButton()->hide();
     dialog.exec();
 }

@@ -325,7 +325,7 @@ void appendContentEdits(QList<MapEdit> &edits) {
                        return schema(properties, {QStringLiteral("id"), QStringLiteral("file")});
                    }(), false, {}},
                   true,
-                  [](const Access &access, const QJsonObject &args, Document &document, MindMapScene &scene, MindMapModel &model) {
+                  [](const Access &, const QJsonObject &args, Document &document, MindMapScene &scene, MindMapModel &model) {
                       QString error;
                       MindNode *node = topic(model, args, QStringLiteral("id"), &error);
                       const std::optional<QString> raw = node ? text(args, QStringLiteral("file"), true, &error, 4096) : std::nullopt;
@@ -467,7 +467,7 @@ void appendContentEdits(QList<MapEdit> &edits) {
                            {"files", QJsonObject{{"type", "array"}, {"items", QJsonObject{{"type", "string"}}}, {"minItems", 1}}}},
                           {QStringLiteral("id"), QStringLiteral("files")}), false, {}},
                   true,
-                  [](const Access &access, const QJsonObject &args, Document &document, MindMapScene &, MindMapModel &model) {
+                  [](const Access &, const QJsonObject &args, Document &document, MindMapScene &, MindMapModel &model) {
                       QString error;
                       MindNode *node = topic(model, args, QStringLiteral("id"), &error);
                       if (!node) return ToolResult::error(error);

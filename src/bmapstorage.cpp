@@ -22,6 +22,7 @@
 #include <QStandardPaths>
 #include <QUuid>
 #include <QPair>
+#include <QRegularExpression>
 #include <QMutex>
 #include <QMutexLocker>
 #include <algorithm>
@@ -52,7 +53,24 @@ bool exec(QSqlQuery &query, const QString &sql, QString *error) {
     return false;
 }
 
+// BUG-044: a .mentis may come from someone else, who can add triggers (SQL that SQLite runs by
+// itself when Mentis writes, e.g. to empty the attachments at each save) or views. Mentis never
+// creates either, so a file with them is refused; trusted_schema=OFF also keeps any schema SQL
+// from calling functions with side effects (https://www.sqlite.org/pragma.html#pragma_trusted_schema).
+bool onlyMentisSchema(QSqlDatabase &db, QString *error) {
+    QSqlQuery query(db);
+    if (!query.exec(QStringLiteral("PRAGMA trusted_schema=OFF")) ||
+        !query.exec(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type IN ('trigger','view') LIMIT 1"))) {
+        if (error) *error = query.lastError().text();
+        return false;
+    }
+    if (!query.next()) return true;
+    if (error) *error = QObject::tr("The file is not a valid Mentis document.");
+    return false;
+}
+
 bool createSchema(QSqlDatabase &db, QString *error) {
+    if (!onlyMentisSchema(db, error)) return false;
     QSqlQuery q(db);
     const QStringList statements{
         QStringLiteral("PRAGMA foreign_keys=ON"),
@@ -160,11 +178,16 @@ QPair<QString, QString> previousNodeAsset(QSqlDatabase &db, const QString &nodeI
 }
 
 QString materializeAsset(QSqlDatabase &db, const QString &id, const QString &fileName, bool thumbnail, QString *error) {
-    if (id.isEmpty()) return {};
+    // BUG-043: the id and the name come from the document and form the cache path. An id is always
+    // a SHA-256 in hex (storeAsset); anything else ("../..") could write outside the cache.
+    static const QRegularExpression assetId(QStringLiteral("^[0-9a-f]{64}$"));
+    static const QRegularExpression plainSuffix(QStringLiteral("^[A-Za-z0-9]{1,16}$"));
+    if (!assetId.match(id).hasMatch()) return {};
     const QString root = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
         + QStringLiteral("/embedded-assets/") + QFileInfo(db.databaseName()).completeBaseName();
     if (!QDir().mkpath(root)) { if (error) *error = QObject::tr("Cannot create the attachment cache."); return {}; }
     QString suffix = QFileInfo(fileName).suffix();
+    if (!plainSuffix.match(suffix).hasMatch()) suffix.clear();
     if (thumbnail) {  // the thumbnail is JPEG or, for images with transparency, PNG
         QSqlQuery type(db); type.prepare(QStringLiteral("SELECT thumbnail_mime FROM assets WHERE id=?")); type.addBindValue(id);
         if (type.exec() && type.next() && !type.value(0).toString().isEmpty())
@@ -184,7 +207,8 @@ QString materializeAsset(QSqlDatabase &db, const QString &id, const QString &fil
     if (!query.exec() || !query.next()) { if (error) *error = query.lastError().text(); return {}; }
     QSaveFile output(path);
     if (!output.open(QIODevice::WriteOnly) || output.write(query.value(0).toByteArray()) < 0 || !output.commit()) {
-        if (error) *error = output.errorString(); return {};
+        if (error) *error = output.errorString();
+        return {};
     }
     const QFileInfo info(path);
     rememberAsset(info.absoluteFilePath(), {info.size(), info.lastModified().toMSecsSinceEpoch(), id});
@@ -368,6 +392,7 @@ bool BmapStorage::load(const QString &path, MindMapModel &model, QString *error,
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name); db.setDatabaseName(path);
         if (!db.open()) { if (error) *error = db.lastError().text(); }
+        else if (!onlyMentisSchema(db, error)) {}
         else {
             QSqlQuery validation(db);
             bool valid = validation.exec(QStringLiteral("PRAGMA application_id")) && validation.next()
@@ -403,13 +428,21 @@ bool BmapStorage::load(const QString &path, MindMapModel &model, QString *error,
                 if (rootId.isEmpty() || !byId.contains(rootId)) {
                     if (error) *error = QObject::tr("The map root is missing from the document.");
                 } else {
-                    std::function<QJsonObject(const QString &)> build = [&](const QString &id) {
+                    // BUG-046: a topic met twice (a cycle, a repeated id) or a tree deeper than
+                    // kMaxTreeDepth ended in endless recursion or a stack overflow: refused.
+                    QSet<QString> built;
+                    bool malformed = false;
+                    std::function<QJsonObject(const QString &, int)> build = [&](const QString &id, int depth) {
                         QJsonObject node = byId.value(id); QJsonArray children;
+                        if (malformed || depth > kMaxTreeDepth || built.contains(id)) { malformed = true; return node; }
+                        built.insert(id);
                         auto list = byParent.value(id); std::sort(list.begin(), list.end(), [](const QJsonObject &a, const QJsonObject &b) { return a.value(QStringLiteral("row")).toInt() < b.value(QStringLiteral("row")).toInt(); });
-                        for (const QJsonObject &child : list) children.append(build(child.value(QStringLiteral("id")).toString()));
+                        for (const QJsonObject &child : list) children.append(build(child.value(QStringLiteral("id")).toString(), depth + 1));
                         node.remove(QStringLiteral("parentId")); node.remove(QStringLiteral("row")); node[QStringLiteral("children")] = children; return node;
                     };
-                    root[QStringLiteral("root")] = build(rootId); ok = model.fromJson(root, error);
+                    root[QStringLiteral("root")] = build(rootId, 1);
+                    if (malformed) { if (error) *error = QObject::tr("The file is not a valid Mentis document."); }
+                    else ok = model.fromJson(root, error);
                 }
             }
         }
@@ -425,6 +458,7 @@ QList<BmapStorage::MapInfo> BmapStorage::maps(const QString &path, QString *erro
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
         db.setDatabaseName(path);
         if (!db.open()) { if (error) *error = db.lastError().text(); }
+        else if (!onlyMentisSchema(db, error)) {}
         else {
             QSqlQuery query(db);
             if (!query.exec(QStringLiteral("SELECT id,title,sort_order FROM maps ORDER BY sort_order,id"))) {
@@ -784,7 +818,7 @@ QJsonObject BmapStorage::loadResources(const QString &path) {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
         db.setDatabaseName(path);
         db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=2000"));
-        if (db.open()) {
+        if (db.open() && onlyMentisSchema(db, nullptr)) {
             QSqlQuery query(db);
             if (query.exec(QStringLiteral("SELECT value FROM metadata WHERE key='resources'")) && query.next())
                 resources = QJsonDocument::fromJson(query.value(0).toString().toUtf8()).object();
@@ -805,7 +839,7 @@ QByteArray BmapStorage::loadPreview(const QString &path) {
         // Sola lettura; se il salvataggio automatico sta scrivendo si attende fino a 2 s invece di
         // fallire subito (https://doc.qt.io/qt-6/qsqldatabase.html#setConnectOptions).
         db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=2000"));
-        if (db.open()) {
+        if (db.open() && onlyMentisSchema(db, nullptr)) {
             QSqlQuery query(db);
             if (query.exec(QStringLiteral("SELECT jpeg FROM preview WHERE id=1")) && query.next()) jpeg = query.value(0).toByteArray();
         }
@@ -824,8 +858,8 @@ QString BmapStorage::originalAssetPath(const QString &path, const QString &asset
         db.setDatabaseName(path);
         // Come loadPreview: sola lettura, attesa breve se il salvataggio automatico sta scrivendo.
         db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=2000"));
-        if (db.open()) result = materializeAsset(db, assetId, fileName, false, error);
-        else if (error) *error = db.lastError().text();
+        if (!db.open()) { if (error) *error = db.lastError().text(); }
+        else if (onlyMentisSchema(db, error)) result = materializeAsset(db, assetId, fileName, false, error);
         db.close();
     }
     QSqlDatabase::removeDatabase(name);

@@ -11,6 +11,7 @@
 #include "nodeitem.h"
 #include "performance.h"
 #include "clipboardpaste.h"
+#include "filevalidation.h"
 
 #include <QAction>
 #include <QApplication>
@@ -30,6 +31,12 @@
 #include <QTest>
 #include <QTimer>
 #include <QUrl>
+#include <QDir>
+#include <QFileInfo>
+#include <QSqlDatabase>
+#include <QSqlError>
+#include <QSqlQuery>
+#include <QStandardPaths>
 
 #include <memory>
 
@@ -51,6 +58,8 @@ private slots:
     void pasteOnTheOutlinerItem();
     void pasteWhileTypingTheTitle();
     void savedInsideTheDocument();
+    void documentNamesAndIdsStayInTheirFolder();
+    void depthLimitShowsTheCryingMascot();
     void markdownExportCopiesTheFiles();
     void snapshotForVisualReview();
 
@@ -240,6 +249,8 @@ void NodeFilesTest::riskyFilesAskFirst() {
     QVERIFY(MainWindow::isRiskyFile(QStringLiteral("setup.EXE")));
     QVERIFY(MainWindow::isRiskyFile(QStringLiteral("script.ps1")));
     QVERIFY(!MainWindow::isRiskyFile(QStringLiteral("tesi.pdf")));
+    QVERIFY(MainWindow::isRiskyFile(QStringLiteral("libreria.dll")));  // BUG-043
+    QVERIFY(MainWindow::isRiskyFile(QStringLiteral("sito.url")));
     MindNode *node = addNode(QStringLiteral("Programma"));
     QVERIFY(m_window->attachFiles(node, {makeFile(QStringLiteral("strumento.bat"), "echo ciao")}));
     onNextModal([](ModalDialog *modal) { modal->reject(); });  // Annulla
@@ -474,6 +485,89 @@ void NodeFilesTest::savedInsideTheDocument() {
     QCOMPARE(extracted.readAll(), QByteArray("contenuto incorporato"));
 }
 
+// BUG-043: a document from someone else can hold any attachment name and asset id. The name stays
+// a plain file name and the id cannot lead outside the cache.
+void NodeFilesTest::documentNamesAndIdsStayInTheirFolder() {
+    QCOMPARE(FileValidation::diskFileName(QStringLiteral("tesi finale.pdf"), 1), QStringLiteral("attach01.pdf"));
+    QCOMPARE(FileValidation::diskFileName(QStringLiteral("../../Startup/evil.BAT"), 2), QStringLiteral("attach02.BAT"));
+    QCOMPARE(FileValidation::diskFileName(QStringLiteral("evil.exe. "), 3), QStringLiteral("attach03"));
+    QCOMPARE(FileValidation::diskFileName(QStringLiteral("nota.txt:flusso"), 4), QStringLiteral("attach04"));
+    QCOMPARE(FileValidation::diskFileName(QStringLiteral("senza estensione"), 123), QStringLiteral("attach123"));
+    QVERIFY(MainWindow::isRiskyFile(FileValidation::diskFileName(QStringLiteral("x.EXE"), 1)));
+
+    m_model->clear(QStringLiteral("Documento ricevuto"));
+    MindNode *node = addNode(QStringLiteral("Ricevuto"));
+    QVERIFY(m_window->attachFiles(node, {makeFile(QStringLiteral("ricevuto.txt"), "dal file")}));
+    const QString bmap = m_dir.filePath(QStringLiteral("ricevuto.mentis"));
+    QVERIFY(m_document->save(bmap, BmapStorage::SaveReason::Explicit).ok);
+    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    const QString escaped = cache + QStringLiteral("/mentis-escape-thumb.jpg");
+    QFile::remove(escaped);
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("bug043"));
+        db.setDatabaseName(bmap);
+        QVERIFY(db.open());
+        QSqlQuery asset(db);
+        asset.prepare(QStringLiteral("INSERT INTO assets(id,sha256,mime_type,file_name,byte_size,data,thumbnail,thumbnail_mime) "
+                                     "VALUES(?,?,?,?,?,?,?,?)"));
+        const QString badId = QStringLiteral("../../mentis-escape");
+        for (const QVariant &value : QVariantList{badId, QByteArray(32, 'x'), QStringLiteral("image/jpeg"), QStringLiteral("a.jpg"),
+                                                  4, QByteArray("JPEG"), QByteArray("JPEG"), QStringLiteral("image/jpeg")})
+            asset.addBindValue(value);
+        QVERIFY2(asset.exec(), qPrintable(asset.lastError().text()));
+        QSqlQuery payload(db);
+        payload.prepare(QStringLiteral("UPDATE nodes SET payload=json_set(CAST(payload AS TEXT), '$.files[0].name', ?, "
+                                       "'$.imageAsset', ?, '$.imageName', 'a.jpg') WHERE CAST(payload AS TEXT) LIKE '%ricevuto.txt%'"));
+        payload.addBindValue(QStringLiteral("..\\..\\mentis-escape.txt"));
+        payload.addBindValue(badId);
+        QVERIFY2(payload.exec(), qPrintable(payload.lastError().text()));
+        QCOMPARE(payload.numRowsAffected(), 1);
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(QStringLiteral("bug043"));
+    QVERIFY(m_document->open(bmap, false).ok);
+    QApplication::processEvents();
+    QVERIFY2(!QFileInfo::exists(escaped), qPrintable(escaped));
+    MindNode *back = nullptr;
+    for (const auto &child : m_model->root()->children)
+        if (child->title == QStringLiteral("Ricevuto")) back = child.get();
+    QVERIFY(back);
+    QCOMPARE(back->files.size(), 1);
+    // The name in the map stays as the document has it; the copy on disk is numbered.
+    QCOMPARE(back->files.front().name, QStringLiteral("..\\..\\mentis-escape.txt"));
+    const QString copy = m_window->openNodeFile(back, 0);
+    QVERIFY(!copy.isEmpty());
+    QCOMPARE(QFileInfo(copy).fileName(), QStringLiteral("attach01.txt"));
+    QCOMPARE(QFileInfo(QFileInfo(copy).absolutePath()).dir().dirName(), QStringLiteral("Mentis-files"));
+}
+
+// BUG-046: adding a child past the limit opens one message with the crying mascot; nothing is added.
+void NodeFilesTest::depthLimitShowsTheCryingMascot() {
+    m_model->clear(QStringLiteral("Profonda"));
+    MindNode *deepest = m_model->root();
+    for (int level = 1; level < kMaxTreeDepth; ++level) deepest = m_model->addChild(deepest, QStringLiteral("L%1").arg(level));
+    m_scene->autoLayout();
+    m_scene->selectNode(deepest);
+    QString message;
+    bool mascot = false;
+    onNextModal([&](ModalDialog *modal) {
+        for (auto *label : modal->findChildren<QLabel *>()) {
+            message += label->text();
+            if (label->objectName() == QStringLiteral("ModalMascot")) mascot = !label->pixmap().isNull();
+        }
+        modal->acceptButton()->click();
+    });
+    QAction *addChild = nullptr;
+    for (auto *action : m_window->findChildren<QAction *>())
+        if (action->text() == QStringLiteral("Add child")) addChild = action;
+    QVERIFY(addChild);
+    addChild->trigger();
+    QTRY_VERIFY(!message.isEmpty());
+    QVERIFY(mascot);
+    QVERIFY2(message.contains(QString::number(kMaxTreeDepth)), qPrintable(message));
+    QVERIFY(deepest->children.empty());
+}
+
 void NodeFilesTest::markdownExportCopiesTheFiles() {
     m_model->clear(QStringLiteral("Esportazione"));
     MindNode *node = addNode(QStringLiteral("Con allegato"));
@@ -483,8 +577,8 @@ void NodeFilesTest::markdownExportCopiesTheFiles() {
     QVERIFY2(result.ok, qPrintable(result.error));
     QFile text(markdown);
     QVERIFY(text.open(QIODevice::ReadOnly));
-    QVERIFY(QString::fromUtf8(text.readAll()).contains(QStringLiteral("[scheda.docx](assets/scheda.docx)")));
-    QVERIFY(QFile::exists(m_dir.filePath(QStringLiteral("export/assets/scheda.docx"))));
+    QVERIFY(QString::fromUtf8(text.readAll()).contains(QStringLiteral("[scheda.docx](assets/attach01.docx)")));
+    QVERIFY(QFile::exists(m_dir.filePath(QStringLiteral("export/assets/attach01.docx"))));
 }
 
 // Foto per il confronto a vista (solo con MENTIS_SNAPSHOT_DIR, piattaforma con i caratteri).

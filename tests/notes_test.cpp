@@ -9,11 +9,21 @@
 #include "nodeitem.h"
 #include "noteeditor.h"
 #include "performance.h"
+#include "richresources.h"
 #include "stylecontrols.h"
 #include "toggleswitch.h"
 
 #include <QAction>
 #include <QApplication>
+#include <QClipboard>
+#include <QElapsedTimer>
+#include <QFile>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QImage>
+#include <QMimeData>
+#include <QTemporaryDir>
+#include <QUrl>
 #include <QMenu>
 #include <QPushButton>
 #include <QStackedWidget>
@@ -41,6 +51,9 @@ private slots:
     void showAllNotesMakesRoomBelowTheNode();
     void outlinerShowsTheNoteBelowTheRow();
     void fileAndMarkdownKeepTheFormats();
+    void externalImagesNeverLoad();
+    void deeplyNestedTablesBecomeParagraphs();
+    void pastedImagesAreEmbedded();
     void snapshotForVisualReview();
 
 private:
@@ -317,6 +330,106 @@ void NotesTest::fileAndMarkdownKeepTheFormats() {
 }
 
 // Foto per il confronto a vista (solo con MENTIS_SNAPSHOT_DIR, piattaforma con i caratteri).
+// BUG-044: rich text from a document (titles, notes) keeps no image, background or style sheet
+// Qt would read from a file or a network share; embedded images stay.
+void NotesTest::externalImagesNeverLoad() {
+    QTemporaryDir dir;
+    QImage red(300, 200, QImage::Format_RGB32);
+    red.fill(Qt::red);
+    const QString png = dir.filePath(QStringLiteral("probe.png"));
+    QVERIFY(red.save(png));
+    QFile css(dir.filePath(QStringLiteral("wide.css")));
+    QVERIFY(css.open(QIODevice::WriteOnly));
+    css.write("p { margin-left: 400px; }");
+    css.close();
+    const QString cssUrl = QUrl::fromLocalFile(css.fileName()).toString();
+    const QString share = QStringLiteral("//127.0.0.1/") + png.left(1) + QStringLiteral("$") + png.mid(2);
+    const auto width = [](const QString &html) {
+        QTextDocument document;
+        document.setHtml(RichResources::withoutExternal(html));
+        return document.idealWidth();
+    };
+    const auto image = [](const QString &source) { return QStringLiteral("<p>x<img src=\"%1\"></p>").arg(source); };
+    for (const QString &source : {QUrl::fromLocalFile(png).toString(), png, share, QStringLiteral("file:") + share})
+        QVERIFY2(width(image(source)) < 100, qPrintable(source));
+    for (const QString &background : {QStringLiteral("<table background=\"%1\"><tr><td>x</td></tr></table>"),
+                                      QStringLiteral("<table><tr><td style=\"background-image: url(%1)\">x</td></tr></table>"),
+                                      QStringLiteral("<p style=\"background-image: url('%1')\">x</p>")})
+        QVERIFY2(!RichResources::withoutExternal(background.arg(png)).contains(QStringLiteral("probe.png")), qPrintable(background));
+    QVERIFY(width(QStringLiteral("<html><head><link rel=\"stylesheet\" type=\"text/css\" href=\"%1\"></head><body><p>x</p></body></html>").arg(cssUrl)) < 100);
+    QVERIFY(width(QStringLiteral("<html><head><style>@import url(%1);</style></head><body><p>x</p></body></html>").arg(cssUrl)) < 100);
+    QVERIFY(width(image(RichResources::dataUrl(red))) >= 300);  // embedded: kept
+    const QString plain = QStringLiteral("<p>Solo <b>testo</b></p>");
+    QCOMPARE(RichResources::withoutExternal(plain), plain);  // nothing to clean: unchanged
+    // From a file: the title is cleaned when the map is read.
+    MindMapModel model;
+    QJsonObject child{{QStringLiteral("id"), QStringLiteral("n1")}, {QStringLiteral("title"), QStringLiteral("x")},
+                      {QStringLiteral("titleHtml"), image(share)}};
+    QJsonObject root{{QStringLiteral("id"), QStringLiteral("r")}, {QStringLiteral("title"), QStringLiteral("Radice")},
+                     {QStringLiteral("children"), QJsonArray{child}}};
+    QString error;
+    QVERIFY2(model.fromJson(QJsonObject{{QStringLiteral("root"), root}}, &error), qPrintable(error));
+    QVERIFY(!model.root()->children.front()->titleHtml.contains(QStringLiteral("127.0.0.1")));
+}
+
+// BUG-048 (found by fuzzing): Qt's layout time grows tenfold every four levels of nested tables;
+// 20 levels froze the app. Past kMaxTableNesting they become paragraphs, quickly, text kept.
+void NotesTest::deeplyNestedTablesBecomeParagraphs() {
+    const QString shallow = QStringLiteral("<table><tr><td>").repeated(RichResources::kMaxTableNesting) + QStringLiteral("dentro");
+    QCOMPARE(RichResources::safeToParse(shallow), shallow);  // within the limit: unchanged
+    for (const QString &opening : {QStringLiteral("<table><tr><td>"), QStringLiteral("<TABLE><tr><td<body>")}) {
+        const QString html = opening.repeated(40) + QStringLiteral("dentro") + QStringLiteral("</td></tr></table>").repeated(40);
+        QElapsedTimer timer;
+        timer.start();
+        const QString clean = RichResources::withoutExternal(html);
+        QTextDocument document;
+        document.setHtml(clean);
+        document.idealWidth();
+        QVERIFY2(timer.elapsed() < 2000, qPrintable(QString::number(timer.elapsed())));
+        QVERIFY(!clean.contains(QStringLiteral("table"), Qt::CaseInsensitive));
+        QVERIFY(document.toPlainText().contains(QStringLiteral("dentro")));
+    }
+}
+
+void NotesTest::pastedImagesAreEmbedded() {
+    QTemporaryDir dir;
+    QImage green(120, 80, QImage::Format_RGB32);
+    green.fill(Qt::green);
+    const QString png = dir.filePath(QStringLiteral("dal-disco.png"));
+    QVERIFY(green.save(png));
+    QImage blue(60, 40, QImage::Format_RGB32);
+    blue.fill(Qt::blue);
+    MindNode *node = addNode(QStringLiteral("Immagini incollate"));
+    m_scene->selectNode(node);
+    actionWithText(QStringLiteral("Note"))->trigger();
+    QApplication::processEvents();
+    QTextEdit *text = m_editor->textEdit();
+    const auto paste = [text](const QString &html, const QImage &image) {
+        auto *mime = new QMimeData;
+        if (!html.isEmpty()) mime->setHtml(html);
+        if (!image.isNull()) mime->setImageData(image);
+        QApplication::clipboard()->setMimeData(mime);
+        text->paste();
+    };
+    // A local file and one web image with the browser's picture: both embedded.
+    paste(QStringLiteral("<p>a<img src=\"%1\">b<img src=\"https://example.invalid/x.png\"></p>").arg(QUrl::fromLocalFile(png).toString()), blue);
+    QString html = text->toHtml();
+    QCOMPARE(html.count(QStringLiteral("data:image/")), 2);
+    QVERIFY(!html.contains(QStringLiteral("dal-disco.png")));
+    QVERIFY(!html.contains(QStringLiteral("example.invalid")));
+    // Two web images without a picture: nothing to embed, both removed.
+    text->clear();
+    paste(QStringLiteral("<p>c<img src=\"https://example.invalid/1.png\"><img src=\"https://example.invalid/2.png\">d</p>"), QImage());
+    QCOMPARE(text->toPlainText(), QStringLiteral("cd"));
+    // A picture alone (a screenshot): embedded.
+    text->clear();
+    paste(QString(), blue);
+    QCOMPARE(text->toHtml().count(QStringLiteral("data:image/")), 1);
+    QTest::keyClick(text, Qt::Key_Escape);  // closes and saves
+    QApplication::processEvents();
+    QVERIFY(node->notesHtml.contains(QStringLiteral("data:image/")));
+}
+
 void NotesTest::snapshotForVisualReview() {
     const QString dir = qEnvironmentVariable("MENTIS_SNAPSHOT_DIR");
     if (dir.isEmpty()) QSKIP("MENTIS_SNAPSHOT_DIR non impostata");

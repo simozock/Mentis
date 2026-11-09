@@ -5,6 +5,7 @@
 #include "markdownimport.h"
 #include "pitch.h"
 #include "pitchtemplate.h"
+#include "richresources.h"
 #include "richtitle.h"
 #include "latexrenderer.h"
 
@@ -336,11 +337,11 @@ QJsonObject nodeToJson(const MindNode *node) {
 // nell'annulla incrementale. Le righe sono quelle che prima stavano in nodeFromJson.
 void applyNodeFields(MindNode *node, const QJsonObject &in) {
     node->title = in["title"].toString(QObject::tr("Topic"));
-    node->titleHtml = in["titleHtml"].toString();
+    node->titleHtml = RichResources::withoutExternal(in["titleHtml"].toString());  // BUG-044
     node->topicLink = in["topicLink"].toString();  // FEAT-027: assenti = nessun collegamento
     node->webLink = in["webLink"].toString();
     node->notes = in["notes"].toString();
-    node->notesHtml = node->notes.isEmpty() ? QString() : in["notesHtml"].toString();  // FEAT-059
+    node->notesHtml = node->notes.isEmpty() ? QString() : RichResources::withoutExternal(in["notesHtml"].toString());  // FEAT-059, BUG-044
     // FEAT-019: valori di stile scelti a mano; assenti o non validi = ricavati dalla cascata.
     auto color = [&in](const char *key) -> std::optional<QColor> {
         const QColor value(in[QLatin1String(key)].toString());
@@ -458,6 +459,22 @@ void applyNodeFields(MindNode *node, const QJsonObject &in) {
     node->pitchLayout = Pitch::validLayout(in["pitchLayout"].toString());
 }
 
+}  // namespace
+
+int jsonTreeDepth(const QJsonObject &node) {
+    int deepest = 0;
+    std::vector<std::pair<QJsonObject, int>> pending{{node, 1}};
+    while (!pending.empty() && deepest <= kMaxTreeDepth) {
+        const auto [current, depth] = std::move(pending.back());
+        pending.pop_back();
+        deepest = std::max(deepest, depth);
+        for (const QJsonValue &child : current.value(QStringLiteral("children")).toArray())
+            pending.emplace_back(child.toObject(), depth + 1);
+    }
+    return deepest;
+}
+
+namespace {
 std::unique_ptr<MindNode> nodeFromJson(const QJsonObject &in, MindNode *parent) {
     auto node = makeNode(in["title"].toString(QObject::tr("Topic")), parent);
     node->id = in["id"].toString(node->id);
@@ -484,6 +501,32 @@ QJsonArray summariesToJson(const QList<Summary> &summaries) {
 
 // Entries without an id, topics or topic are skipped; old id lists are not read (no backward
 // compatibility during development, user rule).
+// BUG-047 (found by fuzzing): the ids of a map's topics, the summary topics' included, are all
+// different and none is empty ("" is the central topic's parent in the flat snapshot). A repeated
+// one made toFlatSnapshot/fromFlatSnapshot (the history) loop until the stack ran out. A topic
+// without an id, or with one that is not text, gets a new one (nodeFromJson). Also checks the
+// depth of each summary topic's branch (BUG-046).
+bool validTopicTrees(const QJsonObject &root, const QJsonArray &summaries) {
+    std::vector<QJsonObject> pending{root};
+    for (const QJsonValue &summary : summaries) {
+        const QJsonObject topic = summary.toObject().value(QStringLiteral("topic")).toObject();
+        if (topic.isEmpty()) continue;
+        if (jsonTreeDepth(topic) > kMaxTreeDepth) return false;
+        pending.push_back(topic);
+    }
+    QSet<QString> seen;
+    while (!pending.empty()) {
+        const QJsonObject node = std::move(pending.back());
+        pending.pop_back();
+        if (const QJsonValue id = node.value(QStringLiteral("id")); id.isString()) {
+            if (id.toString().isEmpty() || seen.contains(id.toString())) return false;
+            seen.insert(id.toString());
+        }
+        for (const QJsonValue &child : node.value(QStringLiteral("children")).toArray()) pending.push_back(child.toObject());
+    }
+    return true;
+}
+
 QList<Summary> summariesFromJson(const QJsonArray &array) {
     QList<Summary> summaries;
     for (const QJsonValue &value : array) {
@@ -844,6 +887,7 @@ QJsonObject MindMapModel::subtreeToJson(const MindNode *node) const {
 
 MindNode *MindMapModel::insertSubtree(MindNode *parentNode, int row, const QJsonObject &json, bool freshIds) {
     if (!parentNode || json.isEmpty()) return nullptr;
+    if (levelOf(parentNode) + jsonTreeDepth(json) > kMaxTreeDepth) { emit depthLimitReached(); return nullptr; }  // BUG-046
     auto node = nodeFromJson(json, parentNode);
     if (freshIds) assignFreshIds(node.get());
     MindNode *const summary = summaryTopicOf(parentNode);  // FEAT-052: a summary topic's branch
@@ -1079,7 +1123,7 @@ bool MindMapModel::setTitle(const QModelIndex &idx, const QString &title, const 
     if (!node) return false;
     if (node->title == title && node->titleHtml == html) return true;  // come B2 in setData
     node->title = title;
-    node->titleHtml = html;
+    node->titleHtml = RichResources::withoutExternal(html);  // BUG-044
     emit dataChanged(idx, idx, {Qt::EditRole, Qt::DisplayRole, TitleHtmlRole});
     emit structureChanged();
     return true;
@@ -1199,6 +1243,25 @@ QModelIndex MindMapModel::indexFromNode(MindNode *node) const {
     return createIndex(rowOf(node), 0, node);
 }
 
+int MindMapModel::levelOf(const MindNode *node) {
+    int level = 0;
+    for (; node; node = node->parent) ++level;
+    return level;
+}
+
+int MindMapModel::branchLevels(const MindNode *node) {
+    if (!node) return 0;
+    int deepest = 0;
+    std::vector<std::pair<const MindNode *, int>> pending{{node, 1}};
+    while (!pending.empty()) {
+        const auto [current, level] = pending.back();
+        pending.pop_back();
+        deepest = std::max(deepest, level);
+        for (const auto &child : current->children) pending.emplace_back(child.get(), level + 1);
+    }
+    return deepest;
+}
+
 MindNode *MindMapModel::addChild(MindNode *parentNode) {
     if (!parentNode) parentNode = m_root.get();
     return addChild(parentNode, defaultTitle(parentNode, siblingCountFor(parentNode) + 1));
@@ -1206,6 +1269,7 @@ MindNode *MindMapModel::addChild(MindNode *parentNode) {
 
 MindNode *MindMapModel::addChild(MindNode *parentNode, const QString &title) {
     if (!parentNode) parentNode = m_root.get();
+    if (levelOf(parentNode) >= kMaxTreeDepth) { emit depthLimitReached(); return nullptr; }  // BUG-046
     MindNode *const summary = summaryTopicOf(parentNode);  // FEAT-052: a summary topic's branch, not in the rows
     // Gli argomenti mobili stanno in fondo ai figli del centrale (come nell'outliner): un
     // ramo principale nuovo va prima del primo.
@@ -1276,6 +1340,7 @@ MindNode *MindMapModel::addSiblingBefore(MindNode *node) {
 }
 
 MindNode *MindMapModel::insertParent(MindNode *node) {
+    if (node && levelOf(node) + branchLevels(node) > kMaxTreeDepth) { emit depthLimitReached(); return nullptr; }  // BUG-046
     MindNode *created = addSiblingBefore(node);
     if (!created) return nullptr;
     created->side = node->side;
@@ -1331,6 +1396,7 @@ bool MindMapModel::indentNode(MindNode *node) {
     const int row = rowOf(node);
     if (row <= 0) return false;
     auto *newParent = oldParent->children[row - 1].get();
+    if (levelOf(newParent) + branchLevels(node) > kMaxTreeDepth) { emit depthLimitReached(); return false; }  // BUG-046
     MindNode *const summary = summaryTopicOf(oldParent);  // FEAT-052: no rows to move there
     // B8 (2026-10-13): il reset del modello riapriva tutti i rami chiusi dell'outliner
     // (modelReset -> expandAll) e ricostruiva da zero mappa e outliner. Con
@@ -1383,6 +1449,10 @@ bool MindMapModel::moveNode(MindNode *node, MindNode *newParent, int row) {
     if (node->summaryTopic || summaryTopicOf(node->parent) != summary) return false;
     for (auto *ancestor = newParent; ancestor; ancestor = ancestor->parent)
         if (ancestor == node) return false;
+    if (newParent != node->parent && levelOf(newParent) + branchLevels(node) > kMaxTreeDepth) {  // BUG-046
+        emit depthLimitReached();
+        return false;
+    }
 
     auto *oldParent = node->parent;
     const int oldRow = rowOf(node);
@@ -1586,7 +1656,11 @@ QJsonObject MindMapModel::toJson() const {
 }
 
 bool MindMapModel::fromJson(const QJsonObject &object, QString *error) {
-    if (!object["root"].isObject()) { if (error) *error = tr("Invalid map format."); return false; }
+    if (!object["root"].isObject() || jsonTreeDepth(object["root"].toObject()) > kMaxTreeDepth  // BUG-046
+        || !validTopicTrees(object["root"].toObject(), object["summaries"].toArray())) {  // BUG-047
+        if (error) *error = tr("Invalid map format.");
+        return false;
+    }
     beginResetModel();
     m_root = nodeFromJson(object["root"].toObject(), nullptr);
     relations = Relationships::listFromJson(object["relations"].toArray());  // FEAT-053
@@ -1689,8 +1763,12 @@ bool MindMapModel::fromFlatSnapshot(const QHash<QString, QJsonObject> &snapshot,
     QHash<QString, QList<QJsonObject>> childrenByParent;
     for (auto it = snapshot.cbegin(); it != snapshot.cend(); ++it)
         if (it.key() != QStringLiteral("@map")) childrenByParent[it.value()["parent"].toString()].append(it.value());
+    QSet<QString> built;  // BUG-047: a topic met twice (a cycle) stops the rebuild
+    bool cycle = false;
     std::function<QJsonObject(const QString &)> build = [&](const QString &id) {
         QJsonObject node = snapshot.value(id);
+        if (cycle || built.contains(id)) { cycle = true; return node; }
+        built.insert(id);
         auto children = childrenByParent.value(id);
         std::sort(children.begin(), children.end(), [](const QJsonObject &a, const QJsonObject &b) { return a["row"].toInt() < b["row"].toInt(); });
         QJsonArray array;
@@ -1701,6 +1779,7 @@ bool MindMapModel::fromFlatSnapshot(const QHash<QString, QJsonObject> &snapshot,
     };
     if (!snapshot.contains(rootId)) { if (error) *error = tr("Invalid history."); return false; }
     map["root"] = build(rootId);
+    if (cycle) { if (error) *error = tr("Invalid history."); return false; }
     return fromJson(map, error);
 }
 

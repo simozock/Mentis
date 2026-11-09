@@ -29,4 +29,11 @@ QString webAddress(const QString &typed) {
     return url.toString();
 }
 
+bool canOpen(const QUrl &url) {
+    if (!url.isValid()) return false;
+    const QString scheme = url.scheme().toLower();
+    if (scheme == QStringLiteral("mailto")) return !url.path().isEmpty();
+    return (scheme == QStringLiteral("http") || scheme == QStringLiteral("https")) && !url.host().isEmpty();
+}
+
 }  // namespace NodeLinks

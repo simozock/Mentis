@@ -28,13 +28,18 @@ bool isNewer(const QString &candidate, const QString &current);
 struct Release {
     QString version;       // without "v"
     QUrl pageUrl;          // the release on GitHub
-    QUrl installerUrl;     // Mentis-X.Y.Z-setup-x64.exe; empty if the release has none
+    QUrl installerUrl;     // Mentis-X.Y.Z-setup-x64.exe
     QString installerName;
-    QUrl checksumsUrl;     // SHA256SUMS; empty if the release has none
+    QUrl checksumsUrl;     // SHA256SUMS
 };
-// GitHub's "latest release" JSON (https://docs.github.com/en/rest/releases/releases#get-the-latest-release).
-// ok = false when it is not a release with a version tag.
-Release parseRelease(const QByteArray &json, bool *ok);
+// The release behind a ".../releases/tag/<tag>" page, the target of GitHub's /releases/latest
+// redirect. The assets have fixed names (release.yml), so their ".../releases/download/<tag>/<name>"
+// addresses are built, not read. A ".../releases" target (no release published): ok, empty release.
+// ok = false for anything else, a tag that is not a version included.
+Release releaseFromPage(const QUrl &page, bool *ok);
+// releaseFromPage on a redirect's Location (relative or absolute); ok = false if it leaves the asked
+// scheme and host, since the download addresses are built on it.
+Release releaseFromRedirect(const QUrl &asked, const QUrl &location, bool *ok);
 QString installerFileName(const QString &version);
 // The hex SHA-256 of fileName in a sha256sum file ("<hash>  <name>" or "<hash> *<name>"); empty if absent.
 QByteArray checksumFor(const QByteArray &sums, const QString &fileName);
@@ -58,7 +63,9 @@ struct Settings {
 
 }  // namespace Updates
 
-// One request to the latest-release API; finished exactly once, then the object can be deleted.
+// One request to github.com/.../releases/latest, read from its redirect, not to api.github.com: the
+// API allows 60 unauthenticated requests per hour and IP, often used up on shared networks.
+// finished exactly once, then the object can be deleted.
 class UpdateChecker : public QObject {
     Q_OBJECT
 public:
@@ -67,8 +74,8 @@ public:
     void start(const QUrl &url = defaultUrl());
 
 signals:
-    // ok = false: no network, an error from GitHub or an answer that is not a release. No release
-    // published yet: ok with an empty release.
+    // ok = false: no network, an error from GitHub or an answer that is not a release page. No
+    // release published yet: ok with an empty release.
     void finished(bool ok, const Updates::Release &release);
 
 private:

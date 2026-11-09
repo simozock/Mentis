@@ -24,5 +24,6 @@ Areas that deserve particular care:
 
 - opening `.mentis` files and importing Markdown received from others;
 - attachments and links inside a map;
-- the MCP server (`Mentis --mcp`), which lets an AI agent read and change maps in the folders you
-  allow.
+- the MCP server (`Mentis --mcp`): once turned on in Settings, it lets an AI agent read and change
+  any map on the computer, and attach files and images to them; deleting a sheet or replacing a
+  file needs your confirmation.

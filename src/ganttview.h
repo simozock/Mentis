@@ -113,7 +113,7 @@ public:
     // FEAT-083 (export): day at the left edge, and no card corners painted.
     void setFirstDay(const QDate &day);
     void setPrinting(bool printing) { m_printing = printing; }
-    void scrollToToday() { scrollToDay(QDate::currentDate()); }
+    void scrollToToday() { scrollToDay(GanttToday::date()); }
     // Today; the last task's end when the plan ended before today; the first task's start when it
     // has not begun yet (user, 2026-10-30).
     QDate openingDay() const;

@@ -39,7 +39,7 @@ constexpr int kRoomPx = 48;      // the bubble keeps this far from the other hol
 }  // namespace
 
 QPixmap Mascot::face(Face face, int sizePx) {
-    static const char *const names[] = {"smile", "hello", "look", "think", "cheer"};
+    static const char *const names[] = {"smile", "hello", "look", "think", "cheer", "cry"};
     const qreal ratio = qApp->devicePixelRatio();
     QPixmap pixmap(QStringLiteral(":/assets/mascot/brain-%1.png").arg(QLatin1String(names[static_cast<int>(face)])));
     pixmap = pixmap.scaled(QSize(sizePx, sizePx) * ratio, Qt::KeepAspectRatio, Qt::SmoothTransformation);
