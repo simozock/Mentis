@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <vector>
 
 namespace RichResources {
 namespace {
@@ -90,6 +91,56 @@ bool removeExternal(QTextDocument &doc) {
     return changed || !edits.isEmpty();
 }
 
+// Tables inside tables in frame (0 without tables), without recursion: the frames Qt built.
+int tableNesting(QTextFrame *frame) {
+    int deepest = 0;
+    std::vector<std::pair<QTextFrame *, int>> pending{{frame, 0}};
+    while (!pending.empty()) {
+        const auto [current, depth] = pending.back();
+        pending.pop_back();
+        deepest = std::max(deepest, depth);
+        for (QTextFrame *child : current->childFrames())
+            pending.emplace_back(child, depth + (qobject_cast<QTextTable *>(child) ? 1 : 0));
+    }
+    return deepest;
+}
+
+// A second pass on the text (BUG-044, CI 2026-11-09): with Qt 6.8 on Linux and macOS a table's
+// background attribute stayed in the HTML although removeExternal had cleared it here. Whatever
+// Qt kept, a background attribute or a CSS url() that is not embedded goes.
+QString withoutExternalAttributes(QString html) {
+    static const QRegularExpression attribute(
+        QStringLiteral("\\s+background\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression cssUrl(QStringLiteral("url\\s*\\(\\s*(\"[^\"]*\"|'[^']*'|[^)]*)\\s*\\)"),
+                                           QRegularExpression::CaseInsensitiveOption);
+    const auto value = [](const QRegularExpressionMatch &match) {
+        QString text = match.captured(1).trimmed();
+        if (text.size() >= 2 && (text.front() == QLatin1Char('"') || text.front() == QLatin1Char('\''))) text = text.mid(1, text.size() - 2);
+        return text.trimmed();
+    };
+    for (qsizetype from = 0;;) {
+        const QRegularExpressionMatch match = attribute.match(html, from);
+        if (!match.hasMatch()) break;
+        if (isEmbedded(value(match))) {
+            from = match.capturedEnd();
+        } else {
+            html.remove(match.capturedStart(), match.capturedLength());
+            from = match.capturedStart();
+        }
+    }
+    for (qsizetype from = 0;;) {
+        const QRegularExpressionMatch match = cssUrl.match(html, from);
+        if (!match.hasMatch()) break;
+        if (isEmbedded(value(match))) {
+            from = match.capturedEnd();
+        } else {
+            html.replace(match.capturedStart(), match.capturedLength(), QStringLiteral("none"));
+            from = match.capturedStart() + 4;
+        }
+    }
+    return html;
+}
+
 }  // namespace
 
 QString safeToParse(const QString &html) {
@@ -109,24 +160,21 @@ QString safeToParse(const QString &html) {
     }
     // BUG-048 (found by fuzzing): Qt lays nested tables out in a time that grows tenfold every four
     // levels (measured 2026-11-09: 12 levels 0.09 s, 16 levels 0.9 s, 20 levels over 30 s), so a
-    // few hundred bytes in a title froze the app. Mentis makes no nested tables (a Markdown table
-    // is one level): past kMaxTableNesting the tables become paragraphs and their text stays.
-    static const QRegularExpression tableTag(QStringLiteral("<\\s*(/?)\\s*table\\b"), QRegularExpression::CaseInsensitiveOption);
-    int depth = 0, deepest = 0;
-    for (auto it = tableTag.globalMatch(result); it.hasNext() && deepest <= kMaxTableNesting;) {
-        depth = it.next().captured(1).isEmpty() ? depth + 1 : std::max(0, depth - 1);
-        deepest = std::max(deepest, depth);
-    }
-    if (deepest > kMaxTableNesting) {
-        static const QRegularExpression structure(QStringLiteral("<\\s*/?\\s*(table|tr|tbody|thead|tfoot|caption|col|colgroup)\\b[^>]*>"),
-                                                  QRegularExpression::CaseInsensitiveOption);
-        static const QRegularExpression cellStart(QStringLiteral("<\\s*(td|th)\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption);
-        static const QRegularExpression cellEnd(QStringLiteral("<\\s*/\\s*(td|th)\\s*>"), QRegularExpression::CaseInsensitiveOption);
-        result.remove(structure);
-        result.replace(cellStart, QStringLiteral("<p>"));
-        result.replace(cellEnd, QStringLiteral("</p>"));
-    }
-    return result;
+    // few hundred bytes in a title froze the app. Counting the tags is not enough: Qt repairs broken
+    // HTML and reopens tables by itself (CI's fuzzer, 2026-11-09: 6 <table> tags, 15 nested tables).
+    // So the HTML is parsed (quick; the layout is the slow part) and the tables Qt built are
+    // measured. Mentis makes no tables: past kMaxTableNesting only the plain text stays (user's
+    // decision 2026-11-09).
+    static const QRegularExpression maybeTable(QStringLiteral("<\\s*t"), QRegularExpression::CaseInsensitiveOption);
+    if (!maybeTable.match(result).hasMatch()) return result;
+    QTextDocument doc;
+    doc.setHtml(result);
+    if (tableNesting(doc.rootFrame()) <= kMaxTableNesting) return result;
+    QString text = doc.toPlainText();
+    text.remove(QChar::ObjectReplacementCharacter);
+    QString paragraphs;
+    for (const QString &line : text.split(QLatin1Char('\n'))) paragraphs += QStringLiteral("<p>") + line.toHtmlEscaped() + QStringLiteral("</p>");
+    return paragraphs;
 }
 
 QString withoutExternal(const QString &html) {
@@ -136,7 +184,7 @@ QString withoutExternal(const QString &html) {
     if (!resource.match(parsable).hasMatch()) return parsable;
     QTextDocument doc;
     doc.setHtml(parsable);
-    return removeExternal(doc) ? doc.toHtml() : parsable;
+    return withoutExternalAttributes(removeExternal(doc) ? doc.toHtml() : parsable);
 }
 
 QString dataUrl(const QImage &image) {

@@ -34,6 +34,8 @@ All notable changes to Mentis are listed here, newest first. The format follows
 - A damaged or crafted map with a loop between topics, a repeated topic or more than 500 levels
   is refused instead of crashing the app. Adding or indenting topics past 500 levels is stopped
   with a message that suggests reorganising the map.
+- Closing a window no longer runs code on parts of it already taken down (found by the new
+  sanitizer checks).
 - Found by the new fuzzing tests: a crafted map with repeated topic ids crashed the app on Undo,
   and one with tables nested very deep in a title or a note froze it; both are handled now.
 - The update check no longer fails with "Could not check for updates" when GitHub's API limit

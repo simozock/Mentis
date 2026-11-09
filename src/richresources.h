@@ -15,8 +15,9 @@ namespace RichResources {
 inline constexpr int kMaxTableNesting = 4;
 
 // html without what Qt would read while parsing it, <link> tags and <style> blocks with an at-rule
-// (@import), and without tables nested deeper than kMaxTableNesting, which Qt takes very long to
-// lay out. Safe to give to QTextDocument::setHtml; images are still there.
+// (@import). When the tables Qt builds from it nest deeper than kMaxTableNesting, which Qt takes
+// very long to lay out, only its plain text, in paragraphs. Safe to give to
+// QTextDocument::setHtml; images are still there.
 QString safeToParse(const QString &html);
 
 // html with no external resource: safeToParse, then images and background images that are not

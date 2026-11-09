@@ -385,7 +385,8 @@ void NotesTest::deeplyNestedTablesBecomeParagraphs() {
         QTextDocument document;
         document.setHtml(clean);
         document.idealWidth();
-        QVERIFY2(timer.elapsed() < 2000, qPrintable(QString::number(timer.elapsed())));
+        if (!qEnvironmentVariableIsSet("MENTIS_SANITIZED"))  // CI's sanitizer job runs several times slower
+            QVERIFY2(timer.elapsed() < 2000, qPrintable(QString::number(timer.elapsed())));
         QVERIFY(!clean.contains(QStringLiteral("table"), Qt::CaseInsensitive));
         QVERIFY(document.toPlainText().contains(QStringLiteral("dentro")));
     }

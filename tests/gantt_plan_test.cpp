@@ -558,8 +558,9 @@ void GanttPlanTest::performance() {
     qInfo("schedule of 1000 tasks / 2000 dependencies: %.2f ms", elapsed);
     QCOMPARE(schedule.tasks.size(), 1000);
     QVERIFY(schedule.ignoredDependencies.isEmpty());
-#ifdef NDEBUG  // the budget is for Release builds (FEAT-074)
-    QVERIFY2(elapsed < 20, qPrintable(QStringLiteral("%1 ms").arg(elapsed)));
+#ifdef NDEBUG  // the budget is for Release builds (FEAT-074), not slowed down by the sanitizers (CI)
+    if (!qEnvironmentVariableIsSet("MENTIS_SANITIZED"))
+        QVERIFY2(elapsed < 20, qPrintable(QStringLiteral("%1 ms").arg(elapsed)));
 #endif
 
     // Loading stays linear: 5,000 nested tasks and a dependency chain with a cycle back to the top.

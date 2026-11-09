@@ -42,6 +42,7 @@ jobs:
           # Qt keeps some memory until the process ends: leaks are not what this job looks for.
           ASAN_OPTIONS: detect_leaks=0:abort_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1
+          MENTIS_SANITIZED: '1'  # the tests skip their time budgets
         run: ctest --test-dir build --output-on-failure -j 4
 
   clang-tidy:

@@ -11,6 +11,8 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
+#include <QPair>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -26,6 +28,7 @@ class FuzzTest final : public QObject {
 
 private slots:
     void replay();
+    void corpus();
     void markdown();
     void richText();
     void mapJson();
@@ -220,6 +223,32 @@ void FuzzTest::replay() {
     else if (target == QStringLiteral("map-json")) FuzzTargets::mapJson(data);
     else if (target == QStringLiteral("document")) FuzzTargets::document(data, folder.path());
     else QFAIL("MENTIS_FUZZ_REPLAY_TARGET: markdown, rich-text, map-json or document");
+}
+
+// The examples in tests/fuzz/corpus, the libFuzzer seeds and what it found on CI (regressions), each
+// through its target within two seconds.
+void FuzzTest::corpus() {
+    QTemporaryDir folder;
+    const QList<QPair<QString, std::function<void(const QByteArray &)>>> targets{
+        {QStringLiteral("markdown"), &FuzzTargets::markdown},
+        {QStringLiteral("richText"), &FuzzTargets::richText},
+        {QStringLiteral("mapJson"), &FuzzTargets::mapJson},
+        {QStringLiteral("document"), [&folder](const QByteArray &data) { FuzzTargets::document(data, folder.path()); }}};
+    int files = 0;
+    for (const auto &[name, target] : targets) {
+        const QDir dir(QStringLiteral(MENTIS_FUZZ_CORPUS) + QLatin1Char('/') + name);
+        for (const QFileInfo &info : dir.entryInfoList(QDir::Files)) {
+            QFile file(info.filePath());
+            QVERIFY(file.open(QIODevice::ReadOnly));
+            QElapsedTimer timer;
+            timer.start();
+            target(file.readAll());
+            if (!qEnvironmentVariableIsSet("MENTIS_SANITIZED"))
+                QVERIFY2(timer.elapsed() < 2000, qPrintable(QStringLiteral("%1: %2 ms").arg(info.fileName()).arg(timer.elapsed())));
+            ++files;
+        }
+    }
+    QVERIFY(files >= 4);
 }
 
 void FuzzTest::markdown() {

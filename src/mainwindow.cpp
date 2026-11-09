@@ -7554,7 +7554,9 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
     // selecting or dragging it; a rectangle dragged from an empty place gives it to every topic it
     // touches (user's request 2026-11-01), the selection unchanged. A click on an empty place, the
     // right button or Esc turn the painter off.
-    if (m_formatPainterBandOrigin && watched == m_view->viewport()) {
+    // BUG-049: only mouse moves and releases are mouse events here (UBSan: the cast of any event).
+    if (m_formatPainterBandOrigin && watched == m_view->viewport()
+        && (event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonRelease)) {
         auto *mouse = static_cast<QMouseEvent *>(event);
         const QRect band = QRect(*m_formatPainterBandOrigin, event->type() == QEvent::MouseMove || event->type() == QEvent::MouseButtonRelease
                                                                  ? mouse->position().toPoint() : *m_formatPainterBandOrigin).normalized();
@@ -8285,6 +8287,16 @@ MainWindow::~MainWindow() {
     // FEAT-017: la scena viene distrutta dopo i widget; svuotandosi notifica un cambio di selezione
     // che arriverebbe al pannello laterale gia' distrutto (crash in chiusura con un nodo selezionato).
     disconnect(m_scene, nullptr, this, nullptr);
+    // BUG-049 (UBSan, CI 2026-11-09): after this body the base classes delete the child widgets,
+    // and some still signal while they go (the map's scroll bars, the side panel's dock): the
+    // lambdas connected to this window then ran on a MainWindow already destroyed. Every
+    // connection from a child to this window is cut here, and so are the event filters.
+    for (QObject *child : findChildren<QObject *>()) {
+        child->disconnect(this);
+        child->removeEventFilter(this);
+    }
+    qApp->disconnect(this);  // focus changes while the widgets go
+    qApp->removeEventFilter(this);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event) {
