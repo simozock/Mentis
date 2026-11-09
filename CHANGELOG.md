@@ -12,6 +12,11 @@ All notable changes to Mentis are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-09
+
+The first stable version: maps received from others are handled safely, and the app is checked
+with fuzzing and sanitizers.
+
 ### Security
 
 - Installers of new releases come with GitHub build provenance attestations, so you can check

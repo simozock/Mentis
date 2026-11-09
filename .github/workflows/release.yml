@@ -11,8 +11,9 @@ name: Release
 # secret SIGNPATH_API_TOKEN exists: without it the release is unsigned. Each signing request waits
 # for a manual approval on SignPath (two per release: the program, then the installer).
 on:
+  # Only for a version (user's decision 2026-11-09): a tag vX.Y.Z, or by hand for the macOS image.
+  # Before, every push to main built the three packages too; the Build workflow checks the code.
   push:
-    branches: [main]
     tags: ['v*.*.*']
   workflow_dispatch:
     inputs:

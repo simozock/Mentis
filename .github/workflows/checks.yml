@@ -9,7 +9,7 @@ name: Checks
 # Locally the same targets run as the MentisFuzz test (seeded mutations, docs/engineering).
 
 on:
-  push:
+  # Every Monday and by hand (user's decision 2026-11-09), not at every push: about 25 minutes.
   workflow_dispatch:
   schedule:
     - cron: '0 3 * * 1'  # every Monday: the fuzzers find more with time
