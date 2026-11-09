@@ -86,6 +86,7 @@ private slots:
     // Tappa 3: relazioni, sommari e confini.
     void relationIsCreatedByClickingTheTarget();
     void relationHandleLabelAndDelete();
+    void coalescedDragEndsUnderThePointer();
     void relationSnapshot();
     void escapeCancelsAPendingRelation();
     void summaryLayout();
@@ -2223,6 +2224,36 @@ void NodeOperationsTest::copyAndPasteStyleOnTheMap() {
     QApplication::sendEvent(m_view, &override);
     QVERIFY(override.isAccepted());
     QTest::keyClick(m_view, Qt::Key_Escape);
+}
+
+// Node drag on Linux (user's report 2026-11-09): moves closer than kDragMoveIntervalMs wait,
+// and the release handles the last one, so the topic still ends under the pointer.
+void NodeOperationsTest::coalescedDragEndsUnderThePointer() {
+    MindNode *floating = m_model->addChild(m_model->root(), QStringLiteral("F"));
+    floating->floating = true;
+    floating->position = QPointF(300, 200);
+    m_scene->autoLayout();
+    wait();
+    NodeItem *item = itemFor(floating);
+    QVERIFY(item);
+    m_view->setDragMoveCoalescing(true);
+    const QPoint start = m_view->mapFromScene(item->sceneBoundingRect().center());
+    const QPointF startPos = item->pos();
+    auto moveTo = [this](const QPoint &to) {
+        QMouseEvent move(QEvent::MouseMove, QPointF(to), m_view->viewport()->mapToGlobal(QPointF(to)), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(m_view->viewport(), &move);
+    };
+    QTest::mousePress(m_view->viewport(), Qt::LeftButton, {}, start);
+    moveTo(start + QPoint(40, 0));  // handled: the drag starts
+    const QPointF afterFirst = item->pos();
+    QVERIFY(afterFirst != startPos);
+    moveTo(start + QPoint(80, 0));  // within the interval: waits
+    moveTo(start + QPoint(120, 0));
+    QCOMPARE(item->pos(), afterFirst);
+    QTest::mouseRelease(m_view->viewport(), Qt::LeftButton, {}, start + QPoint(120, 0));
+    m_view->setDragMoveCoalescing(false);
+    wait();
+    QCOMPARE(m_view->mapToScene(start + QPoint(120, 0)).x() - m_view->mapToScene(start).x(), item->pos().x() - startPos.x());
 }
 
 QTEST_MAIN(NodeOperationsTest)

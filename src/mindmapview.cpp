@@ -34,6 +34,21 @@ MindMapView::MindMapView(QWidget *parent) : QGraphicsView(parent) {
     setViewportUpdateMode(MinimalViewportUpdate);
     m_autoScrollTimer.setInterval(kAutoScrollIntervalMs);
     connect(&m_autoScrollTimer, &QTimer::timeout, this, &MindMapView::autoScrollTick);
+    // Dragging a node was choppy on Debian (user's report 2026-11-09) and smooth on Windows.
+    // Windows merges mouse moves the application has not read yet; on Linux a fast mouse can give
+    // several moves per screen refresh, each moving the node, its branches and its annotations.
+    // Here the moves are capped instead, under Wayland and under X11 (the AppImage of 1.0.0 had
+    // only the X11 plugin, so on a Wayland desktop it ran through XWayland).
+    const QString platform = QGuiApplication::platformName();
+    m_coalesceDragMoves = platform.startsWith(QLatin1String("wayland")) || platform == QLatin1String("xcb");
+    m_dragMoveTimer.setSingleShot(true);
+    m_dragMoveTimer.setInterval(kDragMoveIntervalMs);
+    connect(&m_dragMoveTimer, &QTimer::timeout, this, [this] {
+        if (!m_pendingDragMove) return;
+        const std::unique_ptr<QMouseEvent> move = std::move(m_pendingDragMove);
+        handleMouseMove(move.get());
+        m_dragMoveTimer.start();
+    });
 }
 
 int MindMapView::zoomPercent() const {
@@ -116,6 +131,7 @@ void MindMapView::mousePressEvent(QMouseEvent *event) {
 }
 
 void MindMapView::mouseReleaseEvent(QMouseEvent *event) {
+    flushPendingDragMove();  // the node ends under the pointer, not at the last handled move
     if (m_panning) { m_panning = false; unsetCursor(); event->accept(); return; }
     stopAutoScroll();
     QGraphicsView::mouseReleaseEvent(event);
@@ -128,6 +144,23 @@ void MindMapView::mouseMoveEvent(QMouseEvent *event) {
         verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
         event->accept(); return;
     }
+    if (m_coalesceDragMoves && m_autoScrollArmed && (event->buttons() & Qt::LeftButton)) {
+        if (m_dragMoveTimer.isActive()) {
+            m_pendingDragMove.reset(event->clone());
+            event->accept();
+            return;
+        }
+        m_dragMoveTimer.start();
+    }
+    handleMouseMove(event);
+}
+
+void MindMapView::flushPendingDragMove() {
+    m_dragMoveTimer.stop();
+    if (const std::unique_ptr<QMouseEvent> move = std::move(m_pendingDragMove)) handleMouseMove(move.get());
+}
+
+void MindMapView::handleMouseMove(QMouseEvent *event) {
     QGraphicsView::mouseMoveEvent(event);
     if (!m_autoScrollArmed) return;
     if (!(event->buttons() & Qt::LeftButton)) { stopAutoScroll(); return; }
@@ -141,6 +174,8 @@ void MindMapView::keyPressEvent(QKeyEvent *event) {
     // anche il trascinamento strutturale.
     if (event->key() == Qt::Key_Escape && scene()) {
         if (auto *item = qgraphicsitem_cast<NodeItem *>(scene()->mouseGrabberItem()); item && (item->cancelResize() || item->cancelReorder())) {
+            m_dragMoveTimer.stop();
+            m_pendingDragMove.reset();
             stopAutoScroll();
             event->accept();
             return;

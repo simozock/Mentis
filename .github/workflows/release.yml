@@ -4,9 +4,10 @@ name: Release
 # - A tag vX.Y.Z (pushed only on the maintainer's command): Windows installer
 #   Mentis-X.Y.Z-setup-x64.exe, Linux Mentis-X.Y.Z-x86_64.AppImage, macOS Mentis-X.Y.Z-macos.dmg,
 #   SHA256SUMS, the release.
-# - A push to main: the same packages as workflow artifacts, to try them; no signing, no release.
 # - Run by hand with an existing tag: only the macOS disk image, from that tag's code, added to its
 #   release with the updated SHA256SUMS (a release made without it).
+# - Run by hand without a tag: the three packages from the chosen branch as workflow artifacts, to
+#   try a fix before a version (user's request 2026-11-09); no signing, no release.
 # Signing (SignPath Foundation, installer/signpath/README.md) runs only for a tag and only when the
 # secret SIGNPATH_API_TOKEN exists: without it the release is unsigned. Each signing request waits
 # for a manual approval on SignPath (two per release: the program, then the installer).
@@ -18,8 +19,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release (vX.Y.Z) that gets the macOS disk image
-        required: true
+        description: Existing release (vX.Y.Z) that gets the macOS disk image; empty = test packages only
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -47,7 +49,7 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
   windows:
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name != 'workflow_dispatch' || inputs.tag == ''
     needs: version
     runs-on: windows-latest
     env:
@@ -141,7 +143,7 @@ jobs:
   # a newer one. linuxdeploy and its Qt plugin collect Qt, its plugins and the libraries
   # (https://github.com/linuxdeploy/linuxdeploy-plugin-qt).
   linux:
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name != 'workflow_dispatch' || inputs.tag == ''
     needs: version
     runs-on: ubuntu-22.04
     env:
@@ -166,7 +168,10 @@ jobs:
       - name: AppImage
         env:
           APPIMAGE_EXTRACT_AND_RUN: '1'
-          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so
+          # Wayland too (2026-11-09): with xcb only, the app ran through XWayland on Debian's
+          # default session. Values from linuxdeploy-plugin-qt's README; the Wayland plugins are
+          # looked up below so a missing one stops the build instead of being skipped.
+          EXTRA_QT_MODULES: waylandcompositor
           LDAI_OUTPUT: Mentis-${{ env.VERSION }}-x86_64.AppImage
           OUTPUT: Mentis-${{ env.VERSION }}-x86_64.AppImage
         run: |
@@ -178,11 +183,16 @@ jobs:
           # Only the SQLite driver: the others (Mimer, ODBC, PostgreSQL...) need client libraries
           # that are not installed, and linuxdeploy-plugin-qt stops on them.
           find "${QT_ROOT_DIR}/plugins/sqldrivers" -name 'libqsql*.so' ! -name 'libqsqlite.so' -delete
+          wayland="$(cd "${QT_ROOT_DIR}/plugins/platforms" && ls libqwayland*.so | paste -sd ';')"
+          test -n "${wayland}"
+          export EXTRA_PLATFORM_PLUGINS="libqoffscreen.so;${wayland}"
+          echo "Platform plugins: ${EXTRA_PLATFORM_PLUGINS}"
           export QMAKE="${QT_ROOT_DIR}/bin/qmake"
           export LD_LIBRARY_PATH="$PWD/AppDir/usr/lib:${LD_LIBRARY_PATH}"
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --executable AppDir/usr/bin/Mentis \
             --desktop-file assets/linux/mentis.desktop --icon-file mentis.png --plugin qt --output appimage
           test -s "Mentis-${VERSION}-x86_64.AppImage"
+          ls AppDir/usr/plugins/platforms | grep -q wayland
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: linux
@@ -284,7 +294,7 @@ jobs:
 
   # Run by hand: the macOS disk image joins a release made without it.
   add-macos:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
     needs: [version, macos]
     runs-on: ubuntu-latest
     permissions:

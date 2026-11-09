@@ -1,7 +1,9 @@
 #pragma once
 
 #include <QGraphicsView>
+#include <QMouseEvent>
 #include <QTimer>
+#include <memory>
 
 class MindMapView final : public QGraphicsView {
     Q_OBJECT
@@ -19,6 +21,11 @@ public:
     static constexpr int kAutoScrollMinStepPx = 4;
     static constexpr int kAutoScrollMaxStepPx = 40;
     static constexpr int kAutoScrollIntervalMs = 16;
+    // Node drag on Linux (Wayland and X11): at most one move handled per interval (about 120 per second); the
+    // latest position waits and is handled when the interval ends or at the release.
+    static constexpr int kDragMoveIntervalMs = 8;
+    // On by default only on Linux (see the constructor); tests turn it on to check it.
+    void setDragMoveCoalescing(bool enabled) { m_coalesceDragMoves = enabled; }
 signals:
     void zoomChanged(int percent);
     // FEAT-049: file del computer lasciati su un punto della mappa (coordinate della scena).
@@ -39,6 +46,8 @@ private:
     QPoint autoScrollStep(const QPoint &viewportPos) const;
     void stopAutoScroll();
     void autoScrollTick();
+    void handleMouseMove(QMouseEvent *event);
+    void flushPendingDragMove();
 
     bool m_panning = false;
     QPoint m_lastPan;
@@ -48,4 +57,7 @@ private:
     bool m_autoScrollArmed = false;
     QPoint m_autoScrollPos;  // ultima posizione del mouse, coordinate del viewport
     QTimer m_autoScrollTimer;
+    bool m_coalesceDragMoves = false;
+    QTimer m_dragMoveTimer;
+    std::unique_ptr<QMouseEvent> m_pendingDragMove;
 };
