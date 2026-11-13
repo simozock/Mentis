@@ -1,5 +1,6 @@
 // FEAT-054 stage 4: every sheet as a Word (.docx) or Excel (.xlsx) file (OfficeExport), from the
 // document and from "Export > Word…" / "Excel…" in the real MainWindow (offscreen platform).
+#include "formulatext.h"
 #include "document.h"
 #include "mainwindow.h"
 #include "mindmapmodel.h"
@@ -38,6 +39,7 @@ private:
 void OfficeExportTest::initTestCase() {
     QCoreApplication::setOrganizationName(QStringLiteral("MentisTest"));
     QCoreApplication::setApplicationName(QStringLiteral("MentisOfficeExportTest"));
+    FormulaText::installRendering();  // FEAT-096: formula pictures, as the app does at startup
     Performance::setMode(Performance::Mode::Light);
     QSettings().clear();
     QVERIFY(m_dir.isValid());

@@ -38,6 +38,7 @@ private slots:
     void entriesFollowTheTreeOrder();
     void occurrencesHonourCaseAndWholeWords();
     void fieldsCanBeFilteredOut();
+    void resultLineShowsWhereItWasFound();  // FEAT-113: shared with the phone
     void findOpensThePanelAndShowsTheTree();
     void typingShowsOnlyMatchesHighlighted();
     void clickSelectsTheTopicAndEscCloses();
@@ -150,6 +151,25 @@ void NodeSearchTest::fieldsCanBeFilteredOut() {
     options.fields = NodeSearch::Title;
     QCOMPARE(NodeSearch::matchingFields(entries[1], QStringLiteral("finance"), options), 0);
     QCOMPARE(NodeSearch::matchingFields(entries[1], QStringLiteral("review"), options), int(NodeSearch::Title));
+}
+
+void NodeSearchTest::resultLineShowsWhereItWasFound() {
+    const QList<NodeSearch::Entry> entries = NodeSearch::entries(QString(), m_model->toFlatSnapshot());
+    const NodeSearch::Options options;
+    using Ranges = QList<std::pair<int, int>>;
+    // In the title: the title alone, its parts highlighted.
+    NodeSearch::Shown line = NodeSearch::resultLine(entries[1], QStringLiteral("budget"), options, NodeSearch::Title);
+    QCOMPARE(line.text, QStringLiteral("Budget review"));
+    QCOMPARE(line.ranges, (Ranges{{0, 6}}));
+    // In a link only: the title, " · " and the piece of the link.
+    line = NodeSearch::resultLine(entries[3], QStringLiteral("roles"), options, NodeSearch::Link);
+    QCOMPARE(line.text, QStringLiteral("Budget owner · https://example.com/roles"));
+    QCOMPARE(line.ranges, (Ranges{{int(line.text.indexOf(QStringLiteral("roles"))), 5}}));
+    // A long text: the words around the first match, after an ellipsis, on one line.
+    const NodeSearch::Shown piece = NodeSearch::snippet(QString(60, QLatin1Char('a')) + QStringLiteral("\nfound here"), QStringLiteral("found"), options);
+    QVERIFY(piece.text.startsWith(QStringLiteral("…")));
+    QVERIFY(!piece.text.contains(QLatin1Char('\n')));
+    QCOMPARE(piece.text.mid(piece.ranges.value(0).first, 5), QStringLiteral("found"));
 }
 
 void NodeSearchTest::findOpensThePanelAndShowsTheTree() {

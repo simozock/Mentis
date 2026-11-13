@@ -74,6 +74,18 @@ QString imageFilter() {
     return QCoreApplication::translate("FileValidation", "Images (%1)").arg(patterns.join(QLatin1Char(' ')));
 }
 
+bool isRisky(const QString &name) {
+    // Windows types from Outlook's blocked attachments
+    // (https://support.microsoft.com/office/434752e1-02d3-4e90-9124-8b81e49a8519), plus scripts,
+    // disk images and the launchers of macOS and Linux (BUG-043).
+    static const QStringList risky = QStringLiteral(
+        "exe com bat cmd pif scr cpl dll msi msp mst msc ps1 ps1xml ps2 ps2xml psc1 psc2 psd1 psm1 "
+        "vb vbs vbe js jse ws wsc wsf wsh hta sct shb jar lnk url scf inf ins isp reg chm gadget "
+        "application appref-ms settingcontent-ms library-ms website xbap mde iso img vhd vhdx "
+        "py pyw pyc sh command app dmg pkg workflow appimage desktop run").split(QLatin1Char(' '));
+    return risky.contains(QFileInfo(name).suffix().toLower());
+}
+
 QString diskFileName(const QString &name, int number) {
     static const QRegularExpression plainSuffix(QStringLiteral("^[A-Za-z0-9]{1,16}$"));
     const QString suffix = QFileInfo(name).suffix();

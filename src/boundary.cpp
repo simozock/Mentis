@@ -101,4 +101,42 @@ qreal padBelow(const Boundary &boundary) {
     return kMarginPx + boundary.lineWidth.value_or(kDefaultLineWidth) / 2;
 }
 
+Look look(const Boundary &boundary, const NodeStyle::Backdrop &backdrop, const QString &sheetFontFamily) {
+    const QColor ink = NodeStyle::annotationColor(Qt::black, backdrop);
+    QColor line = ink;
+    line.setAlphaF(kLineAlpha);
+    QColor fill = ink;
+    fill.setAlphaF(kFillAlpha);
+    Look result;
+    const qreal width = boundary.lineWidth.value_or(kDefaultLineWidth);
+    result.pen = QPen(boundary.lineColor.value_or(line), width, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin);
+    const int pattern = boundary.linePattern.value_or(kDefaultLinePattern);
+    // QPen's dash pattern is in units of the width (https://doc.qt.io/qt-6/qpen.html#setDashPattern).
+    if (pattern == Qt::DashLine) result.pen.setDashPattern({kDashOnPx / width, kDashOffPx / width});
+    else result.pen.setStyle(static_cast<Qt::PenStyle>(pattern));
+    result.fill = boundary.fillColor.value_or(fill);
+    result.titleText = NodeStyle::annotationColor(QColor("#303640"), backdrop);
+    result.font.setFamily(sheetFontFamily.isEmpty() ? NodeStyle::kDefaultMapFontFamily : sheetFontFamily);
+    result.font.setPixelSize(qRound(kTitleFontPx));
+    return result;
+}
+
+void widenAroundNested(const QList<Boundary> &boundaries, QList<QRectF> &covers,
+                       const std::function<bool(const Boundary &, const Boundary &)> &inside) {
+    for (bool grown = true; grown;) {
+        grown = false;
+        for (qsizetype o = 0; o < boundaries.size(); ++o)
+            for (qsizetype i = 0; i < boundaries.size(); ++i) {
+                if (i == o || covers[i].isNull() || covers[o].isNull() || !inside(boundaries[i], boundaries[o])) continue;
+                if (inside(boundaries[o], boundaries[i]) && o < i) continue;  // same topics: the later one is outside
+                QRectF need = strokeRect(covers[i]);
+                const qreal half = boundaries[i].lineWidth.value_or(kDefaultLineWidth) / 2;
+                need.adjust(-half, -half - (boundaries[i].title.isEmpty() ? 0 : kTitleHeightPx), half, half);
+                if (covers[o].contains(need)) continue;
+                covers[o] = covers[o].united(need);
+                grown = true;
+            }
+    }
+}
+
 }  // namespace Boundaries

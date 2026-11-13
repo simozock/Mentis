@@ -8,6 +8,7 @@
 #include "pitchexport.h"
 #include "custompalettes.h"
 #include "filevalidation.h"
+#include "mapfolder.h"
 #include "nodelinks.h"
 #include "noteeditor.h"
 #include "formuladialog.h"
@@ -38,6 +39,7 @@
 #include "nodeitem.h"
 #include "richtitle.h"
 #include "settingsdialog.h"
+#include "shortcutcatalog.h"
 #include "floatingui.h"
 #include "structurepicker.h"
 #include "segmentedcontrol.h"
@@ -1496,6 +1498,8 @@ public:
     // Fra due passi della stessa modifica del titolo (vedi setModelData): il passo va registrato
     // subito nello storico, come NodeItem::historyStepFinished per la mappa.
     std::function<void()> historyStepFinished;
+    // FEAT-096 stage 3: each state of the edited title goes to the document (Document::editTitle).
+    std::function<void(const QModelIndex &, const QString &, const QString &)> titleEdited;
     std::function<void(const QModelIndex &, int)> taskTyped;  // FEAT-068: "- [ ] " a inizio titolo
     std::function<bool(const QModelIndex &)> pasteWhileEditing;  // FEAT-094
     std::function<int(const QKeyEvent *)> charStyleKey;  // FEAT-095
@@ -1885,7 +1889,7 @@ public:
                 const QString html = mergeOutlineFormats(node->title, node->titleHtml, *steps[i], font,
                                                          rowBoldWeights(index).bold, storedBoldWeights(node));
                 if (text == node->title && html == node->titleHtml) continue;  // nessun cambiamento
-                mapModel->setTitle(index, text, html);
+                if (titleEdited) titleEdited(index, text, html);
                 if (!last && historyStepFinished) historyStepFinished();
             }
             // FEAT-068: casella scritta a inizio titolo; dopo il titolo, come sulla mappa.
@@ -2220,6 +2224,7 @@ private:
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_document(new Document(this)), m_shortcuts(new ShortcutRegistry(this)), m_model(m_document->model()), m_scene(new MindMapScene(m_model, this)), m_view(new MindMapView(this)) {
     setWindowFlag(Qt::FramelessWindowHint);
+    m_scene->setDocument(m_document);  // FEAT-096 stage 3
     SettingsDialog::loadSelectionStyle();  // bordo di selezione e hover dei nodi (2026-10-13)
     setWindowTitle(tr("Mentis"));
     // The app's icon (user, 2026-10-31): one picture per size, so small sizes stay sharp.
@@ -2313,16 +2318,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_document(new Do
     m_pages->addWidget(m_editorPage);
     connect(m_pages, &QStackedWidget::currentChanged, this, [this] {
         updateWindowFrame(m_inspectorDock && m_inspectorDock->isVisible());  // FEAT-036: bordo solo fuori dalla mappa
+        stopRelation();  // FEAT-109
     });
     setCentralWidget(m_pages);
     connect(m_scene, &QGraphicsScene::selectionChanged, this, &MainWindow::updatePanelContext);  // FEAT-017
     connect(m_scene, &MindMapScene::nodeSelected, this, [this](MindNode *node) {
         updateInspector(node);
-        if (!m_relationSource.isEmpty() && node && node->id != m_relationSource) finishRelation(node->id);
+        // FEAT-109: with the tool kept on, the clicks create the relationships (eventFilter).
+        if (!m_relationKept && !m_relationSource.isEmpty() && node && node->id != m_relationSource) finishRelation(node->id);
     });
     // FEAT-052: a boundary clicked while a relationship is being drawn is its target.
     connect(m_scene, &QGraphicsScene::selectionChanged, this, [this] {
-        if (m_relationSource.isEmpty() || !m_scene->selectedNodes().isEmpty()) return;
+        if (m_relationKept || m_relationSource.isEmpty() || !m_scene->selectedNodes().isEmpty()) return;
         const QStringList boundaries = m_scene->selectedBoundaryIds();
         if (boundaries.size() == 1 && boundaries.front() != m_relationSource) finishRelation(boundaries.front());
     });
@@ -2343,7 +2350,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_document(new Do
     connect(m_model, &QAbstractItemModel::modelAboutToBeReset, this, [this] {
         cancelFloatingPlacement();  // la scena sta per svuotarsi
         m_selected = nullptr;
-        if (!m_relationSource.isEmpty()) { m_relationSource.clear(); statusBar()->clearMessage(); }
+        stopRelation();
     });
     connect(m_model, &QAbstractItemModel::rowsAboutToBeRemoved, this, [this](const QModelIndex &parent, int first, int last) {
         auto *parentNode = parent.isValid() ? m_model->nodeFromIndex(parent) : m_model->root();
@@ -2358,7 +2365,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_document(new Do
             return false;
         };
         if (isRemoved(m_selected)) m_selected = nullptr;
-        if (isRemoved(nodeById(m_relationSource))) { m_relationSource.clear(); statusBar()->clearMessage(); }
+        if (isRemoved(nodeById(m_relationSource))) stopRelation();
     });
     connect(m_scene, &MindMapScene::nodeChanged, this, [this] { setDirty(); });
     // Un passo intermedio della modifica del titolo diventa subito un passo di storico (vedi
@@ -2407,6 +2414,8 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_document(new Do
         return m_pages && m_pages->currentWidget() == m_editorPage && workspaceView() == WorkspaceView::Map;
     };
     m_topicTools->relation = [this](MindNode *) { beginRelation(); };
+    m_topicTools->keepRelation = [this] { keepRelation(); };
+    m_topicTools->stopRelation = [this] { stopRelation(); };
     m_topicTools->webLink = [this](MindNode *node) { editWebLink(node); };
     m_topicTools->image = [this](MindNode *node) { updateInspector(node); chooseImage(); };
     m_topicTools->note = [this](MindNode *node) { openNote(node); };
@@ -2415,7 +2424,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_document(new Do
     m_topicTools->formatPainter = [this](MindNode *node) { copyStyleOf(node); setFormatPainter(true); };
     m_topicTools->keepFormatPainter = [this] { setFormatPainter(true, true); };
     m_topicTools->stopFormatPainter = [this] { setFormatPainter(false); };
-    connect(m_document, &Document::sheetsChanged, this, [this] { setFormatPainter(false); });
+    connect(m_document, &Document::sheetsChanged, this, [this] { setFormatPainter(false); stopRelation(); });
+    // FEAT-109: a boundary that was the start is gone (a topic is followed by rowsAboutToBeRemoved).
+    connect(m_document, &Document::annotationsChanged, this, [this] {
+        if (!m_relationSource.isEmpty() && !m_document->isRelationEnd(m_relationSource)) stopRelation();
+    });
     m_topicTools->addChild = [this] { addChild(); };
     m_topicTools->addSibling = [this] { addSibling(); };
     connect(m_scene, &MindMapScene::taskTyped, this, &MainWindow::setTypedTask);  // FEAT-068
@@ -2692,7 +2705,54 @@ McpServer::ToolResult MainWindow::openDialogForAgent(const QJsonObject &argument
     return ToolResult::object({{"opened", dialog}});
 }
 
-void MainWindow::openAtStart(const QString &path) { readFile(QFileInfo(path).absoluteFilePath()); }
+void MainWindow::openAtStart(const QString &path, bool inPlace) {
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    if (inPlace) readFile(absolute);
+    else openFromOutside(absolute);
+}
+
+QString MainWindow::suggestedSavePath() {
+    if (!m_document->filePath().isEmpty()) return m_document->filePath();
+    const MapFolder::Ready folder = MapFolder::current().ensure();
+    if (!folder.warning.isEmpty()) statusBar()->showMessage(folder.warning, 8000);
+    const QString title = m_model && m_model->root() ? m_model->root()->title : QString();
+    const QString name = MapFolder::fileNameFor(title);
+    return folder.path.isEmpty() ? name : QDir(folder.path).filePath(MapFolder::freeName(folder.path, name));
+}
+
+bool MainWindow::openFromOutside(const QString &path) {
+    if (path.isEmpty()) return false;
+    const QString absolute = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    const MapFolder folder = MapFolder::current();
+    // Markdown and the other imports become a new map, saved like any new map; a map of the folder or
+    // one the user keeps elsewhere (the recent list knows it, FEAT-105 decision 3) opens where it is.
+    const QStringList recent = QSettings().value("recentFiles").toStringList();
+    const bool known = std::any_of(recent.cbegin(), recent.cend(), [&absolute](const QString &entry) {
+        return QFileInfo(entry) == QFileInfo(absolute);
+    });
+    if (!absolute.endsWith(QStringLiteral(".mentis"), Qt::CaseInsensitive) || known || folder.contains(absolute)) return readFile(absolute);
+
+    const MapFolder::Ready ready = folder.ensure();
+    if (ready.path.isEmpty()) {
+        ModalDialog::inform(this, tr("Error"), ready.warning);
+        return false;
+    }
+    const MapFolder::BringIn copy = MapFolder(ready.path).bringIn(QUrl::fromLocalFile(absolute));
+    if (copy.path.isEmpty()) {
+        ModalDialog::inform(this, tr("Error"), copy.error);
+        return false;
+    }
+    if (!readFile(copy.path)) {
+        if (copy.created) {  // not a map (FEAT-039): nothing stays in the folder, nor in its index
+            QFile::remove(copy.path);
+            MapFolder::forgetCopy(copy.path);
+        }
+        return false;
+    }
+    statusBar()->showMessage(ready.warning.isEmpty() ? tr("Map added to the Mentis folder")
+                                                     : ready.warning + QLatin1Char(' ') + tr("Map added to the Mentis folder"), 6000);
+    return true;
+}
 
 McpServer::ToolResult MainWindow::openMapForAgent(const QJsonObject &arguments) {
     using ToolResult = McpServer::ToolResult;
@@ -2843,10 +2903,9 @@ bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr
     return QMainWindow::nativeEvent(eventType, message, result);
 }
 
-QAction *MainWindow::makeAction(const QString &id, ShortcutRegistry::Area area, const QString &text,
-                                const QList<QKeySequence> &defaults, const std::function<void()> &slot) {
-    auto *action = new QAction(text, this);
-    m_shortcuts->add(id, area, text, defaults);
+QAction *MainWindow::makeAction(const QString &id, const std::function<void()> &slot) {
+    Q_ASSERT(m_shortcuts->contains(id));
+    auto *action = new QAction(m_shortcuts->command(id).name, this);
     action->setShortcuts(m_shortcuts->shortcuts(id));
     connect(action, &QAction::triggered, this, slot);
     m_actions.insert(id, action);
@@ -2933,6 +2992,8 @@ QWidget *MainWindow::createHomePage() {
     m_homeRecentRow = row(":/assets/hugeicons/clock.svg", tr("Recent"), true);
     m_homeRecentRow->setChecked(true);
     nav->addWidget(m_homeRecentRow);
+    m_homeFolderRow = row(":/assets/hugeicons/folder-open.svg", tr("Mentis folder"), true);
+    nav->addWidget(m_homeFolderRow);
     auto *openRow = row(":/assets/hugeicons/folder-open.svg", tr("Open local file"), false);
     connect(openRow, &QToolButton::clicked, this, &MainWindow::openMap);
     nav->addWidget(openRow);
@@ -3029,17 +3090,44 @@ QWidget *MainWindow::createHomePage() {
     templatesScroll->setWidget(templateCards);
     dragArea(templateCards);
     m_homeStack->addWidget(templatesScroll);
+    // FEAT-105: Mentis folder: the path bar (Back, the folder levels, New folder), then the cards.
+    auto *folderPage = new QWidget;
+    folderPage->setStyleSheet("background:transparent;");
+    auto *folderLayout = new QVBoxLayout(folderPage);
+    folderLayout->setContentsMargins(0, 0, 0, 0);
+    folderLayout->setSpacing(16);
+    m_folderPathBar = new QHBoxLayout;
+    m_folderPathBar->setContentsMargins(0, 0, 0, 0);
+    m_folderPathBar->setSpacing(4);
+    folderLayout->addLayout(m_folderPathBar);
+    auto *folderScroll = new QScrollArea;
+    folderScroll->setWidgetResizable(true);
+    folderScroll->setFrameShape(QFrame::NoFrame);
+    auto *folderCards = new QWidget;
+    folderCards->setStyleSheet("background:transparent;");
+    m_folderGrid = new QGridLayout(folderCards);
+    m_folderGrid->setContentsMargins(0, 0, 0, 0);
+    m_folderGrid->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    m_folderGrid->setHorizontalSpacing(24);
+    m_folderGrid->setVerticalSpacing(16);
+    folderScroll->setWidget(folderCards);
+    dragArea(folderCards);
+    folderLayout->addWidget(folderScroll, 1);
+    m_homeStack->addWidget(folderPage);
     contentLayout->addWidget(m_homeStack, 1);
     outer->addWidget(content, 1);
 
-    const auto showHomePage = [this, title, searchButton](bool templates) {
-        m_homeStack->setCurrentIndex(templates ? 1 : 0);
-        title->setText(templates ? tr("More templates") : tr("Recent"));
-        searchButton->setVisible(!templates);
-        if (templates) { m_homeSearch->clear(); m_homeSearch->hide(); }
+    // 0 Recent, 1 More templates, 2 Mentis folder (FEAT-105).
+    const auto showHomePage = [this, title, searchButton](int index) {
+        m_homeStack->setCurrentIndex(index);
+        title->setText(index == 1 ? tr("More templates") : index == 2 ? tr("Mentis folder") : tr("Recent"));
+        searchButton->setVisible(index == 0);
+        if (index != 0) { m_homeSearch->clear(); m_homeSearch->hide(); }
+        if (index == 2) refreshFolderPage();
     };
-    connect(m_homeRecentRow, &QToolButton::clicked, this, [showHomePage] { showHomePage(false); });
-    connect(m_homeTemplatesRow, &QToolButton::clicked, this, [showHomePage] { showHomePage(true); });
+    connect(m_homeRecentRow, &QToolButton::clicked, this, [showHomePage] { showHomePage(0); });
+    connect(m_homeTemplatesRow, &QToolButton::clicked, this, [showHomePage] { showHomePage(1); });
+    connect(m_homeFolderRow, &QToolButton::clicked, this, [showHomePage] { showHomePage(2); });
     return page;
 }
 
@@ -3562,6 +3650,368 @@ void MainWindow::refreshRecentFiles() {
     }
 }
 
+namespace {
+
+const QString kHomeMapMime = QStringLiteral("application/x-mentis-map-path");  // a map card dragged in the Home
+const QString kHomeFolderMime = QStringLiteral("application/x-mentis-folder-path");  // a folder card dragged in the Home
+
+// "Move to…": every folder of the Mentis folder, "Mentis › Exams › 2026"; the entry's own folder
+// disabled; for a folder (moved), itself and its subfolders left out.
+void addMoveTargets(QMenu *menu, const QString &entry, const QString &moved = QString()) {
+    const MapFolder root = MapFolder::current();
+    const QString rootName = QFileInfo(root.path()).fileName();
+    const QFileInfo entryDir(QFileInfo(entry).absolutePath());
+    for (const QString &folder : root.allFolders()) {
+        if (!moved.isEmpty() && MapFolder::moved(folder, moved, QString()) != folder) continue;  // itself or inside it
+        const QString relative = QDir(root.path()).relativeFilePath(folder);
+        QString label = rootName;
+        if (relative != QLatin1String(".")) label += QStringLiteral(" › ") + relative.split(QLatin1Char('/')).join(QStringLiteral(" › "));
+        QAction *target = menu->addAction(label);
+        target->setData(folder);
+        target->setEnabled(QFileInfo(folder) != entryDir);
+    }
+}
+
+// Hugeicons are dark in the files: light on the dark Home (AGENTS.md "Icone").
+QIcon homeLightIcon(const QString &path, int sizePx) {
+    QPixmap pixmap = QIcon(path).pixmap(QSize(sizePx, sizePx), qApp->devicePixelRatio());
+    QPainter tint(&pixmap);
+    tint.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    tint.fillRect(pixmap.rect(), UiTheme::color(UiTheme::Token::Text));
+    tint.end();
+    return QIcon(pixmap);
+}
+
+// FEAT-107: a coloured folder is a filled folder of its colour; without a colour, the same folder
+// outlined in the light text colour (assets/folder.svg, the shapes below inset by half its stroke;
+// user's request 2026-11-11: the open folder icon was another shape).
+QIcon homeFolderIcon(const QString &color, int sizePx) {
+    if (color.isEmpty()) return homeLightIcon(QStringLiteral(":/assets/folder.svg"), sizePx);
+    const qreal ratio = qApp->devicePixelRatio();
+    QPixmap pixmap(QSize(sizePx, sizePx) * ratio);
+    pixmap.setDevicePixelRatio(ratio);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setPen(Qt::NoPen);
+    const qreal unit = sizePx / 24.0;  // drawn on the 24-unit grid of the Hugeicons
+    QPainterPath back;
+    back.setFillRule(Qt::WindingFill);  // tab and body overlap: odd-even would leave a hole
+    back.addRoundedRect(QRectF(2.5, 4, 8, 4), 1.2, 1.2);
+    back.addRoundedRect(QRectF(2.5, 6, 19, 13), 2, 2);
+    QPainterPath front;
+    front.addRoundedRect(QRectF(2.5, 9, 19, 10), 2, 2);
+    painter.scale(unit, unit);
+    painter.setBrush(QColor(color).darker(125));
+    painter.drawPath(back);
+    painter.setBrush(QColor(color));
+    painter.drawPath(front);
+    painter.end();
+    return QIcon(pixmap);
+}
+
+// A round swatch for the "Colour" menu; an empty colour = the outline of a crossed circle.
+QIcon colorSwatchIcon(const QString &color, int sizePx) {
+    const qreal ratio = qApp->devicePixelRatio();
+    QPixmap pixmap(QSize(sizePx, sizePx) * ratio);
+    pixmap.setDevicePixelRatio(ratio);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QRectF circle(1.5, 1.5, sizePx - 3, sizePx - 3);
+    if (color.isEmpty()) {
+        painter.setPen(QPen(UiTheme::color(UiTheme::Token::Text), 1.5));
+        painter.drawEllipse(circle);
+        painter.drawLine(circle.bottomLeft() + QPointF(3, -3), circle.topRight() + QPointF(-3, 3));
+    } else {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(color));
+        painter.drawEllipse(circle);
+    }
+    painter.end();
+    return QIcon(pixmap);
+}
+
+}  // namespace
+
+void MainWindow::showMentisFolder(const QString &folder) {
+    m_folderShown = folder;
+    if (m_homeFolderRow) m_homeFolderRow->click();  // shows the page and refreshes it
+}
+
+// FEAT-105 stage 2 (decisions 4 and 6): one level of the Mentis folder, its subfolders first, then
+// its maps, the most recently changed first. Every widget of the page is made again here.
+void MainWindow::refreshFolderPage() {
+    if (!m_folderGrid || !m_folderPathBar) return;
+    runPendingMoves();
+    while (auto *item = m_folderGrid->takeAt(0)) { delete item->widget(); delete item; }
+    while (auto *item = m_folderPathBar->takeAt(0)) { delete item->widget(); delete item; }
+    const MapFolder::Ready ready = MapFolder::current().ensure();
+    const auto pathLabel = [](const QString &text) {
+        auto *label = new QLabel(text);
+        label->setStyleSheet(UiTheme::qss("color:@text;font-size:13px;background:transparent;"));
+        return label;
+    };
+    if (ready.path.isEmpty()) { m_folderPathBar->addWidget(pathLabel(ready.warning)); return; }
+    const MapFolder root(ready.path);
+    if (m_folderShown.isEmpty() || !QFileInfo(m_folderShown).isDir()
+        || (QFileInfo(m_folderShown) != QFileInfo(ready.path) && !root.contains(m_folderShown)))
+        m_folderShown = ready.path;
+
+    // Path bar: Back, then each level from the Mentis folder down; every level takes a dropped map.
+    const QString crumbStyle = UiTheme::qss(
+        "QToolButton{color:@text;background:transparent;border:0;border-radius:6px;padding:0 8px;font-size:13px;"
+        " min-height:30px;max-height:30px;}"
+        "QToolButton:hover{background:@divider;} QToolButton:disabled{color:#6b7280;}");
+    const bool atRoot = QFileInfo(m_folderShown) == QFileInfo(ready.path);
+    auto *back = new QToolButton;
+    back->setObjectName("HomeFolderBack");
+    back->setIcon(homeLightIcon(QStringLiteral(":/assets/hugeicons/arrow-left.svg"), 16));
+    back->setIconSize(QSize(16, 16));
+    back->setFixedSize(30, 30);
+    back->setToolTip(tr("Back"));
+    back->setAccessibleName(tr("Back"));
+    back->setStyleSheet(crumbStyle);
+    back->setEnabled(!atRoot);
+    back->setCursor(Qt::PointingHandCursor);
+    const QString parent = QFileInfo(m_folderShown).absolutePath();
+    connect(back, &QToolButton::clicked, this, [this, parent] { QTimer::singleShot(0, this, [this, parent] { showMentisFolder(parent); }); });
+    if (!atRoot) {  // a map or a folder dropped on Back goes up a level
+        back->setProperty("mentisFolderPath", parent);
+        back->setAcceptDrops(true);
+        back->installEventFilter(this);
+    }
+    m_folderPathBar->addWidget(back);
+    QStringList levels;
+    for (QString level = m_folderShown; ; level = QFileInfo(level).absolutePath()) {
+        levels.prepend(level);
+        if (QFileInfo(level) == QFileInfo(ready.path) || QFileInfo(level).absolutePath() == level) break;
+    }
+    for (qsizetype i = 0; i < levels.size(); ++i) {
+        if (i > 0) m_folderPathBar->addWidget(pathLabel(QStringLiteral("›")));
+        auto *crumb = new QToolButton;
+        crumb->setObjectName("HomeCrumb");
+        crumb->setText(QFileInfo(levels[i]).fileName());
+        crumb->setStyleSheet(crumbStyle);
+        crumb->setCursor(Qt::PointingHandCursor);
+        crumb->setProperty("mentisFolderPath", levels[i]);
+        crumb->setAcceptDrops(true);
+        crumb->installEventFilter(this);
+        const QString level = levels[i];
+        connect(crumb, &QToolButton::clicked, this, [this, level] { QTimer::singleShot(0, this, [this, level] { showMentisFolder(level); }); });
+        m_folderPathBar->addWidget(crumb);
+    }
+    m_folderPathBar->addStretch();
+    if (!ready.warning.isEmpty()) m_folderPathBar->addWidget(pathLabel(ready.warning));
+    auto *newFolder = new QToolButton;
+    newFolder->setObjectName("HomeNewFolder");
+    newFolder->setText(QStringLiteral("  ") + tr("New folder"));
+    newFolder->setIcon(homeLightIcon(QStringLiteral(":/assets/hugeicons/plus.svg"), 16));
+    newFolder->setIconSize(QSize(16, 16));
+    newFolder->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    newFolder->setStyleSheet(crumbStyle);
+    newFolder->setCursor(Qt::PointingHandCursor);
+    connect(newFolder, &QToolButton::clicked, this, [this] { QTimer::singleShot(0, this, &MainWindow::createFolderHere); });
+    m_folderPathBar->addWidget(newFolder);
+
+    int card = 0;
+    const auto place = [this, &card](QWidget *widget) {
+        m_folderGrid->addWidget(widget, card / kHomeColumns, card % kHomeColumns);
+        ++card;
+    };
+    // FEAT-107 decision 8: inside a folder ".." first, the level above: a click goes up, a map or a
+    // folder dropped on it moves up.
+    if (!atRoot) {
+        QWidget *widget = homeCard(QPixmap(), QStringLiteral(".."), [this, parent] { QTimer::singleShot(0, this, [this, parent] { showMentisFolder(parent); }); });
+        auto *tile = widget->findChild<QToolButton *>();
+        tile->setObjectName("HomeFolderUp");
+        tile->setText(QString());
+        tile->setIcon(homeFolderIcon(QString(), 48));
+        tile->setIconSize(QSize(48, 48));
+        tile->setToolTip(tr("Back"));
+        tile->setProperty("mentisFolderPath", parent);
+        tile->setAcceptDrops(true);
+        tile->installEventFilter(this);
+        place(widget);
+    }
+    for (const MapFolder::Folder &folder : root.folders(m_folderShown)) {
+        const QString path = folder.path;
+        QWidget *widget = homeCard(QPixmap(), folder.name, [this, path] { QTimer::singleShot(0, this, [this, path] { showMentisFolder(path); }); });
+        auto *tile = widget->findChild<QToolButton *>();
+        tile->setText(QString());
+        tile->setIcon(homeFolderIcon(folder.color, 48));
+        tile->setIconSize(QSize(48, 48));
+        tile->setProperty("mentisFolderPath", path);
+        tile->setProperty("mentisFolderColor", folder.color);
+        tile->setProperty("mentisDragFolderPath", path);
+        tile->setAcceptDrops(true);
+        tile->installEventFilter(this);
+        tile->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(tile, &QWidget::customContextMenuRequested, this, [this, tile, path](const QPoint &pos) { homeFolderMenu(path, tile->mapToGlobal(pos)); });
+        place(widget);
+    }
+    // The previews are read from the files (the table "preview"), as on the Recent page.
+    for (const MapFolder::Map &map : root.maps(m_folderShown)) {
+        const QString path = map.path;
+        QWidget *widget = homeCard(recentMapPreview(path), map.name, [this, path] { if (maybeSave()) readFile(path); });
+        auto *tile = widget->findChild<QToolButton *>();
+        tile->setProperty("mentisMapPath", path);
+        tile->installEventFilter(this);
+        tile->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(tile, &QWidget::customContextMenuRequested, this, [this, tile, path](const QPoint &pos) { homeMapMenu(path, tile->mapToGlobal(pos)); });
+        place(widget);
+    }
+    if (card == (atRoot ? 0 : 1)) m_folderGrid->addWidget(pathLabel(tr("No maps in this folder yet.")), card / kHomeColumns, card % kHomeColumns);
+}
+
+namespace {
+
+// The dark menu of the Home's cards, as the sheet menu (FEAT-042).
+void styleHomeMenu(QMenu &menu, const QString &baseStyle) {
+    menu.setWindowFlags(menu.windowFlags() | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint);
+    menu.setAttribute(Qt::WA_TranslucentBackground);
+    menu.setStyleSheet(UiTheme::qss(baseStyle + " QMenu::item:disabled{color:#6b7280;} QMenu::item{padding-left:12px;}"));
+}
+
+}  // namespace
+
+void MainWindow::homeFolderMenu(const QString &folder, const QPoint &globalPos) {
+    QMenu menu(this);
+    styleHomeMenu(menu, m_outlineAddMenu ? m_outlineAddMenu->styleSheet() : QString());
+    QAction *open = menu.addAction(tr("Open"));
+    QAction *rename = menu.addAction(tr("Rename…"));
+    // FEAT-107: the folder's colour, from the fixed palette; the current one is checked.
+    QMenu *colorMenu = menu.addMenu(tr("Color"));
+    styleHomeMenu(*colorMenu, m_outlineAddMenu ? m_outlineAddMenu->styleSheet() : QString());
+    const QString current = MapFolder::folderColor(folder);
+    const QStringList colors = QStringList{QString()} + MapFolder::folderColors();
+    const QStringList names = QStringList{tr("No color")} + MapFolder::folderColorNames();
+    for (qsizetype i = 0; i < colors.size(); ++i) {
+        QAction *swatch = colorMenu->addAction(colorSwatchIcon(colors[i], 16), names[i]);
+        swatch->setData(colors[i]);
+        swatch->setProperty("mentisFolderColorChoice", true);
+        swatch->setCheckable(true);
+        swatch->setChecked(colors[i] == current);
+    }
+    // FEAT-107 decision 8: the folder moves with its maps.
+    QMenu *moveMenu = menu.addMenu(tr("Move to…"));
+    styleHomeMenu(*moveMenu, m_outlineAddMenu ? m_outlineAddMenu->styleSheet() : QString());
+    addMoveTargets(moveMenu, folder, folder);
+    for (QAction *target : moveMenu->actions()) target->setProperty("mentisFolderMoveTarget", true);
+    QAction *remove = menu.addAction(tr("Delete"));
+    const bool empty = MapFolder::isEmptyFolder(folder);
+    remove->setEnabled(empty);
+    if (!empty) remove->setToolTip(tr("Only an empty folder can be deleted."));
+    QAction *chosen = menu.exec(globalPos);
+    // After the menu's own event: the page is made again, the card that asked included.
+    QTimer::singleShot(0, this, [this, folder, chosen, open, rename, remove] {
+        if (chosen == open) {
+            showMentisFolder(folder);
+        } else if (chosen == rename) {
+            bool ok = false;
+            const QString name = ModalDialog::askText(this, tr("Rename folder"), tr("Name"), tr("Rename"), &ok, QFileInfo(folder).fileName());
+            if (!ok) return;
+            QString error;
+            const QString renamed = MapFolder::current().renameFolder(folder, name, &error);
+            if (renamed.isEmpty()) ModalDialog::inform(this, tr("Error"), error);
+            else followMoveInRecent(folder, renamed);
+            refreshFolderPage();
+        } else if (chosen == remove) {
+            QString error;
+            if (!MapFolder::current().removeFolder(folder, &error)) ModalDialog::inform(this, tr("Error"), error);
+            refreshFolderPage();
+        }
+    });
+    if (chosen && chosen->property("mentisFolderMoveTarget").toBool()) {
+        const QString target = chosen->data().toString();
+        QTimer::singleShot(0, this, [this, folder, target] { moveFolderTo(folder, target); });
+    }
+    if (chosen && chosen->property("mentisFolderColorChoice").toBool()) {
+        const QString color = chosen->data().toString();
+        QTimer::singleShot(0, this, [this, folder, color] {
+            QString error;
+            if (!MapFolder::setFolderColor(folder, color, &error)) ModalDialog::inform(this, tr("Error"), error);
+            refreshFolderPage();
+        });
+    }
+}
+
+void MainWindow::homeMapMenu(const QString &map, const QPoint &globalPos) {
+    QMenu menu(this);
+    const QString baseStyle = m_outlineAddMenu ? m_outlineAddMenu->styleSheet() : QString();
+    styleHomeMenu(menu, baseStyle);
+    QAction *open = menu.addAction(tr("Open"));
+    QMenu *moveMenu = menu.addMenu(tr("Move to…"));
+    styleHomeMenu(*moveMenu, baseStyle);
+    addMoveTargets(moveMenu, map);
+    QAction *chosen = menu.exec(globalPos);
+    if (!chosen) return;
+    const QString target = chosen->data().toString();
+    const bool isOpen = chosen == open;
+    QTimer::singleShot(0, this, [this, map, target, isOpen] {
+        if (isOpen) { if (maybeSave()) readFile(map); }
+        else if (!target.isEmpty()) moveMapTo(map, target);
+    });
+}
+
+void MainWindow::createFolderHere() {
+    bool ok = false;
+    const QString name = ModalDialog::askText(this, tr("New folder"), tr("Name"), tr("Create"), &ok, tr("New folder"));
+    if (!ok) return;
+    QString error;
+    if (MapFolder::current().createFolder(m_folderShown, name, &error).isEmpty()) ModalDialog::inform(this, tr("Error"), error);
+    refreshFolderPage();
+}
+
+void MainWindow::moveMapTo(const QString &map, const QString &folder) {
+    const MapFolder::Move move = MapFolder::current().moveMap(map, folder);
+    if (!move.error.isEmpty()) {
+        ModalDialog::inform(this, tr("Error"), move.error);
+    } else if (move.deferred) {
+        ModalDialog::inform(this, tr("Map open"),
+                            tr("\"%1\" is open: it moves to the folder %2 when it is closed.")
+                                .arg(QFileInfo(map).completeBaseName(), QFileInfo(folder).fileName()));
+    } else {
+        followMoveInRecent(map, move.path);
+    }
+    refreshFolderPage();
+}
+
+void MainWindow::moveFolderTo(const QString &folder, const QString &target) {
+    QString error;
+    const QString moved = MapFolder::current().moveFolder(folder, target, &error);
+    if (moved.isEmpty()) ModalDialog::inform(this, tr("Error"), error);
+    else followMoveInRecent(folder, moved);
+    refreshFolderPage();
+}
+
+void MainWindow::followMoveInRecent(const QString &from, const QString &to) {
+    QSettings settings;
+    QStringList recent = settings.value("recentFiles").toStringList();
+    for (QString &entry : recent) entry = MapFolder::moved(entry, from, to);
+    settings.setValue("recentFiles", recent);
+}
+
+// FEAT-105 stage 3 (decisions 5 and 7): the setting already names the new folder; the maps follow
+// it when the user said so, an open map once it is closed. Left behind, they stay in the recent list.
+void MainWindow::mentisFolderChanged(const QString &oldFolder, bool moveMaps, QWidget *dialogParent) {
+    m_folderShown.clear();
+    if (moveMaps) {
+        const MapFolder::MoveAll result = MapFolder(oldFolder).moveAllTo(MapFolder::current().path());
+        for (const auto &[from, to] : result.moved) followMoveInRecent(from, to);
+        QString message = tr("%n map(s) moved to the new folder.", nullptr, int(result.moved.size()));
+        if (result.deferred > 0)
+            message += QLatin1Char(' ') + tr("%n open map(s) will move when closed.", nullptr, result.deferred);
+        statusBar()->showMessage(message, 8000);
+        if (!result.errors.isEmpty()) ModalDialog::inform(dialogParent, tr("Error"), result.errors.join(QLatin1Char('\n')));
+    }
+    refreshFolderPage();
+}
+
+void MainWindow::runPendingMoves() {
+    for (const auto &[from, to] : MapFolder::runPendingMoves()) followMoveInRecent(from, to);
+}
+
 QPixmap MainWindow::recentMapPreview(const QString &path) const {
     constexpr int kPreviewWidth = 480;   // doppia risoluzione rispetto alla scheda (HiDPI)
     constexpr int kPreviewHeight = 272;
@@ -3703,6 +4153,7 @@ QPixmap MainWindow::templatePreview(int templateIndex) const {
 
 void MainWindow::showHome() {
     if (m_homeRecentRow && !m_homeRecentRow->isChecked()) m_homeRecentRow->click();  // back on Recent
+    runPendingMoves();
     refreshRecentFiles();
     m_pages->setCurrentWidget(m_homePage);
     if (m_outlineDock) m_outlineDock->hide();
@@ -3729,40 +4180,37 @@ void MainWindow::rememberRecent(const QString &path) {
 }
 
 void MainWindow::createActions() {
-    using Area = ShortcutRegistry::Area;
-    const auto keys = [](std::initializer_list<QKeySequence> list) { return QList<QKeySequence>(list); };
-    makeAction("home", Area::General, tr("Library"), keys({QKeySequence("Ctrl+Shift+H"), QKeySequence("Ctrl+H")}), [this] { if (maybeSave()) showHome(); });
-    makeAction("new", Area::General, tr("New"), keys({QKeySequence(QKeySequence::New)}), [this] { newMap(); });
-    makeAction("open", Area::General, tr("Open…"), keys({QKeySequence(QKeySequence::Open)}), [this] { openMap(); });
-    makeAction("save", Area::General, tr("Save"), keys({QKeySequence(QKeySequence::Save)}), [this] { saveMap(); });
-    makeAction("saveAs", Area::General, tr("Save as…"), keys({QKeySequence(QKeySequence::SaveAs)}), [this] { saveMapAs(); });
+    ShortcutCatalog::addAll(*m_shortcuts);
+    makeAction("home", [this] { if (maybeSave()) showHome(); });
+    makeAction("new", [this] { newMap(); });
+    makeAction("open", [this] { openMap(); });
+    makeAction("save", [this] { saveMap(); });
+    makeAction("saveAs", [this] { saveMapAs(); });
     // BUG-017: azioni registrate (prima solo nel menu File, nascosto con la barra dei menu).
-    makeAction("importMarkdown", Area::General, tr("Import Markdown…"), {}, [this] { importMarkdown(); });
-    makeAction("exportMarkdown", Area::General, tr("Export Markdown…"), {}, [this] { exportMarkdown(); });
-    makeAction("exportImage", Area::General, tr("Export image…"), {}, [this] { exportImage(); });
-    makeAction("exportPdf", Area::General, tr("Export PDF…"), {}, [this] { exportPdfOrPrint(false); });
-    makeAction("exportPresentation", Area::General, tr("Export Pitch…"), {}, [this] { exportPresentation(); });
-    makeAction("exportWord", Area::General, tr("Export Word…"), {}, [this] { exportOffice(Document::OfficeFormat::Word); });
-    makeAction("exportExcel", Area::General, tr("Export Excel…"), {}, [this] { exportOffice(Document::OfficeFormat::Excel); });
-    makeAction("print", Area::General, tr("Print…"), {QKeySequence::Print}, [this] { exportPdfOrPrint(true); });
-    makeAction("present", Area::General, tr("Present"), keys({QKeySequence(Qt::Key_F5), QKeySequence("Ctrl+Alt+P")}), [this] { presentPitch(); });
-    makeAction("undo", Area::General, tr("Undo"), keys({QKeySequence(QKeySequence::Undo)}), [this] { undo(); });
-    // Ctrl+Y e' la seconda predefinita di Ripristina (standard su Windows); prima era aggiunta a mano.
-    makeAction("redo", Area::General, tr("Redo"), keys({QKeySequence("Ctrl+Shift+Z"), QKeySequence("Ctrl+Y")}), [this] { redo(); });
+    makeAction("importMarkdown", [this] { importMarkdown(); });
+    makeAction("exportMarkdown", [this] { exportMarkdown(); });
+    makeAction("exportImage", [this] { exportImage(); });
+    makeAction("exportPdf", [this] { exportPdfOrPrint(false); });
+    makeAction("exportPresentation", [this] { exportPresentation(); });
+    makeAction("exportWord", [this] { exportOffice(Document::OfficeFormat::Word); });
+    makeAction("exportExcel", [this] { exportOffice(Document::OfficeFormat::Excel); });
+    makeAction("print", [this] { exportPdfOrPrint(true); });
+    makeAction("present", [this] { presentPitch(); });
+    makeAction("undo", [this] { undo(); });
+    makeAction("redo", [this] { redo(); });
     // B7 (2026-10-13): "Disponi automaticamente" dimentica anche gli spostamenti fatti a mano.
-    makeAction("layout", Area::General, tr("Auto layout"), keys({QKeySequence("Ctrl+L")}), [this] { m_model->clearManualOffsets(); m_scene->autoLayout(); setDirty(); });
-    makeAction("fit", Area::General, tr("Fit to window"), keys({QKeySequence("Ctrl+0")}), [this] { m_view->fitInView(m_scene->itemsBoundingRect().adjusted(-80,-80,80,80), Qt::KeepAspectRatio); });
+    makeAction("layout", [this] { m_model->clearManualOffsets(); m_scene->autoLayout(); setDirty(); });
+    makeAction("fit", [this] { m_view->fitInView(m_scene->itemsBoundingRect().adjusted(-80,-80,80,80), Qt::KeepAspectRatio); });
     // FEAT-087: ZEN mode and its key.
-    makeAction("focusMode", Area::General, tr("Focus mode"), keys({QKeySequence("Ctrl+Alt+F")}), [this] { setFocusMode(!m_focusMode); })
+    makeAction("focusMode", [this] { setFocusMode(!m_focusMode); })
         ->setCheckable(true);
-    makeAction("image", Area::General, tr("Add image…"), keys({QKeySequence("Ctrl+Shift+I")}), [this] { chooseImage(); });
+    makeAction("image", [this] { chooseImage(); });
     // FEAT-027: cronologia dei salti fatti con i collegamenti.
-    makeAction("linkBack", Area::General, tr("Back through links"), keys({QKeySequence("Alt+Left")}), [this] { navigateLinkHistory(true); });
-    makeAction("linkForward", Area::General, tr("Forward through links"), keys({QKeySequence("Alt+Right")}), [this] { navigateLinkHistory(false); });
-    makeAction("shortcuts", Area::General, tr("Shortcuts…"), {}, [this] { showSettings(true); });
+    makeAction("linkBack", [this] { navigateLinkHistory(true); });
+    makeAction("linkForward", [this] { navigateLinkHistory(false); });
+    makeAction("shortcuts", [this] { showSettings(true); });
     // FEAT-092: the manual's page of the place the user is in (F1; on macOS Qt's Help key).
-    makeAction("help", Area::General, tr("User manual"), keys({QKeySequence(QKeySequence::HelpContents)}),
-               [this] { showManual(helpPage()); });
+    makeAction("help", [this] { showManual(helpPage()); });
     // Guarded: the tests make and destroy several main windows; a closed one opens nothing.
     Help::setOpener([window = QPointer<MainWindow>(this)](const QString &page) {
         if (window) window->showManual(page);
@@ -3770,50 +4218,32 @@ void MainWindow::createActions() {
     Help::installDialogKey([window = QPointer<MainWindow>(this)](const QKeyEvent *event) {
         return window && window->m_shortcuts->matches("help", event);
     });
-    makeAction("settings", Area::General, tr("Settings…"), keys({QKeySequence("Ctrl+,"), QKeySequence("Ctrl+Shift+P")}), [this] { showSettings(); });
+    makeAction("settings", [this] { showSettings(); });
     // FEAT-085: keys on the map, the outliner and the Gantt (added to those views with the Gantt view).
-    makeAction("copyStyle", Area::General, tr("Copy style"), keys({QKeySequence("Ctrl+Alt+C")}), [this] { copyStyle(); });
-    makeAction("pasteStyle", Area::General, tr("Paste style"), keys({QKeySequence("Ctrl+Alt+V")}), [this] { pasteStyle(); });
-    makeAction("find", Area::General, tr("Find"), keys({QKeySequence(QKeySequence::Find)}), [this] {
+    makeAction("copyStyle", [this] { copyStyle(); });
+    makeAction("pasteStyle", [this] { pasteStyle(); });
+    makeAction("find", [this] {
         // Ctrl+F again closes the open panel (user's request 2026-10-22).
         if (m_navigationDock && m_navigationDock->isVisible()) emit m_navigationPanel->closeRequested();
         else showNavigationPanel();
     });
     // Mappa: valgono solo con il fuoco sulla mappa (B1, vedi createMenusAndToolbar).
-    makeAction("addChild", Area::Map, tr("Add child"), keys({QKeySequence(Qt::Key_Tab)}), [this] { addChild(); });
-    makeAction("addSibling", Area::Map, tr("Add sibling"), keys({QKeySequence(Qt::Key_Return)}), [this] { addSibling(); });
+    makeAction("addChild", [this] { addChild(); });
+    makeAction("addSibling", [this] { addSibling(); });
     // F2 selects the whole title; Space opens it with the cursor at the end (2026-11-04, user request).
-    makeAction("edit", Area::Map, tr("Edit text"), keys({QKeySequence(Qt::Key_F2)}), [this] { editSelected(); });
-    makeAction("editAtEnd", Area::Map, tr("Edit text at the end"), keys({QKeySequence(Qt::Key_Space)}), [this] { editSelected(true); });
-    makeAction("remove", Area::Map, tr("Remove"), keys({QKeySequence(QKeySequence::Delete)}), [this] { removeSelected(); });
+    makeAction("edit", [this] { editSelected(); });
+    makeAction("editAtEnd", [this] { editSelected(true); });
+    makeAction("remove", [this] { removeSelected(); });
     // FEAT-057: stacking order of floating topics and freely placed main branches. No default keys
     // since FEAT-041 stage B: Ctrl+Shift+[ / ] go to the sheets and Ctrl+] to the Style panel.
     using Arrange = Document::Arrange;
-    makeAction("bringToFront", Area::Map, tr("Bring to front"), {}, [this] { arrangeSelected(Arrange::ToFront); });
-    makeAction("bringForward", Area::Map, tr("Bring forward"), {}, [this] { arrangeSelected(Arrange::Forward); });
-    makeAction("sendBackward", Area::Map, tr("Send backward"), {}, [this] { arrangeSelected(Arrange::Backward); });
-    makeAction("sendToBack", Area::Map, tr("Send to back"), {}, [this] { arrangeSelected(Arrange::ToBack); });
+    makeAction("bringToFront", [this] { arrangeSelected(Arrange::ToFront); });
+    makeAction("bringForward", [this] { arrangeSelected(Arrange::Forward); });
+    makeAction("sendBackward", [this] { arrangeSelected(Arrange::Backward); });
+    makeAction("sendToBack", [this] { arrangeSelected(Arrange::ToBack); });
     createTopicCommands();
-    // Outliner: tasti gestiti in eventFilter con ShortcutRegistry::matches (prima fissi nel codice).
-    // Navigazione con le frecce sulla mappa (richiesta dell'utente 2026-10-21), gestita in eventFilter.
-    m_shortcuts->add("mapSelectLeft", Area::Map, tr("Select the node to the left"), keys({QKeySequence(Qt::Key_Left)}));
-    m_shortcuts->add("mapSelectRight", Area::Map, tr("Select the node to the right"), keys({QKeySequence(Qt::Key_Right)}));
-    m_shortcuts->add("mapSelectUp", Area::Map, tr("Select the node above"), keys({QKeySequence(Qt::Key_Up)}));
-    m_shortcuts->add("mapSelectDown", Area::Map, tr("Select the node below"), keys({QKeySequence(Qt::Key_Down)}));
-    m_shortcuts->add("outlineNewItem", Area::Outliner, tr("New item"), keys({QKeySequence(Qt::Key_Return)}));
-    m_shortcuts->add("outlineIndent", Area::Outliner, tr("Indent"), keys({QKeySequence(Qt::Key_Tab)}));
-    m_shortcuts->add("outlineOutdent", Area::Outliner, tr("Outdent"), keys({QKeySequence("Shift+Tab"), QKeySequence(Qt::Key_Backspace)}));
-    m_shortcuts->add("outlineCopy", Area::Outliner, tr("Copy"), keys({QKeySequence(QKeySequence::Copy)}));
-    m_shortcuts->add("outlineCut", Area::Outliner, tr("Cut"), keys({QKeySequence(QKeySequence::Cut)}));
-    m_shortcuts->add("outlinePaste", Area::Outliner, tr("Paste"), keys({QKeySequence(QKeySequence::Paste)}));
-    m_shortcuts->add("outlineDuplicate", Area::Outliner, tr("Duplicate"), keys({QKeySequence("Ctrl+D")}));
-    m_shortcuts->add("outlineDelete", Area::Outliner, tr("Delete"), keys({QKeySequence(Qt::Key_Delete)}));
-    // FEAT-075: keys of the Gantt table, handled by GanttView.
-    m_shortcuts->add("ganttAddTask", Area::Gantt, tr("Add task"), keys({QKeySequence(Qt::Key_Return)}));
-    m_shortcuts->add("ganttIndent", Area::Gantt, tr("Make subtask"), keys({QKeySequence(Qt::Key_Tab)}));
-    m_shortcuts->add("ganttOutdent", Area::Gantt, tr("Move up a level"), keys({QKeySequence("Shift+Tab")}));
-    m_shortcuts->add("ganttDelete", Area::Gantt, tr("Delete tasks"), keys({QKeySequence(Qt::Key_Delete)}));
-    m_shortcuts->add("ganttChain", Area::Gantt, tr("Link in a chain"), keys({QKeySequence("Ctrl+Shift+L")}));
+    // The arrows on the map and the keys of the outliner and the Gantt have no action: eventFilter and
+    // GanttView match them with ShortcutRegistry::matches.
     // Una scorciatoia cambiata nelle Impostazioni vale subito (decisione 2026-10-17).
     connect(m_shortcuts, &ShortcutRegistry::changed, this, [this](const QString &id) {
         if (QAction *action = m_actions.value(id)) action->setShortcuts(m_shortcuts->shortcuts(id));
@@ -3865,10 +4295,9 @@ void MainWindow::createMenusAndToolbar() {
     m_cancelRelationAction->setShortcutContext(Qt::WidgetWithChildrenShortcut);
     m_cancelRelationAction->setEnabled(false);
     connect(m_cancelRelationAction, &QAction::triggered, this, [this] {
-        m_cancelRelationAction->setEnabled(false);
-        if (m_relationSource.isEmpty()) return;
-        m_relationSource.clear();
-        statusBar()->showMessage(tr("Relationship canceled"), 2500);
+        const bool pending = !m_relationSource.isEmpty() && !m_relationKept;
+        stopRelation();
+        if (pending) statusBar()->showMessage(tr("Relationship canceled"), 2500);
     });
     m_view->addAction(m_cancelRelationAction);
     m_editorToolbar = nullptr;
@@ -4004,6 +4433,9 @@ void MainWindow::createDocks() {
     };
     outlineDelegate->historyStepFinished = [this] {
         m_document->flushPendingStep();
+    };
+    outlineDelegate->titleEdited = [this](const QModelIndex &index, const QString &text, const QString &html) {
+        m_document->editTitle(m_model->nodeFromIndex(index), text, html);
     };
     m_outline->setItemDelegate(outlineDelegate);
     m_outline->setHeaderHidden(true);
@@ -4685,25 +5117,6 @@ void MainWindow::showImageMenu(MindNode *node, const QPoint &screenPos) {
     else if (chosen == rotate) rotateVisual(current);
 }
 
-// Richiesta dell'utente 2026-10-21: dopo una cancellazione resta attivo un fratello (il seguente, se
-// no il precedente) del primo nodo cancellato; senza fratelli il genitore. Si sceglie prima, fra i
-// nodi che restano.
-MindNode *MainWindow::nodeAfterRemoval(const QList<MindNode *> &nodes) const {
-    const auto removed = [&nodes](const MindNode *node) {
-        for (; node; node = node->parent) if (nodes.contains(node)) return true;
-        return false;
-    };
-    for (MindNode *node : nodes) {
-        if (!node || !node->parent || node->summaryTopic || removed(node->parent)) continue;  // FEAT-052: not among the children
-        const auto &siblings = node->parent->children;
-        const auto it = std::find_if(siblings.cbegin(), siblings.cend(), [node](const auto &child) { return child.get() == node; });
-        for (auto next = it + 1; next != siblings.cend(); ++next) if (!removed(next->get())) return next->get();
-        for (auto previous = it; previous != siblings.cbegin();) { --previous; if (!removed(previous->get())) return previous->get(); }
-        return node->parent;
-    }
-    return nullptr;
-}
-
 void MainWindow::selectAfterRemoval(MindNode *node) {
     if (!node) { updateInspector(nullptr); return; }
     m_scene->selectNode(node);
@@ -4725,7 +5138,7 @@ void MainWindow::removeSelected() {
         return;
     }
     const QList<MindNode *> selected = m_scene->selectedNodes();
-    MindNode *next = nodeAfterRemoval(selected);
+    MindNode *next = Document::nodeAfterRemoval(selected);
     if (m_document->removeNodes(selected)) { m_scene->autoLayout(); selectAfterRemoval(next); }
 }
 void MainWindow::arrangeSelected(Document::Arrange arrange) {
@@ -4909,7 +5322,7 @@ void MainWindow::openMap() {
     if (!maybeSave()) return;
     const auto path = m_pickOpenFile ? m_pickOpenFile()
                                      : QFileDialog::getOpenFileName(this, tr("Open map"), {}, tr("Mentis (*.mentis);;Markdown (*.md)"));
-    if (!path.isEmpty()) readFile(path);
+    if (!path.isEmpty()) openFromOutside(path);
 }
 bool MainWindow::saveMap() {
     const QString file = m_document->filePath();
@@ -4917,8 +5330,11 @@ bool MainWindow::saveMap() {
 }
 bool MainWindow::saveMapAs() {
     const auto path = m_pickSaveFile ? m_pickSaveFile()
-                                     : QFileDialog::getSaveFileName(this, tr("Save map"), m_document->filePath(), tr("Mentis (*.mentis)"));
-    return path.isEmpty() ? false : writeFile(path.endsWith(".mentis") ? path : path + ".mentis");
+                                     : QFileDialog::getSaveFileName(this, tr("Save map"), suggestedSavePath(), tr("Mentis (*.mentis)"));
+    if (path.isEmpty()) return false;
+    const QString target = path.endsWith(".mentis") ? path : path + ".mentis";
+    MapFolder::forgetCopy(target);  // a map saved there is not a copy brought in (FEAT-105)
+    return writeFile(target);
 }
 
 bool MainWindow::writeFile(const QString &path, BmapStorage::SaveReason reason) {
@@ -4950,6 +5366,7 @@ bool MainWindow::readFile(const QString &path) {
         return false;
     }
     if (!m_document->filePath().isEmpty()) rememberRecent(m_document->filePath());
+    runPendingMoves();  // FEAT-105: the map closed by this one may wait for a move
     showEditor();
     return true;
 }
@@ -5117,16 +5534,10 @@ ExportDialog::PagesFor MainWindow::exportPages() {
     };
 }
 
-// Richiesta dell'utente 2026-10-20 (rivista lo stesso giorno, "una via di mezzo"): un'immagine
-// nuova (non un adesivo, che resta piccolo) e' larga al massimo quanto il posto del nodo, ma almeno kMinInsertWidthPx, in
-// proporzione; piu' piccolo resta alla sua misura. Poi si cambia con le maniglie o dalla pagina
-// Stile; "Ripristina dimensione" resta la misura reale del file (FEAT-040).
+// Richiesta dell'utente 2026-10-20: larga al massimo quanto il posto del nodo, almeno 200 px
+// (NodeGeometry::fittedImageSize); "Ripristina dimensione" resta la misura reale del file (FEAT-040).
 QSizeF MainWindow::fittedImageSize(const MindNode *node, const QString &path) const {
-    const QSizeF natural = NodeItem::insertionImageSize(path);
-    const qreal room = std::max<qreal>(std::floor(m_scene->imageRoomWidth(node)), kMinInsertWidthPx);
-    if (natural.width() <= room) return natural;
-    const qreal width = room;
-    return {width, std::max<qreal>(1, std::round(natural.height() * width / natural.width()))};
+    return NodeGeometry::fittedImageSize(path, m_scene->imageRoomWidth(node));
 }
 
 void MainWindow::chooseImage() {
@@ -5156,13 +5567,59 @@ bool MainWindow::setNodeImage(MindNode *node, const QString &path) {
     return true;
 }
 void MainWindow::beginRelation() {
+    stopRelation();
     // FEAT-052: a selected boundary can be the start too.
+    const QList<MindNode *> nodes = m_scene->selectedNodes();
     const QStringList boundaries = m_scene->selectedBoundaryIds();
-    auto *node = m_scene->selectedNode();
-    if (!node && boundaries.size() != 1) { addFloatingNode(); return; }
-    m_relationSource = node ? node->id : boundaries.front();
+    if (nodes.isEmpty() && boundaries.isEmpty()) { addFloatingNode(); return; }
+    if (nodes.size() + boundaries.size() > 1) {
+        // FEAT-109: one relationship from the active element to each other selected one, in one step;
+        // they become the selection, so the Style page changes them together.
+        QStringList targets;
+        for (const MindNode *node : nodes) targets.append(node->id);
+        targets.append(boundaries);
+        const QStringList created = m_document->addRelations(activeElementId(), targets);
+        if (created.isEmpty()) return;
+        SelectionCommands::Targets selection;
+        selection.relations = created;
+        m_scene->selectTargets(selection, true);
+        statusBar()->showMessage(tr("%n relationship(s) created", nullptr, int(created.size())), 2500);
+        return;
+    }
+    m_relationSource = nodes.isEmpty() ? boundaries.front() : nodes.front()->id;
+    if (m_topicTools) m_topicTools->setRelationOn(true);  // FEAT-110: armed, as the format painter
     m_cancelRelationAction->setEnabled(true);  // B4: da qui Esc annulla
     statusBar()->showMessage(tr("Relationship: now click the target node. Press Esc to cancel."));
+}
+
+void MainWindow::keepRelation() {
+    if (m_relationSource.isEmpty()) return;  // the click made a floating topic: nothing to keep
+    m_relationKept = true;
+    m_topicTools->setRelationOn(true);
+    statusBar()->showMessage(tr("Relationship: click the targets one by one. Press Esc to finish."));
+}
+
+void MainWindow::stopRelation() {
+    const bool pending = !m_relationSource.isEmpty();
+    m_relationSource.clear();
+    m_relationKept = false;
+    if (m_topicTools) m_topicTools->setRelationOn(false);
+    if (m_cancelRelationAction) m_cancelRelationAction->setEnabled(false);
+    if (pending) statusBar()->clearMessage();
+}
+
+QString MainWindow::activeElementId() const {
+    // A click (also Ctrl+click) and the keyboard give the element the focus; a rubber band does not,
+    // then the last topic that became selected (m_selected) stands in.
+    if (const QGraphicsItem *focus = m_scene->focusItem(); focus && focus->isSelected()) {
+        if (const auto *item = qgraphicsitem_cast<const NodeItem *>(focus)) return item->node()->id;
+        if (focus->type() == BoundaryItem::Type) return static_cast<const BoundaryItem *>(focus)->id();
+    }
+    const QList<MindNode *> nodes = m_scene->selectedNodes();
+    if (m_selected && nodes.contains(m_selected)) return m_selected->id;
+    if (!nodes.isEmpty()) return nodes.front()->id;
+    const QStringList boundaries = m_scene->selectedBoundaryIds();
+    return boundaries.isEmpty() ? QString() : boundaries.front();
 }
 
 void MainWindow::addFloatingNode() {
@@ -5229,6 +5686,7 @@ void MainWindow::addSummary() {
 void MainWindow::finishRelation(const QString &targetId) {
     const QString created = m_document->addRelation(std::exchange(m_relationSource, QString()), targetId);
     if (m_cancelRelationAction) m_cancelRelationAction->setEnabled(false);  // B4
+    if (m_topicTools) m_topicTools->setRelationOn(false);
     // FEAT-053: the new relationship is selected, with its label placeholder.
     if (!created.isEmpty()) m_scene->selectRelationAfterClick(created);
     statusBar()->showMessage(tr("Relationship created"), 2500);
@@ -5384,7 +5842,7 @@ void MainWindow::chooseIcon(IconPage *page, const QString &path, const QString &
     if (nodes.isEmpty()) return;
     if (page->kind() == IconLibrary::Kind::Sticker) { insertSticker(nodes, path); return; }
     QByteArray data;
-    const QString marker = IconPage::markerFor({path, name}, collectionId, &data);
+    const QString marker = IconLibrary::markerFor({path, name}, collectionId, &data);
     if (marker.isEmpty() || !Markers::isValid(marker)) return;
     if (Markers::isCustom(marker)) m_model->addMarkerImage(Markers::customImage(marker), data);
     const bool everyHasIt = std::all_of(nodes.begin(), nodes.end(), [&marker](const MindNode *node) { return node->markers.contains(marker); });
@@ -5471,18 +5929,6 @@ void MainWindow::showMarkerMenu(MindNode *node, const QString &marker, const QPo
 }
 
 // ---------------------------------------------------------------- FEAT-049: file allegati
-
-bool MainWindow::isRiskyFile(const QString &name) {
-    // Windows types from Outlook's blocked attachments
-    // (https://support.microsoft.com/office/434752e1-02d3-4e90-9124-8b81e49a8519), plus scripts,
-    // disk images and the launchers of macOS and Linux (BUG-043).
-    static const QStringList risky = QStringLiteral(
-        "exe com bat cmd pif scr cpl dll msi msp mst msc ps1 ps1xml ps2 ps2xml psc1 psc2 psd1 psm1 "
-        "vb vbs vbe js jse ws wsc wsf wsh hta sct shb jar lnk url scf inf ins isp reg chm gadget "
-        "application appref-ms settingcontent-ms library-ms website xbap mde iso img vhd vhdx "
-        "py pyw pyc sh command app dmg pkg workflow appimage desktop run").split(QLatin1Char(' '));
-    return risky.contains(QFileInfo(name).suffix().toLower());
-}
 
 bool MainWindow::attachFiles(MindNode *node, const QStringList &paths) {
     if (!node) return false;
@@ -5577,7 +6023,7 @@ QString MainWindow::openNodeFile(MindNode *node, int index) {
     // BUG-043: the copy is named attach01.pdf... (the name in the map comes from the document); the
     // type check reads that same name, so the extension it sees is the one the system opens.
     const QString diskName = FileValidation::diskFileName(file.name, index + 1);
-    if (isRiskyFile(diskName) &&
+    if (FileValidation::isRisky(diskName) &&
         ModalDialog::ask(this, tr("Open program or script?"),
                          tr("\"%1\" is a program or a script: it can change your computer. Open it only if you trust where it comes from.").arg(file.name),
                          tr("Open")) != ModalDialog::Choice::Primary)
@@ -5729,7 +6175,7 @@ void MainWindow::outdentOutlineNode() {
 
 namespace {
 // Formato degli appunti per un ramo dell'outliner (JSON del sottoalbero, come nei file .mentis).
-const QString kOutlineMimeType = QStringLiteral("application/x-mentis-subtree");
+const QString kOutlineMimeType = Document::branchesMimeType();
 
 }
 
@@ -5876,7 +6322,7 @@ void MainWindow::deleteOutlineNode() {
     for (const QModelIndex &index : m_outline->selectionModel()->selectedRows())
         if (auto *node = m_model->nodeFromIndex(index)) selected.append(node);
     if (selected.size() <= 1) selected = {outlineSelectedNode()};
-    MindNode *next = nodeAfterRemoval(selected);
+    MindNode *next = Document::nodeAfterRemoval(selected);
     if (m_document->removeNodes(selected)) { m_scene->autoLayout(); selectAfterRemoval(next); }
 }
 
@@ -5924,6 +6370,7 @@ MainWindow::WorkspaceView MainWindow::workspaceView() const {
 void MainWindow::setWorkspaceView(WorkspaceView view) {
     if (view == WorkspaceView::Gantt) ensureGanttView();
     setFormatPainter(false);  // FEAT-085
+    stopRelation();           // FEAT-109
     if (workspaceView() == WorkspaceView::Gantt) m_ganttView->commitPendingEdit();
     const bool outline = view == WorkspaceView::Outline, gantt = view == WorkspaceView::Gantt;
     if (outline) refreshOutline();
@@ -6049,6 +6496,8 @@ void MainWindow::showSettings(bool shortcutsPage) {
     });
     connect(&dialog, &SettingsDialog::checkForUpdatesRequested, this, [this, &dialog] { updatePrompt()->checkNow(&dialog); });
     connect(updatePrompt(), &UpdatePrompt::checkFinished, &dialog, &SettingsDialog::refreshLastUpdateCheck);
+    connect(&dialog, &SettingsDialog::mentisFolderChanged, this,
+            [this, &dialog](const QString &oldFolder, bool moveMaps) { mentisFolderChanged(oldFolder, moveMaps, &dialog); });
     bool tourRequested = false;  // FEAT-093: the tour starts once the dialog is closed
     connect(&dialog, &SettingsDialog::tourRequested, this, [&tourRequested] { tourRequested = true; });
     if (shortcutsPage) dialog.showShortcutsPage();  // FEAT-041: "Scorciatoie…" apre questa scheda
@@ -6287,7 +6736,8 @@ void MainWindow::redo() {
 
 // Interfaccia dopo un passo di storico applicato (il Document ignora intanto le modifiche).
 void MainWindow::onHistoryRestored(bool incremental) {
-    m_relationSource.clear();
+    // FEAT-109: the tool kept on survives a step that leaves its start (an undone relationship).
+    if (!m_relationKept || !m_document->isRelationEnd(m_relationSource)) stopRelation();
     refreshOutline();
     MindNode *keep = nullptr;
     if (incremental && !m_selectedBeforeRestore.isEmpty()) keep = nodeById(m_selectedBeforeRestore);
@@ -6592,7 +7042,7 @@ void MainWindow::cutBranch(MindNode *node) {
     nodes.removeAll(m_model->root());
     if (nodes.isEmpty()) return;
     copyBranches(nodes);
-    MindNode *next = nodeAfterRemoval(nodes);
+    MindNode *next = Document::nodeAfterRemoval(nodes);
     if (m_document->removeNodes(nodes)) { m_scene->autoLayout(); selectAfterRemoval(next); }
 }
 
@@ -6879,22 +7329,20 @@ void MainWindow::addSelectMenu(QMenu *parent) {
 void MainWindow::resetBranchStyle(MindNode *node) { if (node) m_model->resetStyle({node}); }
 
 // FEAT-041 stage B: reference commands that Mentis also has (Settings > Shortcuts of the reference, read
-// 2026-11-01), with their keys; the ones listed without a key get none and can be given one.
+// 2026-11-01); their keys are in ShortcutCatalog.
 // Map commands act on the selected topics with the focus on the map (Q3); General ones everywhere.
 void MainWindow::createTopicCommands() {
-    using Area = ShortcutRegistry::Area;
     using Kind = SelectionCommands::Kind;
-    const auto key = [](const char *text) { return QList<QKeySequence>{QKeySequence(QString::fromLatin1(text))}; };
     // Nothing on the Home page, nor while a field is being typed in: a shifted key (Ctrl+Shift+. arrives
     // as Ctrl+Shift+>) can pass the typing filter, and the title would lose it to the command.
-    const auto general = [this](const QString &id, const QString &text, const QList<QKeySequence> &keys, const std::function<void()> &run) {
-        makeAction(id, Area::General, text, keys, [this, run] {
+    const auto general = [this](const QString &id, const std::function<void()> &run) {
+        makeAction(id, [this, run] {
             if (m_pages && m_pages->currentWidget() == m_editorPage && !typingInField()) run();
         });
         m_windowCommands.append(id);
     };
-    const auto map = [this](const QString &id, const QString &text, const QList<QKeySequence> &keys, const std::function<void()> &run) {
-        makeAction(id, Area::Map, text, keys, [this, run] { if (!typingInField()) run(); });
+    const auto map = [this](const QString &id, const std::function<void()> &run) {
+        makeAction(id, [this, run] { if (!typingInField()) run(); });
         m_mapCommands.append(id);
     };
     // On the one selected topic, like the Insert menu's entries.
@@ -6905,107 +7353,103 @@ void MainWindow::createTopicCommands() {
         };
     };
 
-    general("newSheet", tr("New sheet"), key("Ctrl+Alt+N"), [this] { addSheet(); });
-    general("prevSheet", tr("Previous sheet"), key("Ctrl+Shift+["), [this] { switchSheet(m_document->currentSheet() - 1); });
-    general("nextSheet", tr("Next sheet"), key("Ctrl+Shift+]"), [this] { switchSheet(m_document->currentSheet() + 1); });
-    general("toggleOutliner", tr("Switch between map and outliner"), key("Ctrl+Shift+M"),
-            [this] { setOutlineMode(workspaceView() != WorkspaceView::Outline); });
-    general("ganttView", tr("Gantt chart"), key("Ctrl+Alt+G"), [this] { setWorkspaceView(WorkspaceView::Gantt); });
-    general("zoomIn", tr("Zoom in"), key("Ctrl++"), [this] { zoomShownView(10); });
-    general("zoomOut", tr("Zoom out"), key("Ctrl+-"), [this] { zoomShownView(-10); });
-    general("actualSize", tr("Actual size"), {}, [this] { zoomShownView(0); });
-    general("panelStyle", tr("Format panel: Style"), key("Ctrl+]"), [this] { openPanelPage(PanelContext::Page::Style); });
-    general("panelPitch", tr("Format panel: Pitch"), {}, [this] { openPanelPage(PanelContext::Page::Pitch); });
-    general("panelMap", tr("Format panel: Map"), {}, [this] { openPanelPage(PanelContext::Page::Map); });
+    general("newSheet", [this] { addSheet(); });
+    general("prevSheet", [this] { switchSheet(m_document->currentSheet() - 1); });
+    general("nextSheet", [this] { switchSheet(m_document->currentSheet() + 1); });
+    general("toggleOutliner", [this] { setOutlineMode(workspaceView() != WorkspaceView::Outline); });
+    general("ganttView", [this] { setWorkspaceView(WorkspaceView::Gantt); });
+    general("zoomIn", [this] { zoomShownView(10); });
+    general("zoomOut", [this] { zoomShownView(-10); });
+    general("actualSize", [this] { zoomShownView(0); });
+    general("panelStyle", [this] { openPanelPage(PanelContext::Page::Style); });
+    general("panelPitch", [this] { openPanelPage(PanelContext::Page::Pitch); });
+    general("panelMap", [this] { openPanelPage(PanelContext::Page::Map); });
     // Toggles (user, 2026-11-05): the side panel of the view shown, the Format panel on the map, the
     // task panel in the Gantt (the outliner has none); open if closed, closed if open, like its button.
-    general("toggleSidePanel", tr("Open/close side panel (Format on the map, tasks in the Gantt)"), key("Ctrl+Alt+S"), [this] {
+    general("toggleSidePanel", [this] {
         if (workspaceView() == WorkspaceView::Gantt) m_ganttView->togglePanel();
         else if (workspaceView() == WorkspaceView::Map) toggleDockPage(0);
     });
     // General, not Map: it must also close the panel while the focus is inside it.
-    general("toggleIconPanel", tr("Open/close markers and stickers panel (map)"), key("Ctrl+Alt+M"), [this] {
+    general("toggleIconPanel", [this] {
         if (workspaceView() == WorkspaceView::Map) toggleDockPage(1);
     });
     // FEAT-095: the characters of the selected topics (map, outliner, Gantt); a selection being typed
     // takes them through the format bar instead (charStyleKey).
     using RichTitle::CharStyle;
-    general("bold", tr("Bold"), key("Ctrl+B"), [this] { toggleCharStyle(CharStyle::Bold); });
-    general("italic", tr("Italic"), key("Ctrl+I"), [this] { toggleCharStyle(CharStyle::Italic); });
-    general("underline", tr("Underline"), key("Ctrl+U"), [this] { toggleCharStyle(CharStyle::Underline); });
-    general("strikeOut", tr("Strikethrough"), key("Ctrl+Shift+X"), [this] { toggleCharStyle(CharStyle::StrikeOut); });
+    general("bold", [this] { toggleCharStyle(CharStyle::Bold); });
+    general("italic", [this] { toggleCharStyle(CharStyle::Italic); });
+    general("underline", [this] { toggleCharStyle(CharStyle::Underline); });
+    general("strikeOut", [this] { toggleCharStyle(CharStyle::StrikeOut); });
 
-    // FEAT-086: reference keys (checked live 2026-11-01).
-    map("moveUp", tr("Move topic up"), key("Alt+Up"), [this] { moveSelectedTopic(-1); });
-    map("moveDown", tr("Move topic down"), key("Alt+Down"), [this] { moveSelectedTopic(1); });
-    map("topicBefore", tr("Topic before"), key("Shift+Return"), [this] { addTopicBefore(); });
-    map("parentTopic", tr("Parent topic"), key("Ctrl+Return"), [this] { addParentTopic(); });
-    map("presetVeryImportant", tr("Style \"Very important\""), key("Shift+Alt+1"),
-        [this] { setSelectedStyle(StyleProperty::Preset, int(NodePreset::MoltoImportante)); });
-    map("presetImportant", tr("Style \"Important\""), key("Shift+Alt+2"),
-        [this] { setSelectedStyle(StyleProperty::Preset, int(NodePreset::Importante)); });
-    map("presetCrossedOut", tr("Style \"Strike out\""), key("Shift+Alt+3"),
-        [this] { setSelectedStyle(StyleProperty::Preset, int(NodePreset::Depenna)); });
-    map("branchToSheet", tr("New sheet from topic"), {}, one(&MainWindow::moveBranchToNewSheet));
-    map("resetStyle", tr("Reset style"), key("Ctrl+Alt+0"), [this] { m_model->resetStyle(m_scene->selectedNodes()); });
-    map("relation", tr("Relationship"), key("Ctrl+Shift+R"), [this] { beginRelation(); });
-    map("boundary", tr("Boundary"), key("Ctrl+Shift+B"), [this] { addBoundary(); });
-    map("summary", tr("Summary"), {}, [this] { addSummary(); });
-    map("note", tr("Note"), key("Ctrl+Shift+N"), one(&MainWindow::openNote));
-    map("labels", tr("Label"), key("Ctrl+Shift+L"), one(&MainWindow::openLabels));
-    map("webLink", tr("Link to a web page"), key("Ctrl+K"), one(&MainWindow::editWebLink));
-    map("topicLink", tr("Link to a topic"), {}, one(&MainWindow::editTopicLink));
-    map("attachFiles", tr("Attach files"), {}, one(&MainWindow::chooseFilesToAttach));
+    // FEAT-086.
+    map("moveUp", [this] { moveSelectedTopic(-1); });
+    map("moveDown", [this] { moveSelectedTopic(1); });
+    map("topicBefore", [this] { addTopicBefore(); });
+    map("parentTopic", [this] { addParentTopic(); });
+    map("presetVeryImportant", [this] { setSelectedStyle(StyleProperty::Preset, int(NodePreset::MoltoImportante)); });
+    map("presetImportant", [this] { setSelectedStyle(StyleProperty::Preset, int(NodePreset::Importante)); });
+    map("presetCrossedOut", [this] { setSelectedStyle(StyleProperty::Preset, int(NodePreset::Depenna)); });
+    map("branchToSheet", one(&MainWindow::moveBranchToNewSheet));
+    map("resetStyle", [this] { m_model->resetStyle(m_scene->selectedNodes()); });
+    map("relation", [this] { beginRelation(); });
+    map("boundary", [this] { addBoundary(); });
+    map("summary", [this] { addSummary(); });
+    map("note", one(&MainWindow::openNote));
+    map("labels", one(&MainWindow::openLabels));
+    map("webLink", one(&MainWindow::editWebLink));
+    map("topicLink", one(&MainWindow::editTopicLink));
+    map("attachFiles", one(&MainWindow::chooseFilesToAttach));
     // BUG-042: Ctrl+C and Ctrl+X copy the selected branch, as the topic menu does; before, the map had
     // no copy key and Ctrl+V pasted whatever the clipboard held.
     // FEAT-042 (2026-11-05): all the selected branches.
-    map("mapCopy", tr("Copy"), {QKeySequence(QKeySequence::Copy)}, [this] { copyBranches(m_scene->selectedNodes()); });
-    map("mapCut", tr("Cut"), {QKeySequence(QKeySequence::Cut)}, [this] {
+    map("mapCopy", [this] { copyBranches(m_scene->selectedNodes()); });
+    map("mapCut", [this] {
         if (const QList<MindNode *> selected = m_scene->selectedNodes(); !selected.isEmpty()) cutBranch(selected.front());
     });
     // FEAT-094: Ctrl+V on the selected topic (the Edit menu's Paste had no key on the map).
-    map("mapPaste", tr("Paste"), {QKeySequence(QKeySequence::Paste)}, one(&MainWindow::pasteIntoBranch));
-    map("markers", tr("Markers"), {}, [this] { showIconPanel(0); });
-    map("stickers", tr("Stickers"), {}, [this] { showIconPanel(1); });
-    map("formula", tr("LaTeX formula"), {}, [this] { insertFormula(); });
-    map("removeMarkers", tr("Remove markers"), {}, [this] { removeMarkersOfSelected(); });
-    map("removeVisual", tr("Remove sticker, image or formula"), {}, [this] { removeVisualOfSelected(); });
-    map("removeLinks", tr("Remove links"), {}, [this] { removeLinksOfSelected(); });
-    map("addTask", tr("Checkbox"), key("Ctrl+Alt+T"), [this] { toggleTaskBoxes(m_scene->selectedNodes()); });
-    map("removeTask", tr("Remove checkbox"), {}, [this] { setTaskOfSelected(MindNode::Task::None); });
-    map("taskDone", tr("Mark as done"), {}, [this] { setTaskOfSelected(MindNode::Task::Done); });
-    map("taskNotDone", tr("Mark as not done"), {}, [this] { setTaskOfSelected(MindNode::Task::Open); });
-    map("upperCase", tr("All uppercase"), {}, [this] { setSelectedStyle(StyleProperty::TextCase, int(TextCase::Maiuscolo)); });
-    map("lowerCase", tr("All lowercase"), {}, [this] { setSelectedStyle(StyleProperty::TextCase, int(TextCase::Minuscolo)); });
-    map("alignLeft", tr("Align text left"), {}, [this] { setSelectedStyle(StyleProperty::TextAlign, int(TextAlign::Sinistra)); });
-    map("alignCenter", tr("Center text"), {}, [this] { setSelectedStyle(StyleProperty::TextAlign, int(TextAlign::Centro)); });
-    map("alignRight", tr("Align text right"), {}, [this] { setSelectedStyle(StyleProperty::TextAlign, int(TextAlign::Destra)); });
-    map("fontLarger", tr("Larger text"), key("Ctrl+Shift+."), [this] { stepFontSize(true); });
-    map("fontSmaller", tr("Smaller text"), key("Ctrl+Shift+,"), [this] { stepFontSize(false); });
-    map("numberingNone", tr("Numbering: none"), {}, [this] { setNumberingPreset(-1); });
-    map("numbering123", tr("Numbering: 1.2.3"), {}, [this] { setNumberingPreset(0); });
-    map("numberingABC", tr("Numbering: A.B.C"), {}, [this] { setNumberingPreset(1); });
-    map("numberingabc", tr("Numbering: a.b.c"), {}, [this] { setNumberingPreset(2); });
-    map("numberingRoman", tr("Numbering: I.II.III"), {}, [this] { setNumberingPreset(3); });
-    map("goToCentral", tr("Go to central topic"), key("Ctrl+R"), [this] {
+    map("mapPaste", one(&MainWindow::pasteIntoBranch));
+    map("markers", [this] { showIconPanel(0); });
+    map("stickers", [this] { showIconPanel(1); });
+    map("formula", [this] { insertFormula(); });
+    map("removeMarkers", [this] { removeMarkersOfSelected(); });
+    map("removeVisual", [this] { removeVisualOfSelected(); });
+    map("removeLinks", [this] { removeLinksOfSelected(); });
+    map("addTask", [this] { toggleTaskBoxes(m_scene->selectedNodes()); });
+    map("removeTask", [this] { setTaskOfSelected(MindNode::Task::None); });
+    map("taskDone", [this] { setTaskOfSelected(MindNode::Task::Done); });
+    map("taskNotDone", [this] { setTaskOfSelected(MindNode::Task::Open); });
+    map("upperCase", [this] { setSelectedStyle(StyleProperty::TextCase, int(TextCase::Maiuscolo)); });
+    map("lowerCase", [this] { setSelectedStyle(StyleProperty::TextCase, int(TextCase::Minuscolo)); });
+    map("alignLeft", [this] { setSelectedStyle(StyleProperty::TextAlign, int(TextAlign::Sinistra)); });
+    map("alignCenter", [this] { setSelectedStyle(StyleProperty::TextAlign, int(TextAlign::Centro)); });
+    map("alignRight", [this] { setSelectedStyle(StyleProperty::TextAlign, int(TextAlign::Destra)); });
+    map("fontLarger", [this] { stepFontSize(true); });
+    map("fontSmaller", [this] { stepFontSize(false); });
+    map("numberingNone", [this] { setNumberingPreset(-1); });
+    map("numbering123", [this] { setNumberingPreset(0); });
+    map("numberingABC", [this] { setNumberingPreset(1); });
+    map("numberingabc", [this] { setNumberingPreset(2); });
+    map("numberingRoman", [this] { setNumberingPreset(3); });
+    map("goToCentral", [this] {
         m_scene->selectNode(m_model->root());
         updateInspector(m_model->root());
     });
-    for (const auto &[id, text, kind] : {std::tuple{"selectSubtopics", tr("Select subtopics"), Kind::Subtopics},
-                                         std::tuple{"selectSiblings", tr("Select siblings"), Kind::Siblings},
-                                         std::tuple{"selectSameLevel", tr("Select topics of the same level"), Kind::SameLevel},
-                                         std::tuple{"selectFloating", tr("Select floating topics"), Kind::Floating},
-                                         std::tuple{"selectRelationships", tr("Select relationships"), Kind::Relationships},
-                                         std::tuple{"selectSummaries", tr("Select summaries"), Kind::Summaries},
-                                         std::tuple{"selectBoundaries", tr("Select boundaries"), Kind::Boundaries},
-                                         std::tuple{"selectImages", tr("Select images"), Kind::Images},
-                                         std::tuple{"selectEquations", tr("Select equations"), Kind::Equations}}) {
-        map(QString::fromLatin1(id), text, {}, [this, kind] {
+    for (const auto &[id, kind] : {std::pair{"selectSubtopics", Kind::Subtopics},
+                              std::pair{"selectSiblings", Kind::Siblings},
+                              std::pair{"selectSameLevel", Kind::SameLevel},
+                              std::pair{"selectFloating", Kind::Floating},
+                              std::pair{"selectRelationships", Kind::Relationships},
+                              std::pair{"selectSummaries", Kind::Summaries},
+                              std::pair{"selectBoundaries", Kind::Boundaries},
+                              std::pair{"selectImages", Kind::Images},
+                              std::pair{"selectEquations", Kind::Equations}}) {
+        map(QString::fromLatin1(id), [this, kind] {
             m_scene->selectTargets(SelectionCommands::targets(kind, *m_model, m_scene->selectedNodes()));
         });
     }
-    map("toggleCollapse", tr("Collapse or expand the branch"), key("Ctrl+/"), [this] { toggleCollapseOfSelected(); });
-    map("toggleSubBranches", tr("Collapse or expand the sub-branches"), key("Ctrl+Alt+/"), [this] { toggleSubBranchesOfSelected(); });
+    map("toggleCollapse", [this] { toggleCollapseOfSelected(); });
+    map("toggleSubBranches", [this] { toggleSubBranchesOfSelected(); });
 }
 
 void MainWindow::moveBranchToSheet(MindNode *node, int targetIndex) {
@@ -7519,6 +7963,46 @@ void MainWindow::updateMapSubtitle() {
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
+    // FEAT-105: a map card of the Mentis folder page dragged onto a folder card or a path bar level;
+    // FEAT-107 decision 8: a folder card too, and onto "..", or Back.
+    const bool dragsMap = watched->property("mentisMapPath").isValid();
+    if (dragsMap || watched->property("mentisDragFolderPath").isValid()) {
+        auto *tile = static_cast<QWidget *>(watched);
+        if (event->type() == QEvent::MouseButtonPress) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if (mouse->button() == Qt::LeftButton) m_homeDragStart = mouse->position().toPoint();
+        } else if (event->type() == QEvent::MouseMove) {
+            const auto *mouse = static_cast<QMouseEvent *>(event);
+            if ((mouse->buttons() & Qt::LeftButton)
+                && (mouse->position().toPoint() - m_homeDragStart).manhattanLength() >= QApplication::startDragDistance()) {
+                auto *mime = new QMimeData;
+                if (dragsMap) mime->setData(kHomeMapMime, watched->property("mentisMapPath").toString().toUtf8());
+                else mime->setData(kHomeFolderMime, watched->property("mentisDragFolderPath").toString().toUtf8());
+                auto *drag = new QDrag(tile);
+                drag->setMimeData(mime);
+                drag->setPixmap(tile->grab().scaledToWidth(kHomeCardWidthPx * 3 / 4, Qt::SmoothTransformation));
+                if (auto *button = qobject_cast<QAbstractButton *>(tile)) button->setDown(false);  // no click at the end
+                drag->exec(Qt::MoveAction);
+                return true;
+            }
+        }
+    }
+    if (watched->property("mentisFolderPath").isValid()
+        && (event->type() == QEvent::DragEnter || event->type() == QEvent::DragMove || event->type() == QEvent::Drop)) {
+        auto *drop = static_cast<QDropEvent *>(event);
+        const bool map = drop->mimeData()->hasFormat(kHomeMapMime);
+        if (!map && !drop->mimeData()->hasFormat(kHomeFolderMime)) return false;
+        const QString entry = QString::fromUtf8(drop->mimeData()->data(map ? kHomeMapMime : kHomeFolderMime));
+        const QString folder = watched->property("mentisFolderPath").toString();
+        if (!map && QFileInfo(entry) == QFileInfo(folder)) { drop->ignore(); return true; }  // a folder onto itself
+        drop->setDropAction(Qt::MoveAction);
+        drop->accept();
+        if (event->type() == QEvent::Drop) {
+            // After the drag's own loop: the move may ask, and the page is made again.
+            QTimer::singleShot(0, this, [this, map, entry, folder] { if (map) moveMapTo(entry, folder); else moveFolderTo(entry, folder); });
+        }
+        return true;
+    }
     // + > Argomento mobile: l'anteprima segue il cursore, il clic sinistro la fissa (vedi
     // startFloatingPlacement), il destro o Esc annullano.
     // Startup: the first paint of the Home is flushed to the screen before the queued calls run,
@@ -7549,6 +8033,27 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
             }
             return true;
         }
+    }
+    // FEAT-109: with the relationship tool kept on, a click on a topic or a boundary only creates a
+    // relationship from the start towards it (no selection, drag or title edit); a click on the start
+    // does nothing, one on an empty place or with another button turns the tool off. The press of a
+    // double click is swallowed, else a quick double click would create two.
+    // FEAT-110: armed for one, a click on an empty place turns it off too and goes on as a click.
+    if (!m_relationKept && !m_relationSource.isEmpty() && watched == m_view->viewport() && event->type() == QEvent::MouseButtonPress) {
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        if (mouse->button() == Qt::LeftButton && m_scene->elementAt(m_view->mapToScene(mouse->position().toPoint())).isEmpty())
+            stopRelation();
+    }
+    if (m_relationKept && watched == m_view->viewport() &&
+        (event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick)) {
+        if (event->type() == QEvent::MouseButtonDblClick) return true;
+        auto *mouse = static_cast<QMouseEvent *>(event);
+        const QString target = mouse->button() == Qt::LeftButton
+                                   ? m_scene->elementAt(m_view->mapToScene(mouse->position().toPoint())) : QString();
+        if (target.isEmpty()) stopRelation();
+        else if (target != m_relationSource && !m_document->addRelation(m_relationSource, target).isEmpty())
+            statusBar()->showMessage(tr("Relationship created"), 2500);
+        return true;
     }
     // FEAT-085: with the format painter on, a click on a topic gives it the copied style, without
     // selecting or dragging it; a rectangle dragged from an empty place gives it to every topic it

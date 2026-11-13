@@ -66,7 +66,7 @@ McpServer::Tool libraryTool(const std::function<Access()> &access, const QString
 }  // namespace
 
 // A marker of the library (its file) as the id set_marker gives a topic, with the image the map
-// keeps (IconPage::markerFor does the same for a click in the panel).
+// keeps (IconLibrary::markerFor does the same for a click in the panel).
 std::optional<std::pair<QString, QByteArray>> libraryMarker(const QString &path) {
     const QList<IconLibrary::Collection> collections = IconLibrary::collections(IconLibrary::Kind::Marker);
     const QString collection = collectionOf(collections, path);

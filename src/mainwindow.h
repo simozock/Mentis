@@ -86,7 +86,20 @@ public:
     // FEAT-093: the guided tour (created at the first use); main() offers it at the first start.
     class GuidedTour *tour();
     void offerTourAtFirstStart();
-    void openAtStart(const QString &path);  // the map given on the command line ("Mentis <file>")
+    // The map given on the command line ("Mentis <file>"). A map from outside is copied into the
+    // Mentis folder first (FEAT-105), unless inPlace (an agent's map, "Mentis --in-place <file>").
+    void openAtStart(const QString &path, bool inPlace = false);
+    // FEAT-105: the Home's "Mentis folder" page at that folder (empty = the Mentis folder itself).
+    void showMentisFolder(const QString &folder = QString());
+    QString shownFolder() const { return m_folderShown; }
+    // Moves a map within the Mentis folder (its menu, drag-and-drop): at once, or once it is closed.
+    void moveMapTo(const QString &map, const QString &folder);
+    // FEAT-107 decision 8: moves a folder with its maps (its menu, drag-and-drop); refused while a
+    // map in it is open.
+    void moveFolderTo(const QString &folder, const QString &target);
+    // FEAT-105: where the save dialog starts: the map's own file, or a free name from the map's
+    // title in the Mentis folder (status bar message when the folder had to fall back).
+    QString suggestedSavePath();
     void showTip(const QString &key);  // the first use of an area: "outliner" and "gantt" offer their tour, "pitch" a tip
     NoteEditor *noteEditor() const { return m_noteEditor; }  // FEAT-059 (per i test)
     NoteEditor *outlineNoteEditor() const { return m_outlineNoteEditor; }
@@ -111,8 +124,6 @@ public:
     QString openNodeFile(MindNode *node, int index);
     // Controlla subito le copie aperte (lo fa da solo quando il sistema segnala una modifica).
     void checkOpenedFiles();
-    // Tipi che si aprono solo dopo una conferma (programmi e script).
-    static bool isRiskyFile(const QString &name);
     // BUG-014: scelta del file di "Importa Markdown…" (predefinita QFileDialog); i test la sostituiscono.
     void setMarkdownFilePicker(std::function<QString()> picker) { m_pickMarkdownFile = std::move(picker); }
     // FEAT-066: file di "Apri…" e di "Salva con nome…" (predefiniti QFileDialog); i test li sostituiscono.
@@ -143,7 +154,7 @@ public:
     bool isPlacingFloating() const { return m_placingFloating != nullptr; }
     void rotateVisual(MindNode *node);  // 90 gradi in senso orario (immagine, adesivo, formula)
     QSizeF fittedImageSize(const MindNode *node, const QString &path) const;  // immagini: larga come il nodo, almeno 200
-    static constexpr qreal kMinInsertWidthPx = 200;
+    static constexpr qreal kMinInsertWidthPx = NodeGeometry::kMinInsertWidthPx;
     void setMarker(MindNode *node, const QString &series, const QString &marker);
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
@@ -183,6 +194,16 @@ private:
     QPixmap recentMapPreview(const QString &path) const;
     QPixmap templatePreview(int templateIndex) const;
     QWidget *homeCard(const QPixmap &picture, const QString &name, const std::function<void()> &open);  // FEAT-072 F5
+    // FEAT-105 stage 2: the Home's "Mentis folder" page, one folder level at a time like a file manager.
+    void refreshFolderPage();
+    void homeFolderMenu(const QString &folder, const QPoint &globalPos);
+    void homeMapMenu(const QString &map, const QPoint &globalPos);
+    void createFolderHere();
+    // The recent list follows a map or folder moved inside the Mentis folder.
+    void followMoveInRecent(const QString &from, const QString &to);
+    // The moves waiting for their maps to be closed (FEAT-105 decision 7), done when they are.
+    void mentisFolderChanged(const QString &oldFolder, bool moveMaps, QWidget *dialogParent);  // FEAT-105 stage 3
+    void runPendingMoves();
     void showHome();
     void showEditor();
     bool chooseTemplate();
@@ -190,9 +211,8 @@ private:
     void applyTemplate(int templateIndex, const QString &variant = QString());
     void chooseSheetVariant(const QString &variantId);  // FEAT-072 B16: from the map type card
     void rememberRecent(const QString &path);
-    // FEAT-041: azione con scorciatoie dal registro (predefinite o scelte nelle Impostazioni).
-    QAction *makeAction(const QString &id, ShortcutRegistry::Area area, const QString &text,
-                        const QList<QKeySequence> &defaults, const std::function<void()> &slot);
+    // FEAT-041: the action of a command of ShortcutCatalog, its name and keys from the registry.
+    QAction *makeAction(const QString &id, const std::function<void()> &slot);
     void addChild();
     void addSibling();
     void removeSelected();
@@ -215,9 +235,15 @@ private:
     QString exportBranchId() const;  // the one selected topic, empty otherwise
     ExportDialog::PagesFor exportPages();  // sheets for the export dialogs, by Content
     void beginRelation();
+    // FEAT-109: the relationship tool stays on with the pending start (double click on the topic
+    // bar's button) until stopRelation, which also cancels a pending one.
+    void keepRelation();
+    void stopRelation();
+    // FEAT-109: the active element of the selection (last clicked or reached with the keyboard):
+    // a topic or boundary id, empty with nothing selected.
+    QString activeElementId() const;
     void addFloatingNode();
     void cancelFloatingPlacement();
-    MindNode *nodeAfterRemoval(const QList<MindNode *> &nodes) const;  // vedi removeSelected
     void selectAfterRemoval(MindNode *node);
     class MapTypeSelect *m_sheetVariant = nullptr;       // FEAT-072 B16: map type card of the Map page
     void setStructure(MindNode *node, const QString &typeKey, const QString &directionKey);
@@ -257,6 +283,9 @@ private:
     bool maybeSave(bool storePreview = true);
     bool writeFile(const QString &path, BmapStorage::SaveReason reason = BmapStorage::SaveReason::Explicit);
     bool readFile(const QString &path);
+    // FEAT-105: opens a map chosen by the user or given by the system. A .mentis outside the Mentis
+    // folder and not in the recent list is copied into the folder and the copy is opened.
+    bool openFromOutside(const QString &path);
     // Il modello e' cambiato: passo di storico e salvataggio automatico (FEAT-066: Document).
     void setDirty();
     // FEAT-066: aggiornamenti dell'interfaccia dai segnali del Document.
@@ -462,6 +491,11 @@ private:
     class QLineEdit *m_homeSearch = nullptr;
     QToolButton *m_homeRecentRow = nullptr;
     QToolButton *m_homeTemplatesRow = nullptr;        // hamburger menu (FEAT-072 F1)
+    QToolButton *m_homeFolderRow = nullptr;  // FEAT-105: "Mentis folder"
+    QGridLayout *m_folderGrid = nullptr;
+    QHBoxLayout *m_folderPathBar = nullptr;
+    QString m_folderShown;     // the folder level the page shows; empty = the Mentis folder
+    QPoint m_homeDragStart;    // where a map card was pressed, to start a drag
     QMenu *m_mapInsertMenu = nullptr;   // map "+" menu, reused as the topic menu's "Insert" (FEAT-042)
     QMenu *m_outlineAddMenu = nullptr;  // menu "+" dell'outliner, riusato come sottomenu "Inserisci"
     int m_outlineZoom = 100;  // zoom della pagina outliner, separato da quello della mappa
@@ -474,6 +508,7 @@ private:
     GanttView *m_ganttView = nullptr;
     MindNode *m_selected = nullptr;
     QString m_relationSource;  // id of the start topic or boundary while a relationship is being drawn
+    bool m_relationKept = false;  // FEAT-109: each click on an element creates one from m_relationSource
     // B4: Esc sulla mappa annulla la relazione in attesa; attiva solo dopo "Relazione".
     QAction *m_cancelRelationAction = nullptr;
     // P8 (2026-10-13): vero se la sessione precedente non si è chiusa regolarmente (crash,

@@ -110,6 +110,33 @@ int matchingFields(const Entry &entry, const QString &query, const Options &opti
     return fields;
 }
 
+Shown snippet(const QString &text, const QString &query, const Options &options) {
+    constexpr int kSnippetChars = 40;  // text shown around a match in a note, label or link
+    const QString flat = QString(text).replace(QLatin1Char('\n'), QLatin1Char(' '));
+    const auto found = occurrences(flat, query, options);
+    if (found.isEmpty()) return {flat.left(kSnippetChars), {}};
+    const int start = std::max(0, found.front().first - kSnippetChars / 2);
+    const QString prefix = start > 0 ? QStringLiteral("…") : QString();
+    const int end = start + kSnippetChars + found.front().second;
+    Shown shown{prefix + flat.mid(start, end - start), {}};
+    for (const auto &[at, length] : found)
+        if (at >= start && at + length <= end) shown.ranges.append(std::pair(at - start + int(prefix.size()), length));
+    return shown;
+}
+
+Shown resultLine(const Entry &entry, const QString &query, const Options &options, int fields) {
+    Shown line;
+    line.text = shownTitle(entry).replace(QLatin1Char('\n'), QLatin1Char(' '));
+    line.ranges = occurrences(line.text, query, options);
+    if (fields & Title) return line;
+    const QString source = (fields & Note) ? entry.notes : (fields & Label) ? entry.labels.join(QStringLiteral(", ")) : entry.webLink;
+    const Shown piece = snippet(source, query, options);
+    const int offset = int(line.text.size()) + 3;
+    line.text += QStringLiteral(" · ") + piece.text;
+    for (const auto &[at, length] : piece.ranges) line.ranges.append(std::pair(at + offset, length));
+    return line;
+}
+
 QString replaced(const QString &text, const QString &query, const QString &replacement, const Options &options) {
     QString result = text;
     const QList<std::pair<int, int>> found = occurrences(text, query, options);

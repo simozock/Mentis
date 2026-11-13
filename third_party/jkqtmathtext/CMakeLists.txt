@@ -15,6 +15,11 @@ file(GLOB BC_JKQTMATHTEXT_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/jkqtmathtext/nodes/*.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/jkqtmathtext/parsers/*.cpp)
 file(GLOB_RECURSE BC_JKQTMATHTEXT_HEADERS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.h)
+# FEAT-116: built without Qt Widgets, also for Android. Left out: the widget geometry helpers, the
+# icons and the QLabel subclass, which use widgets and serve neither the renderer nor Mentis.
+list(FILTER BC_JKQTCOMMON_SOURCES EXCLUDE REGEX "(jkqttools|jkqtpicons)\\.cpp$")
+list(FILTER BC_JKQTMATHTEXT_SOURCES EXCLUDE REGEX "jkqtmathtextlabel\\.cpp$")
+list(FILTER BC_JKQTMATHTEXT_HEADERS EXCLUDE REGEX "(jkqtmathtextlabel|jkqttools|jkqtpicons|jkqtpbasicimagetools|_precomp)\\.h$")
 
 add_library(MentisMathText SHARED
     ${BC_JKQTCOMMON_SOURCES}
@@ -27,4 +32,4 @@ target_include_directories(MentisMathText PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(MentisMathText
     PUBLIC  JKQTCOMMON_LIB_IN_DLL JKQTMATHTEXT_LIB_IN_DLL JKQTMATHTEXT_COMPILED_WITH_FIRAMATH
     PRIVATE JKQTCOMMON_LIB_EXPORT_LIBRARY JKQTMATHTEXT_LIB_EXPORT_LIBRARY)
-target_link_libraries(MentisMathText PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets)
+target_link_libraries(MentisMathText PUBLIC Qt6::Core Qt6::Gui)

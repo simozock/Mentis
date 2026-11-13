@@ -18,10 +18,29 @@ set(CMAKE_AUTOUIC ON)
 
 option(MENTIS_BUILD_BENCHMARKS "Compila i benchmark riproducibili di Mentis" OFF)
 option(MENTIS_BUILD_MEDIA "Build the tool that renders the README screenshots and GIFs (tools/media)" OFF)
+# FEAT-097: the Qt Quick app for Android (mobile/). Off on the desktop, whose build does not change;
+# on, it also builds there as a window, with its tests (area "mobile").
+if(ANDROID)
+    set(mentis_mobile_default ON)
+else()
+    set(mentis_mobile_default OFF)
+endif()
+option(MENTIS_BUILD_MOBILE "Build the Qt Quick app for Android (mobile/)" ${mentis_mobile_default})
 
 # Svg: QSvgGenerator for the SVG export; PrintSupport: printing (FEAT-054, both approved by the user
 # 2026-10-26; Qt modules, same license). Qt 6.8 for QPdfWriter::setColorModel (grey PDF).
-find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets Sql Concurrent Svg PrintSupport Network)
+# FEAT-097: Android builds the core and the mobile app only (MENTIS_DESKTOP off): no Widgets,
+# PrintSupport, desktop app, tools or tests. The formula renderer is built for both (FEAT-116).
+if(ANDROID)
+    set(MENTIS_DESKTOP OFF)
+else()
+    set(MENTIS_DESKTOP ON)
+endif()
+set(mentis_qt_components Gui Sql Concurrent Svg Network)
+if(MENTIS_DESKTOP)
+    list(APPEND mentis_qt_components Widgets PrintSupport)
+endif()
+find_package(Qt6 6.8 REQUIRED COMPONENTS ${mentis_qt_components})
 # Qt 6.8's OpenGL wrapper links the AGL framework on macOS, which recent Xcode SDKs no longer ship:
 # the link fails with "ld: framework 'AGL' not found" (GitHub's macos-latest, 2026-11-02). Mentis
 # uses no OpenGL of its own, so AGL is dropped from the wrapper's link libraries.
@@ -38,12 +57,16 @@ endif()
 # sia avviata da Qt Creator sia da riga di comando.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+# FEAT-116: built without Qt Widgets, for the desktop and the phone.
 add_subdirectory(third_party/jkqtmathtext)
 
 # 2026-10-15 (build piu' veloce, richiesta dell'utente): i sorgenti dell'app si compilano una volta
 # sola in una libreria statica interna, usata dall'app e da tutti i test. Prima ogni test con
 # l'interfaccia ricompilava da capo tutto src/ (mainwindow.cpp 5 volte, mindmapmodel.cpp 8).
-qt_add_library(MentisCore STATIC
+# FEAT-096 stage 4 (ADR-006): what builds without Qt Widgets (model, storage, history, layout and
+# measures, services), shared by the desktop UI, the MCP server and the front ends to come. It must
+# never link Qt6::Widgets (nor PrintSupport, which needs it): tests/domain_layout_test.cpp checks it.
+qt_add_library(MentisDomain STATIC
     src/boundary.h
     src/boundary.cpp
     src/relationship.h
@@ -58,6 +81,116 @@ qt_add_library(MentisCore STATIC
     src/ganttcosts.cpp
     src/ganttresources.h
     src/ganttresources.cpp
+    src/exportframe.h
+    src/exportframe.cpp
+    src/selectioncommands.h
+    src/selectioncommands.cpp
+    src/markdownimport.h
+    src/markdownimport.cpp
+    src/localization.h
+    src/localization.cpp
+    src/document.h
+    src/document.cpp
+    src/shortcuts.h
+    src/shortcuts.cpp
+    src/shortcutcatalog.h
+    src/shortcutcatalog.cpp
+    src/mapnavigation.h
+    src/mapnavigation.cpp
+    src/mcp/mcpserver.h
+    src/mcp/mcpserver.cpp
+    src/mcp/mcpbridge.h
+    src/mcp/mcpbridge.cpp
+    src/mcp/mcpclients.h
+    src/mcp/mcpclients.cpp
+    src/latexrenderer.h
+    src/latexrenderer.cpp
+    src/maphistory.h
+    src/maphistory.cpp
+    src/bmapstorage.h
+    src/bmapstorage.cpp
+    src/mindmapmodel.h
+    src/mindmapmodel.cpp
+    src/nodestyle.h
+    src/nodeshape.cpp
+    src/nodesketch.cpp
+    src/richtitle.cpp
+    src/richresources.h
+    src/richresources.cpp
+    src/nodestyle.cpp
+    src/maplayout.h
+    src/maplayout.cpp
+    src/reordertarget.h
+    src/reordertarget.cpp
+    src/nodegeometry.h
+    src/nodegeometry.cpp
+    src/spellchecker.h
+    src/spellchecker.cpp
+    src/custompalettes.h
+    src/filevalidation.h
+    src/markdownshortcuts.h
+    src/markdownshortcuts.cpp
+    src/markers.h
+    src/markers.cpp
+    src/mapstructure.h
+    src/mapstructure.cpp
+    src/mapvariants.h
+    src/mapvariants.cpp
+    src/nodesearch.h
+    src/nodesearch.cpp
+    src/updates.h
+    src/updates.cpp
+    src/branchpath.h
+    src/branchpath.cpp
+    src/iconlibrary.h
+    src/iconlibrary.cpp
+    src/svgdocument.cpp
+    src/svgshapes.cpp
+    src/stickers.h
+    src/stickers.cpp
+    src/filevalidation.cpp
+    src/mapfolder.h
+    src/mapfolder.cpp
+    src/custompalettes.cpp
+    src/performance.h
+    src/performance.cpp
+    src/panelcontext.h
+    src/panelcontext.cpp
+    src/nodelinks.h
+    src/nodelinks.cpp
+    src/clipboardpaste.h
+    src/clipboardpaste.cpp
+    src/pitchexport.h
+    src/pitchexport.cpp
+    src/pitchtemplate.h
+    src/pitchtemplate.cpp
+    src/zipwriter.h
+    src/zipwriter.cpp
+    src/ooxml.h
+    src/ooxml.cpp
+    src/pitch.h
+    src/pitch.cpp
+    src/officeexport.h
+    src/officeexport.cpp
+    src/formularendering.h
+    src/formularendering.cpp
+    src/formulasyntax.cpp
+)
+target_include_directories(MentisDomain PUBLIC src src/mcp)
+target_link_libraries(MentisDomain PUBLIC Qt6::Gui Qt6::Sql Qt6::Concurrent Qt6::Svg Qt6::Network)
+
+# FEAT-116: the formula renderer's hooks (FormulaText on JKQTMathText), without Qt Widgets: shared
+# by the desktop UI and the phone, so MentisDomain links no renderer (FEAT-096).
+qt_add_library(MentisFormula STATIC
+    src/formulatext.h
+    src/formulatext.cpp
+)
+target_include_directories(MentisFormula PUBLIC src)
+target_link_libraries(MentisFormula PUBLIC MentisDomain MentisMathText)
+
+# The desktop UI (Qt Widgets) on MentisDomain; the app and the UI tests link it.
+if(MENTIS_DESKTOP)
+qt_add_library(MentisCore STATIC
     src/resourcesdialog.h
     src/resourcesdialog.cpp
     src/ganttview.h
@@ -76,66 +209,25 @@ qt_add_library(MentisCore STATIC
     src/ganttoffice.cpp
     src/officeexportdialog.h
     src/officeexportdialog.cpp
-    src/exportframe.h
-    src/exportframe.cpp
     src/exportframecontrols.h
     src/exportframecontrols.cpp
-    src/selectioncommands.h
-    src/selectioncommands.cpp
     src/boundaryitem.h
     src/boundaryitem.cpp
     src/relationshipitem.h
     src/relationshipitem.cpp
-    src/formulatext.h
-    src/formulatext.cpp
-    src/markdownimport.h
-    src/markdownimport.cpp
-    src/localization.h
-    src/localization.cpp
-    src/document.h
-    src/document.cpp
-    src/shortcuts.h
-    src/shortcuts.cpp
     src/uitheme.h
     src/uitheme.cpp
     src/windowframe.h
     src/windowframe.cpp
-    src/mcp/mcpserver.h
-    src/mcp/mcpserver.cpp
     src/mcp/mcpmaptools.h
     src/mcp/mcpmaptools.cpp
-    src/mcp/mcpstdio.h
-    src/mcp/mcpstdio.cpp
-    src/mcp/mcpbridge.h
-    src/mcp/mcpbridge.cpp
-    src/mcp/mcpclients.h
-    src/mcp/mcpclients.cpp
     src/mcp/mcptoolsupport.h
     src/mcp/mcpcontenttools.cpp
     src/mcp/mcpelementtools.cpp
     src/mcp/mcpsheettools.cpp
-    src/mcp/mcpgantttools.cpp
-    src/mcp/mcpexporttools.cpp
-    src/mcp/mcplibrarytools.cpp
     src/mcp/mcpthemetools.cpp
-    src/mcp/mcppitchtemplatetools.cpp
-    src/latexrenderer.h
-    src/latexrenderer.cpp
-    src/maphistory.h
-    src/maphistory.cpp
-    src/bmapstorage.h
-    src/bmapstorage.cpp
     src/mainwindow.h
     src/mainwindow.cpp
-    src/mindmapmodel.h
-    src/mindmapmodel.cpp
-    src/nodestyle.h
-    src/nodeshape.cpp
-    src/nodesketch.cpp
-    src/richtitle.cpp
-    src/richresources.h
-    src/richresources.cpp
-    src/nodestyle.cpp
     src/mindmapscene.h
     src/mindmapscene.cpp
     src/mindmapview.h
@@ -144,8 +236,6 @@ qt_add_library(MentisCore STATIC
     src/nodeitem.cpp
     src/texteditmenu.h
     src/texteditmenu.cpp
-    src/spellchecker.h
-    src/spellchecker.cpp
     src/topictools.h
     src/topictools.cpp
     src/stylecontrols.h
@@ -153,28 +243,14 @@ qt_add_library(MentisCore STATIC
     src/settingsdialog.h
     src/settingsdialog.cpp
     src/toggleswitch.h
-    src/custompalettes.h
-    src/filevalidation.h
     src/noteeditor.h
     src/noteeditor.cpp
-    src/markdownshortcuts.h
-    src/markdownshortcuts.cpp
     src/formuladialog.h
     src/formuladialog.cpp
-    src/markers.h
-    src/markers.cpp
-    src/mapstructure.h
-    src/mapstructure.cpp
-    src/mapvariants.h
-    src/mapvariants.cpp
     src/variantgallery.h
     src/variantgallery.cpp
-    src/nodesearch.h
-    src/nodesearch.cpp
     src/wheelguard.h
     src/wheelguard.cpp
-    src/updates.h
-    src/updates.cpp
     src/updateprompt.h
     src/updateprompt.cpp
     src/help.h
@@ -185,40 +261,22 @@ qt_add_library(MentisCore STATIC
     src/tour.cpp
     src/navigationpanel.h
     src/navigationpanel.cpp
-    src/branchpath.h
-    src/branchpath.cpp
     src/structurepicker.h
     src/structurepicker.cpp
-    src/iconlibrary.h
-    src/iconlibrary.cpp
     src/iconpanel.h
     src/iconpanel.cpp
     src/stickereditor.cpp
-    src/svgdocument.cpp
-    src/svgshapes.cpp
-    src/stickers.h
-    src/stickers.cpp
     src/labeleditor.h
     src/labeleditor.cpp
-    src/filevalidation.cpp
-    src/custompalettes.cpp
     src/palettedialog.h
     src/palettedialog.cpp
     src/toggleswitch.cpp
     src/floatingui.h
     src/floatingui.cpp
-    src/performance.h
-    src/performance.cpp
     src/segmentedcontrol.h
     src/segmentedcontrol.cpp
     src/sidepanel.h
     src/sidepanel.cpp
-    src/panelcontext.h
-    src/panelcontext.cpp
-    src/nodelinks.h
-    src/nodelinks.cpp
-    src/clipboardpaste.h
-    src/clipboardpaste.cpp
     src/modaldialog.h
     src/modaldialog.cpp
     src/linkdialogs.h
@@ -229,36 +287,31 @@ qt_add_library(MentisCore STATIC
     src/exportdialog.cpp
     src/pagedialog.h
     src/pagedialog.cpp
-    src/pitch.h
-    src/pitch.cpp
     src/pitchpage.h
     src/pitchpage.cpp
     src/pitchwindow.h
     src/pitchwindow.cpp
-    src/pitchexport.h
-    src/pitchexport.cpp
-    src/pitchtemplate.h
-    src/pitchtemplate.cpp
     src/pitchtemplateeditor.h
     src/pitchtemplateeditor.cpp
-    src/zipwriter.h
-    src/zipwriter.cpp
-    src/ooxml.h
-    src/ooxml.cpp
-    src/officeexport.h
-    src/officeexport.cpp
+    src/mcp/mcpstdio.h
+    src/mcp/mcpstdio.cpp
+    src/mcp/mcpgantttools.cpp
+    src/mcp/mcpexporttools.cpp
+    src/mcp/mcplibrarytools.cpp
+    src/mcp/mcppitchtemplatetools.cpp
 )
 target_include_directories(MentisCore PUBLIC src)
 # Qt Network: the local channel between "Mentis --mcp" and the open windows (FEAT-045 phase 2) and
 # the update check against GitHub (FEAT-090).
-target_link_libraries(MentisCore PUBLIC Qt6::Widgets Qt6::Sql Qt6::Concurrent Qt6::Svg Qt6::PrintSupport Qt6::Network MentisMathText)
+target_link_libraries(MentisCore PUBLIC MentisDomain MentisFormula Qt6::Widgets Qt6::PrintSupport)
+endif()
 # FEAT-090: the version has one source, project(Mentis VERSION ...) above. Only updates.cpp reads it
 # (Updates::currentVersion): a new version recompiles one file, not the whole library.
 set_source_files_properties(src/updates.cpp PROPERTIES COMPILE_DEFINITIONS MENTIS_VERSION="${PROJECT_VERSION}")
 # FEAT-044: system spell checker. Windows: Spell Checking API (COM, ole32); macOS and Linux later.
 if(WIN32)
-    target_sources(MentisCore PRIVATE src/spellchecker_win.cpp)
-    target_link_libraries(MentisCore PUBLIC ole32)
+    target_sources(MentisDomain PRIVATE src/spellchecker_win.cpp)
+    target_link_libraries(MentisDomain PUBLIC ole32)
 endif()
 # FEAT-071: Snap and resizing of the app-drawn window on Windows (DWM corners, auto-hide taskbar).
 if(WIN32)
@@ -272,6 +325,11 @@ endif()
 # themselves without Q_INIT_RESOURCE.
 add_library(MentisResources OBJECT resources.qrc)
 set_target_properties(MentisResources PROPERTIES AUTORCC ON)
+# FEAT-097: the host's rcc compresses with zstd, which Qt for Android's Core cannot read
+# (link error: undefined qt_resourceFeatureZstd). qt_add_resources checks this itself, AUTORCC not.
+if(NOT QT_FEATURE_zstd)
+    set_target_properties(MentisResources PROPERTIES AUTORCC_OPTIONS "--no-zstd")
+endif()
 target_link_libraries(MentisResources PRIVATE Qt6::Core)
 # FEAT-092: the user manual inside the app, read by the manual window from :/docs/manual/...: its
 # pages, its pictures and the front page's pictures it shows (media/), at the same relative paths.
@@ -282,11 +340,12 @@ file(GLOB mentis_manual_media CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE
 qt_add_resources(MentisResources mentis_manual PREFIX "/docs" BASE "${CMAKE_CURRENT_SOURCE_DIR}"
     FILES ${mentis_manual_files} ${mentis_manual_media})
 
-qt_add_executable(Mentis
-    src/main.cpp
-)
-
-target_link_libraries(Mentis PRIVATE MentisCore MentisResources)
+if(MENTIS_DESKTOP)
+    qt_add_executable(Mentis
+        src/main.cpp
+    )
+    target_link_libraries(Mentis PRIVATE MentisCore MentisResources)
+endif()
 
 # Compiler warnings for the app's own code (2026-11-09, user's request), not third_party: -Wall
 # -Wextra on GCC and Clang, without -Wmissing-field-initializers (aggregates that leave fields at
@@ -299,12 +358,22 @@ function(mentis_warnings target)
                                $<$<BOOL:${MENTIS_WARNINGS_AS_ERRORS}>:-Werror>)
     endif()
 endfunction()
-mentis_warnings(MentisCore)
-mentis_warnings(Mentis)
+mentis_warnings(MentisDomain)
+if(MENTIS_DESKTOP)
+    mentis_warnings(MentisCore)
+    mentis_warnings(Mentis)
+endif()
+
+if(MENTIS_BUILD_MOBILE)
+    # Here, not in mobile/: the tests' targets in this folder link these modules too.
+    find_package(Qt6 6.8 REQUIRED COMPONENTS Quick QuickControls2)
+    add_subdirectory(mobile)
+endif()
 
 # FEAT-045 / ADR-005: the guide for agents is the MCP server's instructions.
-qt_add_resources(MentisCore "mcpguide" PREFIX "/mcp" BASE "src/mcp" FILES src/mcp/mentis-mcp-guide.md)
-target_include_directories(MentisCore PUBLIC src/mcp)
+if(MENTIS_DESKTOP)
+    qt_add_resources(MentisCore "mcpguide" PREFIX "/mcp" BASE "src/mcp" FILES src/mcp/mentis-mcp-guide.md)
+endif()
 
 # FEAT-046 / ADR-003: the code's texts are English; every other language is a translation compiled
 # into the app (resources :/i18n). FEAT-091 (user, 2026-11-02): the translations are the files
@@ -314,19 +383,17 @@ target_include_directories(MentisCore PUBLIC src/mcp)
 # https://doc.qt.io/qt-6/qtlinguist-cmake-qt-add-lupdate.html
 # https://doc.qt.io/qt-6/qtlinguist-cmake-qt-add-lrelease.html
 find_package(Qt6 6.7 REQUIRED COMPONENTS LinguistTools)
-qt_add_executable(MentisTranslations
-    tools/translations/main.cpp
-    tools/translations/translationfiles.h
-    tools/translations/translationfiles.cpp
-)
-target_link_libraries(MentisTranslations PRIVATE Qt6::Core)
-# A folder of its own: on Windows the build runs the tool with a copy of Qt Core beside it, whatever
-# the PATH. In the build folder that copy made the app and the tests load Qt from there and miss
-# its plugins ("no Qt platform plugin could be initialized", 2026-11-02).
-set_target_properties(MentisTranslations PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools/translations")
-if(WIN32)
-    add_custom_command(TARGET MentisTranslations POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core> $<TARGET_FILE_DIR:MentisTranslations>)
+if(CMAKE_CROSSCOMPILING)
+    # FEAT-097: the tool runs at build time, so a cross build (Android) takes one built for the host:
+    # cmake -S tools/translations -B <dir>, then -DMENTIS_HOST_TRANSLATIONS=<dir>/tools/translations/MentisTranslations.
+    set(MENTIS_HOST_TRANSLATIONS "" CACHE FILEPATH "MentisTranslations built for the host (cross builds)")
+    if(NOT EXISTS "${MENTIS_HOST_TRANSLATIONS}")
+        message(FATAL_ERROR "A cross build needs MENTIS_HOST_TRANSLATIONS, the path of MentisTranslations built for the host (tools/translations/CMakeLists.txt)")
+    endif()
+    add_executable(MentisTranslations IMPORTED)
+    set_target_properties(MentisTranslations PROPERTIES IMPORTED_LOCATION "${MENTIS_HOST_TRANSLATIONS}")
+else()
+    add_subdirectory(tools/translations)
 endif()
 
 set(MENTIS_TRANSLATION_THRESHOLD 80)  # percent translated for a language to be offered
@@ -336,19 +403,26 @@ list(SORT mentis_language_files)
 
 # Every text of the code, read by lupdate into the build folder; update_translations merges it
 # into the JSON files. -nounfinished at lrelease: an empty value shows in English.
-set(mentis_lupdate_ts "${CMAKE_BINARY_DIR}/translations/lupdate/mentis.ts")
-file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/translations/lupdate")  # lupdate does not create it
-qt_add_lupdate(SOURCE_TARGETS MentisCore Mentis
-    TS_FILES "${mentis_lupdate_ts}"
-    LUPDATE_TARGET Mentis_lupdate
-    NO_GLOBAL_TARGET  # update_translations is ours: lupdate, then the merge into the JSON files
-    OPTIONS -locations none -no-obsolete
-)
-add_custom_target(update_translations
-    COMMAND MentisTranslations sync "${mentis_lupdate_ts}" "${CMAKE_CURRENT_SOURCE_DIR}/translations"
-    COMMENT "Adding the code's texts to translations/*.json"
-    VERBATIM)
-add_dependencies(update_translations Mentis_lupdate MentisTranslations)
+# Updating the JSON files is the developers' step, on the desktop build.
+if(MENTIS_DESKTOP)
+    set(mentis_lupdate_ts "${CMAKE_BINARY_DIR}/translations/lupdate/mentis.ts")
+    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/translations/lupdate")  # lupdate does not create it
+    set(mentis_lupdate_targets MentisDomain MentisFormula MentisCore Mentis)
+    if(TARGET MentisMobileUi)
+        list(APPEND mentis_lupdate_targets MentisMobileUi MentisMobile)  # lupdate reads the module's QML files too
+    endif()
+    qt_add_lupdate(SOURCE_TARGETS ${mentis_lupdate_targets}
+        TS_FILES "${mentis_lupdate_ts}"
+        LUPDATE_TARGET Mentis_lupdate
+        NO_GLOBAL_TARGET  # update_translations is ours: lupdate, then the merge into the JSON files
+        OPTIONS -locations none -no-obsolete
+    )
+    add_custom_target(update_translations
+        COMMAND MentisTranslations sync "${mentis_lupdate_ts}" "${CMAKE_CURRENT_SOURCE_DIR}/translations"
+        COMMENT "Adding the code's texts to translations/*.json"
+        VERBATIM)
+    add_dependencies(update_translations Mentis_lupdate MentisTranslations)
+endif()
 
 set(mentis_generated_ts)
 foreach(json IN LISTS mentis_language_files)
@@ -361,11 +435,22 @@ foreach(json IN LISTS mentis_language_files)
         VERBATIM)
     list(APPEND mentis_generated_ts "${ts}")
 endforeach()
-qt_add_lrelease(TARGETS Mentis
+if(TARGET Mentis)
+    set(mentis_lrelease_target Mentis)
+else()
+    set(mentis_lrelease_target MentisMobile)
+endif()
+qt_add_lrelease(TARGETS ${mentis_lrelease_target}
     TS_FILES ${mentis_generated_ts}
     OPTIONS -nounfinished
     QM_FILES_OUTPUT_VARIABLE mentis_qm_files)
-qt_add_resources(Mentis mentis_translations PREFIX "/i18n" BASE "${CMAKE_BINARY_DIR}" FILES ${mentis_qm_files})
+if(TARGET Mentis)
+    qt_add_resources(Mentis mentis_translations PREFIX "/i18n" BASE "${CMAKE_BINARY_DIR}" FILES ${mentis_qm_files})
+endif()
+if(TARGET MentisMobile)
+    # The same translations: Localization::installTranslators reads them for qsTr too (FEAT-097).
+    qt_add_resources(MentisMobile mentis_mobile_translations PREFIX "/i18n" BASE "${CMAKE_BINARY_DIR}" FILES ${mentis_qm_files})
+endif()
 
 # FEAT-046: the languages offered in Settings go into a generated header, rewritten when a JSON
 # file changes.
@@ -375,8 +460,8 @@ add_custom_command(OUTPUT "${mentis_offered_header}"
     DEPENDS ${mentis_language_files} MentisTranslations
     COMMENT "Offered languages"
     VERBATIM)
-target_sources(MentisCore PRIVATE "${mentis_offered_header}")
-target_include_directories(MentisCore PRIVATE "${CMAKE_BINARY_DIR}/generated")
+target_sources(MentisDomain PRIVATE "${mentis_offered_header}")  # read by localization.cpp
+target_include_directories(MentisDomain PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
 # The app's icon (user, 2026-10-31): the .exe's from a resource script, the bundle's from the .icns.
 # The script also carries the version information, from project() (FEAT-090).
@@ -390,14 +475,20 @@ elseif(APPLE)
     target_sources(Mentis PRIVATE assets/appicon/mentis.icns)
 endif()
 
+# The rest is the desktop's: tools, install and tests (FEAT-097: not on Android).
+if(NOT MENTIS_DESKTOP)
+    return()
+endif()
+
 # libFuzzer (2026-11-09): one executable per target of tests/fuzz/fuzztargets.h, with AddressSanitizer
-# and UndefinedBehaviorSanitizer; clang only (CI on Linux, job "fuzz"). MentisCore gets the same
-# instrumentation so that its code is explored and checked too.
+# and UndefinedBehaviorSanitizer; clang only (CI on Linux, job "fuzz"). MentisDomain and MentisCore get
+# the same instrumentation so that their code is explored and checked too.
 option(MENTIS_BUILD_FUZZERS "Build the libFuzzer targets (clang)" OFF)
 if(MENTIS_BUILD_FUZZERS)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR "MENTIS_BUILD_FUZZERS needs clang")
     endif()
+    target_compile_options(MentisDomain PRIVATE -fsanitize=fuzzer-no-link,address,undefined)
     target_compile_options(MentisCore PRIVATE -fsanitize=fuzzer-no-link,address,undefined)
     foreach(mentis_fuzz_target markdown richText mapJson document)
         set(mentis_fuzzer MentisFuzz_${mentis_fuzz_target})
@@ -415,7 +506,7 @@ endif()
 
 if(MENTIS_BUILD_BENCHMARKS)
     qt_add_executable(MentisBenchmark tests/performance_benchmark.cpp)
-    target_link_libraries(MentisBenchmark PRIVATE MentisCore)
+    target_link_libraries(MentisBenchmark PRIVATE MentisCore MentisResources)  # resources: the bundled map fonts
 endif()
 
 # The README's screenshots and GIFs from the real window on the offscreen platform (tools/media).
@@ -666,6 +757,15 @@ if(BUILD_TESTING)
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()
 
+    # FEAT-105: the Mentis folder (free names, reuse by content, fallback).
+    qt_add_executable(MentisMapFolderTest tests/map_folder_test.cpp)
+    target_link_libraries(MentisMapFolderTest PRIVATE MentisDomain Qt6::Test)
+    add_test(NAME MentisMapFolder COMMAND MentisMapFolderTest)
+    if(WIN32)
+        set_tests_properties(MentisMapFolder PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endif()
+
     # FEAT-045: the MCP server of mentis-mcp, protocol (no windows) and tools on real files.
     # Phase 2: McpBridge, an agent on the map open in a real window.
     foreach(mcp_test IN ITEMS McpProtocol McpTools McpBridge)
@@ -686,6 +786,44 @@ if(BUILD_TESTING)
                 ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
         endif()
     endforeach()
+
+    # FEAT-096: the map layout before and after it moves out of MindMapScene and NodeItem; values
+    # recorded per platform in tests/data/layout_regression (MENTIS_LAYOUT_RECORD=1 writes them).
+    qt_add_executable(MentisLayoutRegressionTest tests/layout_regression_test.cpp)
+    target_link_libraries(MentisLayoutRegressionTest PRIVATE MentisCore MentisResources Qt6::Test)
+    target_compile_definitions(MentisLayoutRegressionTest PRIVATE MENTIS_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+    add_test(NAME MentisLayoutRegression COMMAND MentisLayoutRegressionTest)
+    set_tests_properties(MentisLayoutRegression PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(WIN32)
+        set_tests_properties(MentisLayoutRegression PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endif()
+
+    # FEAT-096 stage 4: the core alone (MentisDomain, no Qt Widgets) lays the maps out as the desktop
+    # does; linking only MentisDomain is the check that the core needs no widget.
+    qt_add_executable(MentisDomainLayoutTest tests/domain_layout_test.cpp)
+    target_link_libraries(MentisDomainLayoutTest PRIVATE MentisDomain MentisResources Qt6::Test)
+    target_compile_definitions(MentisDomainLayoutTest PRIVATE MENTIS_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+    add_test(NAME MentisDomainLayout COMMAND MentisDomainLayoutTest)
+    set_tests_properties(MentisDomainLayout PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(WIN32)
+        set_tests_properties(MentisDomainLayout PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endif()
+
+    # FEAT-097: the mobile app's adapters and pages (MentisMobileUi, no Qt Widgets), on the desktop.
+    if(TARGET MentisMobileUi)
+        qt_add_executable(MentisMobileTest tests/mobile_test.cpp)
+        target_link_libraries(MentisMobileTest PRIVATE MentisMobileUi MentisMobileUiplugin MentisResources Qt6::Test)
+        target_compile_definitions(MentisMobileTest PRIVATE MENTIS_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+        add_test(NAME MentisMobile COMMAND MentisMobileTest)
+        # The software renderer: the offscreen platform has no GPU.
+        set_tests_properties(MentisMobile PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
+        if(WIN32)
+            set_tests_properties(MentisMobile PROPERTIES
+                ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+        endif()
+    endif()
 
     # FEAT-071: what Windows is told is under the mouse (edges, drag areas, Maximize button).
     qt_add_executable(MentisWindowFrameTest tests/windowframe_test.cpp)
@@ -813,8 +951,8 @@ if(BUILD_TESTING)
         endforeach()
     endfunction()
     # Files, document, history and autosave: they guard the user's data, so they run with every change.
-    mentis_test_area(core StorageRoundTrip Document DocumentFlow HistorySnapshot FileValidation Fuzz)
-    mentis_test_area(map Tour MapLayout BalancedLayout NodeOperations NodeWidth NodeContent SelectionCommands StackingOrder
+    mentis_test_area(core StorageRoundTrip Document DocumentFlow MapFolder HistorySnapshot FileValidation Fuzz DomainLayout)
+    mentis_test_area(map Tour MapLayout LayoutRegression DomainLayout BalancedLayout NodeOperations NodeWidth NodeContent SelectionCommands StackingOrder
                      Relationship Numbering NodeSearch StickersMarkers TaskBox Labels Notes NodeFiles Formula NodeLinks
                      NodeLinksUi ImageStyle WheelGuard)
     mentis_test_area(outliner OutlinerSelection MarkdownTyping Notes TaskBox Numbering NodeSearch MarkdownImport)
@@ -826,6 +964,9 @@ if(BUILD_TESTING)
     mentis_test_area(settings ShortcutsUi Shortcuts SettingsUi Localization TranslationFiles UiTheme SpellCheck WindowFrame FocusMode Updates Help Tour)
     mentis_test_area(pitch Pitch PitchTemplate)
     mentis_test_area(mcp McpProtocol McpTools McpBridge)
+    if(TARGET MentisMobileTest)
+        mentis_test_area(mobile Mobile)
+    endif()
     get_directory_property(mentis_tests TESTS)
     foreach(test IN LISTS mentis_tests)
         get_test_property(${test} LABELS test_labels)

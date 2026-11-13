@@ -1,8 +1,8 @@
 #pragma once
 
 // FEAT-053: a relationship drawn on the map. Selectable; when selected it shows the
-// two control handles (dragging one bends the line) and the two ends (dragging one onto another
-// element reconnects it). Double click, or typing while selected, edits the label. The item never
+// two control handles (dragging one bends the line); its ends stay on their elements (user,
+// 2026-11-12: moving them was removed). Double click, or typing while selected, edits the label. The item never
 // writes the document: it emits `edited` with the changed relationship.
 
 #include "relationship.h"
@@ -38,15 +38,13 @@ public:
 
     // Geometry of a changed copy, for the live preview while a handle is dragged.
     std::function<Relationships::Geometry(const Relationship &)> geometryFor;
-    // Id of the element under a scene point (empty on the background), to reconnect an end.
-    std::function<QString(const QPointF &scenePos)> elementAt;
 
     // Label editing; initialText replaces the label (typing while selected), empty keeps it.
     void beginEditing(const QString &initialText = QString());
     bool isEditing() const { return m_editor != nullptr; }
     void commitEditing();
 
-    // Scene positions of the parts, for tests: control handles and ends.
+    // Scene positions of the control handles, for tests.
     QPointF handlePos(int index) const { return index == 0 ? m_geometry.fromControl : m_geometry.toControl; }
     QRectF labelRect() const { return m_labelRect; }
 
@@ -69,7 +67,7 @@ protected:
     bool sceneEventFilter(QGraphicsItem *watched, QEvent *event) override;
 
 private:
-    enum class Part { None, FromControl, ToControl, FromEnd, ToEnd };
+    enum class Part { None, FromControl, ToControl };
     Part partAt(const QPointF &pos) const;
     bool showsHandles() const;
     void updateCachedShapes();
@@ -84,9 +82,8 @@ private:
     QFont m_measuredFont;
     QRectF m_bounds;
     QPainterPath m_hitPath;
-    // Drag of a handle or an end: the preview copy and, for an end, the mouse position.
+    // Drag of a handle: the preview copy.
     Part m_dragPart = Part::None;
     Relationship m_dragged;
-    QPointF m_dragPoint;
     QGraphicsTextItem *m_editor = nullptr;
 };

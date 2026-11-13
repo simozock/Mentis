@@ -3,7 +3,8 @@
 #include "formulatext.h"
 #include "markers.h"
 #include "mindmapmodel.h"
-#include "nodeitem.h"
+#include "formularendering.h"
+#include "nodegeometry.h"
 #include "nodestyle.h"
 #include "performance.h"
 #include "stickers.h"
@@ -100,14 +101,14 @@ Extras extrasOf(const MindNode *node) {
     extras.markers = node->markers;
     if (!hasFigure(node) || node->imageSize.isEmpty()) return extras;
     // The same pixels as the node (NodeItem::loadImage): read upright at the unrotated size, then turned.
-    const QFont font = NodeItem::titleFont(node);
+    const QFont font = NodeGeometry::titleFont(node);
     const int rotation = node->imageStyle.rotation;
     const QSizeF upright = rotation % 180 ? node->imageSize.transposed() : node->imageSize;
     const qreal resolution = std::min(kFigureResolutionPerMapScale * Performance::imageScaleFactor(),
                                       kMaxFigurePx / std::max(upright.width(), upright.height()));
     QImage image;
     if (!node->formula.isEmpty()) {
-        image = FormulaText::boxImage(node->formula, font, node->formulaBackground,
+        image = FormulaRendering::boxImage(node->formula, font, node->formulaBackground,
                                       FormulaText::textColorOn(node->formulaBackground, node->text), upright, resolution);
     } else {
         QImageReader reader(node->imagePath);
@@ -475,7 +476,7 @@ Look look(const MindMapModel &model, Theme theme) {
         result.motif = Motif::Frame;
         break;
     }
-    if (theme >= Theme::Proposal) NodeItem::loadBundledFonts();  // the themes' own fonts
+    if (theme >= Theme::Proposal) NodeGeometry::loadBundledFonts();  // the themes' own fonts
     return result;
 }
 

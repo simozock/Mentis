@@ -1,5 +1,6 @@
 #include "relationship.h"
 
+#include <QFontMetricsF>
 #include <QLineF>
 #include <QtMath>
 
@@ -118,6 +119,26 @@ QPointF outlineExit(const QPainterPath &outline, const QPointF &centre, const QP
         (outline.contains(middle) ? inside : outside) = middle;
     }
     return outside;
+}
+
+Look look(const Relationship &relationship, const NodeStyle::Backdrop &backdrop, const QString &sheetFontFamily) {
+    Look result;
+    result.lineColor = relationship.lineColor.value_or(NodeStyle::annotationColor(kDefaultLineColor, backdrop));
+    result.lineWidth = relationship.lineWidth.value_or(kDefaultLineWidth);
+    result.linePattern = relationship.linePattern.value_or(kDefaultLinePattern);
+    result.startMark = relationship.startMark.value_or(kDefaultStartMark);
+    result.endMark = relationship.endMark.value_or(kDefaultEndMark);
+    const QString family = relationship.fontFamily.isEmpty() ? sheetFontFamily : relationship.fontFamily;
+    result.font.setFamily(family.isEmpty() ? NodeStyle::kDefaultMapFontFamily : family);  // as the topics
+    result.font.setPixelSize(qRound(relationship.fontSize.value_or(kDefaultFontSize)));
+    result.font.setWeight(QFont::DemiBold);  // default label
+    result.textColor = relationship.textColor.value_or(NodeStyle::annotationColor(QColor("#303640"), backdrop));
+    result.backdrop = backdrop.color;
+    return result;
+}
+
+QSizeF labelSize(const QFont &font, const QString &text) {
+    return QFontMetricsF(font).size(0, text) + QSizeF(2 * kLabelPaddingPx, 2 * kLabelPaddingPx);
 }
 
 Geometry geometry(const Relationship &relationship, const End &from, const End &to) {

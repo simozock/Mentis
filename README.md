@@ -18,7 +18,9 @@
   <a href="#-download-and-build">Download</a> ·
   <a href="manual/README.md">Manual</a> ·
   <a href="#-contributing">Contributing</a> ·
-  <a href="#-goals-and-support">Support</a>
+  <a href="#-goals-and-support">Support</a> ·
+  <a href="https://ko-fi.com/simozock">Ko-fi</a> ·
+  <a href="https://liberapay.com/simozock">Liberapay</a>
 </p>
 
 ---
@@ -212,11 +214,10 @@ maps, notes, a second brain and more), the next goals are:
 
 If Mentis helps you study, you can help reach these goals with a donation:
 
-<p>
-  <a href="https://ko-fi.com/simozock"><img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b?logo=ko-fi&logoColor=white" alt="Support Mentis on Ko-fi"></a>
+<p align="center">
+  <a href="https://ko-fi.com/simozock"><img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Support Mentis on Ko-fi"></a>
+  <a href="https://liberapay.com/simozock"><img src="https://img.shields.io/badge/Liberapay-Donate-f6c915?style=for-the-badge&logo=liberapay&logoColor=black" alt="Support Mentis on Liberapay"></a>
 </p>
-
-Liberapay: coming soon.
 
 Starring the repository, reporting bugs and telling other students about Mentis help just as much.
 

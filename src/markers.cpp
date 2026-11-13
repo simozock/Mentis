@@ -1,10 +1,10 @@
 #include "markers.h"
 
 #include <QBuffer>
+#include <QMutex>
 #include <QCoreApplication>
 #include <QHash>
 #include <QImageReader>
-#include <QPixmap>
 #include <QPainter>
 #include <QPainterPath>
 #include <QtMath>
@@ -147,34 +147,41 @@ QString label(const QString &marker, bool translated) {
 
 void paint(QPainter *p, const QRectF &rect, const QString &marker) {
     if (isCustom(marker)) {
-        // Immagine del marcatore proprio, letta una volta per misura (SVG nitido, PNG ridotto).
-        static QHash<QString, QPixmap> cache;
+        // Immagine del marcatore proprio, letta una volta per misura (SVG nitido, PNG ridotto). QImage
+        // e non QPixmap: l'app mobile disegna i marcatori nel thread del rendering (FEAT-097).
+        static QHash<QString, QImage> cache;
+        static QMutex cacheMutex;
         const qreal ratio = std::max<qreal>(2.0, p->device() ? p->device()->devicePixelRatioF() : 1.0);
         const QSize pixels = (rect.size() * ratio).toSize();
         const QString key = customImage(marker) + QLatin1Char('@') + QString::number(pixels.width());
-        QPixmap pixmap = cache.value(key);
-        if (pixmap.isNull()) {
+        QImage picture;
+        {
+            QMutexLocker lock(&cacheMutex);
+            picture = cache.value(key);
+        }
+        if (picture.isNull()) {
             QByteArray data = image(customImage(marker));
             QBuffer buffer(&data);
             QImageReader reader(&buffer);
             const QSize natural = reader.size();
             if (natural.isValid()) reader.setScaledSize(natural.scaled(pixels, Qt::KeepAspectRatio));
-            pixmap = QPixmap::fromImage(reader.read());
-            if (pixmap.isNull()) {  // immagine mancante: un tondo grigio con il punto di domanda
-                pixmap = QPixmap(pixels);
-                pixmap.fill(Qt::transparent);
-                QPainter missing(&pixmap);
+            picture = reader.read();
+            if (picture.isNull()) {  // immagine mancante: un tondo grigio con il punto di domanda
+                picture = QImage(pixels, QImage::Format_ARGB32_Premultiplied);
+                picture.fill(Qt::transparent);
+                QPainter missing(&picture);
                 missing.setRenderHint(QPainter::Antialiasing);
                 missing.setPen(Qt::NoPen);
                 missing.setBrush(QColor("#c4cad2"));
                 missing.drawEllipse(QRectF(QPointF(0, 0), QSizeF(pixels)));
             }
-            pixmap.setDevicePixelRatio(ratio);
+            picture.setDevicePixelRatio(ratio);
+            QMutexLocker lock(&cacheMutex);
             if (cache.size() > 400) cache.clear();
-            cache.insert(key, pixmap);
+            cache.insert(key, picture);
         }
-        const QSizeF shown = pixmap.deviceIndependentSize();
-        p->drawPixmap(QRectF(rect.center() - QPointF(shown.width() / 2, shown.height() / 2), shown), pixmap, QRectF(pixmap.rect()));
+        const QSizeF shown = picture.deviceIndependentSize();
+        p->drawImage(QRectF(rect.center() - QPointF(shown.width() / 2, shown.height() / 2), shown), picture, QRectF(picture.rect()));
         return;
     }
     const QString name = seriesOf(marker), value = marker.section(QLatin1Char(':'), 1);

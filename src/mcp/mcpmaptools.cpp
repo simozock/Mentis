@@ -667,7 +667,7 @@ QList<McpServer::Tool> tools(std::function<Access()> accessProvider) {
         // and no stdio of its own, which belongs to the agent's client.
         QProcess mentis;
         mentis.setProgram(QCoreApplication::applicationFilePath());
-        mentis.setArguments({QDir::toNativeSeparators(*path)});
+        mentis.setArguments({QStringLiteral("--in-place"), QDir::toNativeSeparators(*path)});
         QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
         if (environment.value(QStringLiteral("QT_QPA_PLATFORM")) == QLatin1String("offscreen")) environment.remove(QStringLiteral("QT_QPA_PLATFORM"));
         mentis.setProcessEnvironment(environment);

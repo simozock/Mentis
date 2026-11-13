@@ -6,11 +6,13 @@
 #include "nodestyle.h"
 
 #include <QColor>
+#include <QFont>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QPainterPath>
 #include <QPointF>
+#include <QRectF>
 #include <QString>
 
 #include <optional>
@@ -85,5 +87,33 @@ Geometry geometry(const Relationship &relationship, const End &from, const End &
 
 // Point where the ray from `centre` towards `towards` leaves `outline` (centre if it is not inside).
 QPointF outlineExit(const QPainterPath &outline, const QPointF &centre, const QPointF &towards);
+
+// How a relationship is drawn, its unset values filled with the defaults above for the sheet's
+// backdrop and font; shared by the desktop's scene and the phone's (FEAT-110).
+struct Look {
+    QColor lineColor;
+    qreal lineWidth = kDefaultLineWidth;
+    int linePattern = kDefaultLinePattern;  // Qt::PenStyle
+    BranchEnd startMark = kDefaultStartMark, endMark = kDefaultEndMark;
+    QFont font;
+    QColor textColor;
+    QColor backdrop;  // behind the label, so the line does not cross the text
+};
+Look look(const Relationship &relationship, const NodeStyle::Backdrop &backdrop, const QString &sheetFontFamily);
+
+// The label's box: the text's size with kLabelPaddingPx around it, centred on `labelPoint`.
+inline constexpr qreal kLabelPaddingPx = 3;
+inline constexpr qreal kLabelRadiusPx = 2;
+// A selected relationship: a band of the selection colour at this alpha, kSelectionExtraPx wider
+// than the line; a curved or elbow one adds its two control handles of kHandleRadiusPx
+// (RelationshipItem::paint).
+inline constexpr int kSelectionAlpha = 110;
+inline constexpr qreal kSelectionExtraPx = 4;
+inline constexpr qreal kHandleRadiusPx = 4;
+inline constexpr qreal kPlaceholderAlpha = 0.45;  // the empty label's placeholder text
+QSizeF labelSize(const QFont &font, const QString &text);
+inline QRectF labelRect(const QPointF &labelPoint, const QSizeF &size) {
+    return QRectF(labelPoint - QPointF(size.width() / 2, size.height() / 2), size);
+}
 
 }  // namespace Relationships

@@ -7,6 +7,7 @@
 #include "floatingui.h"
 #include "ganttview.h"
 #include "mainwindow.h"
+#include "mapfolder.h"
 #include "mindmapmodel.h"
 #include "mindmapscene.h"
 #include "performance.h"
@@ -16,6 +17,7 @@
 #include <QApplication>
 #include <QComboBox>
 #include <QDialog>
+#include <QDir>
 #include <QDockWidget>
 #include <QImage>
 #include <QLineEdit>
@@ -24,6 +26,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QSettings>
 #include <QTimer>
 #include <QStackedWidget>
 #include <QStandardPaths>
@@ -63,6 +66,8 @@ private slots:
     void duplicateSheetFromTheMenu();
     void reorderSheetsByDragging();
     void openingAnotherFileKeepsTheCurrentOneIfItFails();
+    void newAndOutsideMapsGoToTheMentisFolder();
+    void homeShowsTheMentisFolderLikeAFileManager();
     // Startup (2026-11-04): the side panel and the Gantt view are built after the first frame, or
     // as soon as something needs them; closing hides the window before the closing save.
     void sidePanelAndGanttAreBuiltAfterTheFirstFrame();
@@ -84,6 +89,7 @@ private:
     std::unique_ptr<MainWindow> m_window;
     MindMapModel *m_model = nullptr;
     QTemporaryDir m_dir;
+    QTemporaryDir m_mentisFolder;  // FEAT-105: the Mentis folder of these tests, never the user's Documents
     QString m_nextSavePath;
     QString m_nextOpenPath;
 };
@@ -95,6 +101,7 @@ void DocumentFlowTest::initTestCase() {
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     Performance::setMode(Performance::Mode::Standard);  // salvataggio automatico dopo 750 ms
     QVERIFY(m_dir.isValid());
+    MapFolder::setConfiguredPath(m_mentisFolder.path());
     m_window = std::make_unique<MainWindow>();
     m_window->setSaveFilePicker([this] { return m_nextSavePath; });
     m_window->setOpenFilePicker([this] { return m_nextOpenPath; });
@@ -526,6 +533,56 @@ void DocumentFlowTest::openingAnotherFileKeepsTheCurrentOneIfItFails() {
     wait(400);
     QVERIFY(childTitles(m_model->root()).contains(QStringLiteral("Resta qui")));
     QCOMPARE(m_window->windowTitle(), title);
+    // FEAT-105: its copy in the Mentis folder was removed again.
+    QVERIFY(QDir(m_mentisFolder.path()).entryList({QStringLiteral("*.mentis*")}, QDir::Files).isEmpty());
+}
+
+// FEAT-105: a new map is saved in the Mentis folder under its title; a map from outside is copied
+// there and the copy opens; an agent's map and a map of the recent list open where they are.
+void DocumentFlowTest::newAndOutsideMapsGoToTheMentisFolder() {
+    freshMap();
+    action(QStringLiteral("Import Markdown…"))->trigger();  // a new map, not yet saved
+    wait();
+    QCOMPARE(m_window->suggestedSavePath(), QDir(m_mentisFolder.path()).filePath(QStringLiteral("Seme.mentis")));
+    m_nextSavePath = m_window->suggestedSavePath();
+    action(QStringLiteral("Save as…"))->trigger();
+    wait();
+    QCOMPARE(m_window->suggestedSavePath(), m_nextSavePath);  // a named map: its own file
+    // The next new map with the same title gets a free name.
+    action(QStringLiteral("Import Markdown…"))->trigger();
+    wait();
+    QCOMPARE(QFileInfo(m_window->suggestedSavePath()).fileName(), QStringLiteral("Seme (2).mentis"));
+
+    QTemporaryDir downloads;
+    const QString received = downloads.filePath(QStringLiteral("Exam.mentis"));
+    MindMapModel exam;
+    exam.root()->title = QStringLiteral("Exam");
+    QString error;
+    QVERIFY2(BmapStorage::save(received, exam, BmapStorage::SaveReason::Explicit, &error), qPrintable(error));
+    m_window->openAtStart(received);
+    wait();
+    const QString copy = QDir(m_mentisFolder.path()).filePath(QStringLiteral("Exam.mentis"));
+    QVERIFY(QFileInfo::exists(copy));
+    QVERIFY(QFileInfo::exists(received));
+    QVERIFY(m_window->windowTitle().contains(QStringLiteral("Exam.mentis")));
+    QCOMPARE(m_window->statusBar()->currentMessage(), QStringLiteral("Map added to the Mentis folder"));
+
+    // Opened again: the same copy, no duplicate.
+    m_nextOpenPath = received;
+    action(QStringLiteral("Open…"))->trigger();
+    wait();
+    QCOMPARE(QDir(m_mentisFolder.path()).entryList({QStringLiteral("Exam*.mentis")}, QDir::Files).size(), 1);
+
+    // An agent's map (--in-place) opens where it is, and then the recent list knows it.
+    const QString agentMap = downloads.filePath(QStringLiteral("Agent.mentis"));
+    QVERIFY2(BmapStorage::save(agentMap, exam, BmapStorage::SaveReason::Explicit, &error), qPrintable(error));
+    m_window->openAtStart(agentMap, true);
+    wait();
+    QVERIFY(!QFileInfo::exists(QDir(m_mentisFolder.path()).filePath(QStringLiteral("Agent.mentis"))));
+    m_nextOpenPath = agentMap;
+    action(QStringLiteral("Open…"))->trigger();
+    wait();
+    QVERIFY(!QFileInfo::exists(QDir(m_mentisFolder.path()).filePath(QStringLiteral("Agent.mentis"))));
 }
 
 void DocumentFlowTest::timingOnALargeMap() {
@@ -561,6 +618,83 @@ void DocumentFlowTest::timingOnALargeMap() {
     }
     qInfo("TIMING open_ms=%lld,%lld,%lld save_ms=%lld,%lld,%lld undo_ms=%lld,%lld,%lld", openMs[0], openMs[1], openMs[2],
           saveMs[0], saveMs[1], saveMs[2], undoMs[0], undoMs[1], undoMs[2]);
+}
+
+// FEAT-105 stage 2: the Home's Mentis folder page: one level at a time, folders then maps, Back,
+// and a map moved into a subfolder keeps its recent-list entry.
+void DocumentFlowTest::homeShowsTheMentisFolderLikeAFileManager() {
+    const QDir folder(m_mentisFolder.path());
+    QVERIFY(folder.mkpath(QStringLiteral("Courses/Physics")));
+    const QString map = QDir::cleanPath(folder.filePath(QStringLiteral("Lessons.mentis")));
+    MindMapModel lessons;
+    lessons.root()->title = QStringLiteral("Lessons");
+    QString error;
+    QVERIFY2(BmapStorage::save(map, lessons, BmapStorage::SaveReason::Explicit, &error), qPrintable(error));
+    QSettings().setValue(QStringLiteral("recentFiles"), QStringList{map});
+    action(QStringLiteral("Library"))->trigger();  // the Home
+    wait();
+    const auto tile = [this](const QString &name) -> QToolButton * {
+        for (auto *button : m_window->findChildren<QToolButton *>())
+            if (button->accessibleName() == name && button->isVisibleTo(m_window.get())) return button;
+        return nullptr;
+    };
+    m_window->showMentisFolder();
+    wait(50);
+    QCOMPARE(m_window->shownFolder(), QDir::cleanPath(m_mentisFolder.path()));
+    QVERIFY(tile(QStringLiteral("Courses")));
+    QVERIFY(tile(QStringLiteral("Lessons")));
+    QVERIFY(!tile(QStringLiteral("Physics")));  // one level at a time
+
+    tile(QStringLiteral("Courses"))->click();
+    wait(50);
+    QCOMPARE(m_window->shownFolder(), QDir::cleanPath(folder.filePath(QStringLiteral("Courses"))));
+    QVERIFY(tile(QStringLiteral("Physics")));
+    QVERIFY(!tile(QStringLiteral("Lessons")));
+    auto *back = m_window->findChild<QToolButton *>(QStringLiteral("HomeFolderBack"));
+    QVERIFY(back && back->isEnabled());
+    back->click();
+    wait(50);
+    QCOMPARE(m_window->shownFolder(), QDir::cleanPath(m_mentisFolder.path()));
+    QVERIFY(!m_window->findChild<QToolButton *>(QStringLiteral("HomeFolderBack"))->isEnabled());
+
+    m_window->moveMapTo(map, folder.filePath(QStringLiteral("Courses/Physics")));
+    wait(50);
+    const QString moved = QDir::cleanPath(folder.filePath(QStringLiteral("Courses/Physics/Lessons.mentis")));
+    QVERIFY(QFileInfo::exists(moved));
+    QVERIFY(!tile(QStringLiteral("Lessons")));
+    QCOMPARE(QSettings().value(QStringLiteral("recentFiles")).toStringList().value(0), moved);
+
+    // FEAT-107: a coloured folder's card shows its colour.
+    QCOMPARE(tile(QStringLiteral("Courses"))->property("mentisFolderColor").toString(), QString());
+    QVERIFY(MapFolder::setFolderColor(folder.filePath(QStringLiteral("Courses")), MapFolder::folderColors().at(7), &error));
+    m_window->showMentisFolder();
+    wait(50);
+    QCOMPARE(tile(QStringLiteral("Courses"))->property("mentisFolderColor").toString(), MapFolder::folderColors().at(7));
+
+    // FEAT-107 decision 8: inside a folder ".." comes first and takes drops, as Back does; a folder
+    // moves with its maps, and the recent list follows.
+    const QString root = QDir::cleanPath(m_mentisFolder.path());
+    tile(QStringLiteral("Courses"))->click();
+    wait(50);
+    auto *up = m_window->findChild<QToolButton *>(QStringLiteral("HomeFolderUp"));
+    QVERIFY(up && up->isVisibleTo(m_window.get()));
+    QCOMPARE(up->property("mentisFolderPath").toString(), root);
+    QVERIFY(up->acceptDrops());
+    QVERIFY(m_window->findChild<QToolButton *>(QStringLiteral("HomeFolderBack"))->acceptDrops());
+    QVERIFY(tile(QStringLiteral("Physics"))->property("mentisDragFolderPath").isValid());
+    m_window->moveFolderTo(folder.filePath(QStringLiteral("Courses/Physics")), root);
+    wait(50);
+    QVERIFY(!tile(QStringLiteral("Physics")));
+    const QString followed = QDir(root).filePath(QStringLiteral("Physics/Lessons.mentis"));
+    QVERIFY(QFileInfo::exists(followed));
+    QCOMPARE(QSettings().value(QStringLiteral("recentFiles")).toStringList().value(0), followed);
+    up = m_window->findChild<QToolButton *>(QStringLiteral("HomeFolderUp"));  // the page was made again
+    QVERIFY(up);
+    up->click();
+    wait(50);
+    QCOMPARE(m_window->shownFolder(), root);
+    QVERIFY(!m_window->findChild<QToolButton *>(QStringLiteral("HomeFolderUp")));
+    QVERIFY(tile(QStringLiteral("Physics")));
 }
 
 QTEST_MAIN(DocumentFlowTest)

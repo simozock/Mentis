@@ -29,6 +29,10 @@ Check anyFile(const QString &path);
 // such as "attach01.pdf". The name in the map can hold anything (it comes from the document).
 QString diskFileName(const QString &name, int number);
 
+// FEAT-049, BUG-043: the types opened only after a confirmation (programs and scripts), by the
+// name's extension; for both apps (FEAT-114).
+bool isRisky(const QString &name);
+
 // Filtro della finestra di scelta: le immagini che Qt sa leggere su questo computer (senza il
 // plugin WebP, per esempio, i .webp non compaiono).
 QString imageFilter();

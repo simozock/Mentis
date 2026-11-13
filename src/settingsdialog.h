@@ -45,6 +45,11 @@ public:
     std::function<QList<McpClients::Outcome>()> connectAgentApps;
     // FEAT-090: the date and time of the last update check, under the version; after "Check now".
     void refreshLastUpdateCheck();
+    // FEAT-105 stage 3: the folder picker and the "move the maps?" question (tests set them; empty =
+    // the system's folder dialog and the common modal). chooseMentisFolder gets the current folder and
+    // returns the new one, empty when cancelled; askMoveMaps: 1 move, 0 keep, -1 cancel.
+    std::function<QString(const QString &)> chooseMentisFolder;
+    std::function<int()> askMoveMaps;
 
 signals:
     // Emessi dopo aver salvato la scelta; chi apre la finestra ridisegna cio' che serve.
@@ -54,6 +59,8 @@ signals:
     void agentsChanged();  // FEAT-045: the Agents (MCP) switch
     void checkForUpdatesRequested();  // FEAT-090: "Check now"; the window answers over this dialog
     void tourRequested();             // FEAT-093: "Restart the tour"; the dialog closes first
+    // FEAT-105 stage 3: the folder setting already holds the new folder; the window moves the maps.
+    void mentisFolderChanged(const QString &oldFolder, bool moveMaps);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -67,6 +74,8 @@ private:
     QWidget *createEditorPage();
     QFrame *createAgentsCard();  // FEAT-045: Settings > General > Agents (MCP)
     QFrame *createUpdatesCard();  // FEAT-090: Settings > General > Updates
+    QFrame *createMentisFolderCard();  // FEAT-105 stage 3
+    void changeMentisFolder();
     void applyAppearance();  // FEAT-035 part B: the three controls -> UiTheme::setAppearance
     void setStyleValues(const NodeItem::SelectionStyle &style);  // aggiorna i controlli
     void applyStyle();                                          // salva e avvisa
@@ -75,6 +84,7 @@ private:
 
     NodeItem::SelectionStyle m_style;
     QLabel *m_lastUpdateCheck = nullptr;  // FEAT-090
+    QLabel *m_mentisFolderPath = nullptr;  // FEAT-105
     QToolButton *m_selectedColor = nullptr;
     QToolButton *m_hoverColor = nullptr;
     QToolButton *m_textColor = nullptr;  // sfondo del testo selezionato (2026-10-13)

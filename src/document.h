@@ -168,6 +168,10 @@ public:
     // Il nodo centrale non si elimina; un nodo dentro un ramo gia' da eliminare sparisce con il ramo.
     // Vero se almeno un nodo e' stato eliminato.
     bool removeNodes(const QList<MindNode *> &nodes);
+    // The topic to select after removeNodes(nodes), chosen before among those that stay (user's
+    // request 2026-10-21): a sibling of the first removed topic (the next, else the previous), else
+    // its parent; null when none qualifies. Shared by the desktop and the phone (FEAT-111).
+    static MindNode *nodeAfterRemoval(const QList<MindNode *> &nodes);
     bool indentNode(MindNode *node);
     bool outdentNode(MindNode *node);
     // FEAT-015: sposta il nodo con il suo ramo sotto newParent alla riga row (come
@@ -175,6 +179,16 @@ public:
     // 0 = resta com'e'; un nodo che non e' piu' principale perde il lato. Falso se non cambia nulla.
     // Apre il passo di storico senza chiuderlo: la ridisposizione entra nello stesso passo.
     bool moveNode(MindNode *node, MindNode *newParent, int row, int side);
+    // FEAT-096 stage 3: topics dragged on the map, each with where it ends and its distance from the
+    // automatic place (MindNode::manualOffset, kept by the layout; a floating topic keeps only the
+    // position). The front end may have moved them already while dragging. Opens the history step
+    // without closing it (it closes after the mouse is released). False for an empty list.
+    struct TopicPlacement {
+        MindNode *node = nullptr;
+        QPointF position;
+        QPointF manualOffset;
+    };
+    bool placeTopics(const QList<TopicPlacement> &placements);
     // Il nodo con il suo ramo diventa un argomento mobile con il centro in position (in fondo ai figli
     // del centrale). Apre il passo di storico senza chiuderlo. Falso per il centrale.
     bool makeFloating(MindNode *node, const QPointF &position);
@@ -207,6 +221,11 @@ public:
     bool setTitle(MindNode *node, const QString &title);  // testo semplice: toglie il titolo formattato
     // Titolo con il titolo formattato (HTML limitato, MindNode::titleHtml).
     bool setFormattedTitle(MindNode *node, const QString &title, const QString &html);
+    // FEAT-096 stage 3: the title typed on the map or in an outliner row. As setFormattedTitle, and
+    // the model tells its views as for any edit of the tree (dataChanged for a topic in the tree,
+    // structureChanged); a topic outside the tree (central, summary) through nodesChanged. The step
+    // stays open: the caller lays the map out when the size changed.
+    bool editTitle(MindNode *node, const QString &title, const QString &html);
     bool setNotes(MindNode *node, const QString &notes);
     // FEAT-059: nota con il suo HTML (vuoto = testo semplice); testo vuoto = nota tolta. Apre il passo
     // di storico senza chiuderlo (l'icona cambia la misura del nodo: la ridisposizione entra nel passo).
@@ -292,11 +311,15 @@ public:
     // elements of the sheet (topics, summary topics or boundaries) and different.
     // addRelation returns the new id, empty if refused.
     QString addRelation(const QString &fromId, const QString &toId);
+    // FEAT-109: one relationship from `fromId` to each target, all in one step; the refused targets
+    // (the start itself, a missing element) are skipped. Returns the new ids.
+    QStringList addRelations(const QString &fromId, const QStringList &toIds);
     // Replaces the relationships with the same ids; false (nothing changed) if one is missing,
     // has invalid ends or nothing differs.
     bool updateRelations(const QList<Relationship> &relationships);
     bool removeRelations(const QStringList &ids);
     const Relationship *relation(const QString &id) const;
+    bool isRelationEnd(const QString &id) const;  // FEAT-053: an element of the active sheet
     // FEAT-052: summaries, grouped like the boundaries below; every structure but the tree table.
     // The new summary topics ("Summary") are returned; the step stays open for the
     // caller's layout, like the boundaries. removeSummaries also drops the relationships ending on
@@ -348,6 +371,8 @@ public:
     QString branchesText(const QList<MindNode *> &nodes) const;
     // The branches in copied data; a single object (one branch) is read too.
     static QList<QJsonObject> branchesFromData(const QByteArray &data);
+    // The clipboard format of branchesData, shared by the desktop and the phone.
+    static QString branchesMimeType() { return QStringLiteral("application/x-mentis-subtree"); }
 
 signals:
     // Contenuto di nodi cambiato senza segnali del modello (titolo, note, immagine).
@@ -376,7 +401,6 @@ private:
     void setLoadedResources(const GanttResources &resources);
     std::optional<QJsonObject> resourcesWrite(bool fullWrite) const;
     void putOnTop(MindNode *node);
-    bool isRelationEnd(const QString &id) const;  // FEAT-053: an element of the active sheet
     void commitHistory();
     // One step with the active sheet and the other sheets given (replaceTitles, renameLabel).
     void commitWithOtherSheets(QList<LinkSheetChange> others);

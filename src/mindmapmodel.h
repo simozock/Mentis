@@ -43,6 +43,13 @@ bool same(const QString &a, const QString &b);
 // Ordinamento automatico (impostazione dell'app, acceso di base).
 bool autoSort();
 void setAutoSort(bool on);
+// The tag field of LabelEditor and of the phone's Labels modal (FEAT-114): tags separated by commas.
+// typed: the field's tags, cleaned (Labels::normalized, not sorted). suggestions: `all` without the
+// tags already before the last comma and, while a word is typed after it, only those holding it.
+// withAdded: the field with `label` appended (when missing) and ", " after it, ready for the next.
+QStringList typed(const QString &field);
+QStringList suggestions(const QString &field, const QStringList &all);
+QString withAdded(const QString &field, const QString &label);
 }  // namespace Labels
 
 // FEAT-049: file del computer allegato al nodo, sempre incorporato nel documento (tabella assets
@@ -205,10 +212,6 @@ public:
     int columnCount(const QModelIndex & = {}) const override { return 1; }
     QVariant data(const QModelIndex &index, int role) const override;
     bool setData(const QModelIndex &index, const QVariant &value, int role) override;
-    // Testo e titolo formattato insieme (html vuoto = testo semplice). A differenza di setData
-    // non svuota titleHtml: lo usa l'outliner, che conserva la formattazione fatta sulla mappa.
-    // Con valori identici a quelli salvati non cambia nulla e non segna la mappa come modificata.
-    bool setTitle(const QModelIndex &index, const QString &title, const QString &html);
     Qt::ItemFlags flags(const QModelIndex &index) const override;
     QStringList mimeTypes() const override;
     QMimeData *mimeData(const QModelIndexList &indexes) const override;

@@ -65,6 +65,11 @@ void removeDeletedFiles(Kind kind);
 QString importFolder(Kind kind, const QString &folderPath, int *imported = nullptr);
 // Nome mostrato di un file: senza estensione, "_" e "-" come spazi.
 QString displayName(const QString &path);
+// The marker an item of a marker collection gives a topic: "series:value" for a drawn one,
+// "custom:<group>:<sha256>" for an own image, which is registered with Markers (its bytes in data,
+// for the map's addMarkerImage). Empty when the file cannot be read.
+QString markerFor(const Item &item, const QString &collectionId, QByteArray *data = nullptr);
+QString customGroup(const QString &collectionId);  // without ":" (the marker's separator)
 
 // Controlli dei file (uguali per marcatori e adesivi): SVG consigliato, PNG accettato; al massimo
 // kMaxFileBytes; il contenuto deve leggersi come immagine (un SVG che non si disegna si rifiuta).

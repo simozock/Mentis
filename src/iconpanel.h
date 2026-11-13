@@ -63,9 +63,6 @@ public:
     QComboBox *categoryFilter() const { return m_category; }
     QLineEdit *searchField() const { return m_search; }
     static constexpr int kSearchDelayMs = 150;  // after the last key, before the grid is rebuilt
-    // Marcatore per un elemento: "serie:valore" o "custom:<gruppo>:<sha256>" (immagine in sha).
-    static QString markerFor(const IconLibrary::Item &item, const QString &collectionId, QByteArray *data = nullptr);
-    static QString customGroup(const QString &collectionId);  // senza ":" (separatore del marcatore)
 
     // Colonne secondo la larghezza del pannello (richiesta dell'utente 2026-10-20): almeno queste,
     // di piu' allargando il pannello. La pagina non chiede piu' larghezza di quella minima.

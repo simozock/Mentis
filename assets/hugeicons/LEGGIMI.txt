@@ -65,9 +65,14 @@ Disegnate per Mentis, non Hugeicons (stesso tratto 1.5, angoli arrotondati, stes
   disegnate nel codice (src/pitchpage.cpp, layoutIcon).
 Copie scure di icone Hugeicons (stesso tracciato, tratto #27303b) per la barra dell'argomento (FEAT-072 F3):
   image.svg -> Image01Icon, checkbox.svg -> CheckmarkSquare02Icon.
+  undo.svg -> Undo03Icon, redo.svg -> Redo03Icon, delete.svg -> Delete02Icon (FEAT-097: buttons of the
+    mobile app, dark copies of editor-undo/redo/delete).
+  copy.svg -> dark copy of export-copy.svg (FEAT-106: Copy the image in the mobile topic bar).
   alert.svg -> Alert02Icon (Gantt: pulsante Percorso critico nella barra in alto, 2026-10-28).
   user-group.svg -> UserGroupIcon (FEAT-079: pulsante Risorse nella barra in alto del Gantt, 2026-10-28).
   camera.svg -> Camera01Icon (pulsante Baseline nella barra in alto del Gantt, 2026-10-30).
+  paste.svg -> ClipboardPasteIcon (FEAT-111: Paste in the phone's topic bar, stroke #27303b)
+  select.svg -> Cursor01Icon (FEAT-111: Select more in the phone's topic bar, dark copy of editor-select).
   editor-select.svg -> Cursor01Icon (FEAT-070: sticker editor, stroke #e5e9ef)
   editor-crop.svg -> CropIcon (FEAT-070: sticker editor, stroke #e5e9ef)
   editor-rectangle.svg -> RectangularIcon (FEAT-070: sticker editor, stroke #e5e9ef)

@@ -265,23 +265,6 @@ void IconPage::resizeEvent(QResizeEvent *event) {
     }
 }
 
-QString IconPage::customGroup(const QString &collectionId) {
-    QString group = collectionId;
-    return group.replace(QLatin1Char(':'), QLatin1Char('-'));
-}
-
-QString IconPage::markerFor(const IconLibrary::Item &item, const QString &collectionId, QByteArray *data) {
-    if (!item.path.contains(QLatin1Char('/'))) return item.path;
-    QFile file(item.path);
-    if (!file.open(QIODevice::ReadOnly)) return {};
-    const QByteArray bytes = file.readAll();
-    const QString sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
-    Markers::registerImage(sha, bytes);
-    Markers::setCustomLabel(sha, item.name);
-    if (data) *data = bytes;
-    return Markers::customMarker(customGroup(collectionId), sha);
-}
-
 void IconPage::reload() {
     while (QLayoutItem *item = m_sections->takeAt(0)) {
         if (QWidget *widget = item->widget()) { widget->hide(); widget->deleteLater(); }
@@ -388,7 +371,7 @@ void IconPage::setActiveMarkers(const QStringList &markers) {
             if (!cell) continue;
             bool on = markers.contains(item.path);
             if (!on && !customShas.isEmpty() && item.path.contains(QLatin1Char('/'))) {
-                const QString marker = markerFor(item, collection.id);
+                const QString marker = IconLibrary::markerFor(item, collection.id);
                 on = markers.contains(marker);
             }
             if (cell->property("active").toBool() == on) continue;

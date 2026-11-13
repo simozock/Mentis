@@ -1,3 +1,4 @@
+#include "formulatext.h"
 #include "iconlibrary.h"
 #include "localization.h"
 #include "mainwindow.h"
@@ -33,6 +34,7 @@ int main(int argc, char *argv[]) {
     if (mcpRequested) McpStdio::prepareProcess();
 
     QApplication app(argc, argv);
+    FormulaText::installRendering();  // FEAT-096: the core renders formulas through it (also with --mcp)
     QCoreApplication::setOrganizationName("Mentis");
     // Bug 2026-10-18: la schermata deterministica azzera le impostazioni (settings.clear() qui
     // sotto) e lo faceva su quelle vere dell'utente: recenti, colori, scorciatoie, profilo. Ora usa
@@ -65,6 +67,10 @@ int main(int argc, char *argv[]) {
                                             QCoreApplication::translate("main", "Save a deterministic screenshot of the Home and quit."),
                                             QCoreApplication::translate("main", "file"));
     parser.addOption(snapshotOption);
+    // FEAT-105: an agent's map opens where the agent wrote it, not as a copy in the Mentis folder.
+    const QCommandLineOption inPlaceOption(QStringLiteral("in-place"),
+                                           QCoreApplication::translate("main", "Open the map where it is, without copying it into the Mentis folder."));
+    parser.addOption(inPlaceOption);
     // A map to open at start (FEAT-045: open_map starts Mentis with the map the agent made).
     parser.addPositionalArgument(QStringLiteral("file"), QCoreApplication::translate("main", "Map to open."));
     parser.process(app);
@@ -98,7 +104,7 @@ int main(int argc, char *argv[]) {
     if (parser.isSet(snapshotOption)) window.resize(1440, 900);
     window.show();
     if (const QStringList files = parser.positionalArguments(); !files.isEmpty() && !parser.isSet(snapshotOption))
-        QTimer::singleShot(0, &window, [&window, file = files.first()] { window.openAtStart(file); });
+        QTimer::singleShot(0, &window, [&window, file = files.first(), inPlace = parser.isSet(inPlaceOption)] { window.openAtStart(file, inPlace); });
 
     // FEAT-090: the update check waits for the window to be ready; never in the snapshot.
     if (!parser.isSet(snapshotOption)) QTimer::singleShot(5000, &window, [&window] { window.updatePrompt()->checkAtStartup(); });

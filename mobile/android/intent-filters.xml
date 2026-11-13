@@ -1,0 +1,34 @@
+            <!-- FEAT-105 stage 4: a map from another app (IncomingMaps). Added to Qt's manifest
+                 template by mobile/CMakeLists.txt. https://developer.android.com/guide/topics/manifest/data-element
+                 A .mentis file has no registered MIME type: apps send it as a generic binary or as
+                 SQLite, so "Open with" offers Mentis for those types; a file that is not a map is
+                 refused when opened (FEAT-039) and nothing is left in the Mentis folder. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/x-sqlite3" />
+                <data android:mimeType="application/vnd.sqlite3" />
+            </intent-filter>
+            <!-- File managers that give the file's path and any type: by the name's ending. A path
+                 pattern's ".*" stops at the first match of what follows it, so names with more
+                 dots need a pattern each (https://developer.android.com/reference/android/os/PatternMatcher). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathPattern=".*\.mentis" />
+                <data android:pathPattern=".*\..*\.mentis" />
+                <data android:pathPattern=".*\..*\..*\.mentis" />
+                <data android:pathPattern=".*\..*\..*\..*\.mentis" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/x-sqlite3" />
+                <data android:mimeType="application/vnd.sqlite3" />
+            </intent-filter>

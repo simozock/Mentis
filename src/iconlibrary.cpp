@@ -3,6 +3,7 @@
 #include "markers.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -231,6 +232,23 @@ void removeDeletedFiles(Kind kind) {
     for (const QString &path : paths)
         if (insideLibrary(kind, path) && !listed.contains(path)) QFile::remove(path);
     list.remove();
+}
+
+QString customGroup(const QString &collectionId) {
+    QString group = collectionId;
+    return group.replace(QLatin1Char(':'), QLatin1Char('-'));
+}
+
+QString markerFor(const Item &item, const QString &collectionId, QByteArray *data) {
+    if (!item.path.contains(QLatin1Char('/'))) return item.path;
+    QFile file(item.path);
+    if (!file.open(QIODevice::ReadOnly)) return {};
+    const QByteArray bytes = file.readAll();
+    const QString sha = QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+    Markers::registerImage(sha, bytes);
+    Markers::setCustomLabel(sha, item.name);
+    if (data) *data = bytes;
+    return Markers::customMarker(customGroup(collectionId), sha);
 }
 
 QString displayName(const QString &path) {

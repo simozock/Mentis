@@ -58,6 +58,8 @@ public:
     // FEAT-064: le formule $...$ di un documento (note) diventano immagini nel testo, nel colore
     // e nel font dati; il testo intorno resta com'e'. Vero se ne ha trovate.
     static bool renderInDocument(QTextDocument *document, const QFont &font, const QColor &color);
+    // FEAT-096: connects FormulaRendering's hooks to this renderer, once (the core uses them).
+    static void installRendering();
     // Disegna centrato (o allineato a sinistra) dentro rect.
     void draw(QPainter *painter, const QRectF &rect, Qt::Alignment alignment = Qt::AlignCenter) const;
 

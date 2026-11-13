@@ -246,11 +246,11 @@ void NodeFilesTest::openCopiesAndAsksToUpdate() {
 }
 
 void NodeFilesTest::riskyFilesAskFirst() {
-    QVERIFY(MainWindow::isRiskyFile(QStringLiteral("setup.EXE")));
-    QVERIFY(MainWindow::isRiskyFile(QStringLiteral("script.ps1")));
-    QVERIFY(!MainWindow::isRiskyFile(QStringLiteral("tesi.pdf")));
-    QVERIFY(MainWindow::isRiskyFile(QStringLiteral("libreria.dll")));  // BUG-043
-    QVERIFY(MainWindow::isRiskyFile(QStringLiteral("sito.url")));
+    QVERIFY(FileValidation::isRisky(QStringLiteral("setup.EXE")));
+    QVERIFY(FileValidation::isRisky(QStringLiteral("script.ps1")));
+    QVERIFY(!FileValidation::isRisky(QStringLiteral("tesi.pdf")));
+    QVERIFY(FileValidation::isRisky(QStringLiteral("libreria.dll")));  // BUG-043
+    QVERIFY(FileValidation::isRisky(QStringLiteral("sito.url")));
     MindNode *node = addNode(QStringLiteral("Programma"));
     QVERIFY(m_window->attachFiles(node, {makeFile(QStringLiteral("strumento.bat"), "echo ciao")}));
     onNextModal([](ModalDialog *modal) { modal->reject(); });  // Annulla
@@ -493,7 +493,7 @@ void NodeFilesTest::documentNamesAndIdsStayInTheirFolder() {
     QCOMPARE(FileValidation::diskFileName(QStringLiteral("evil.exe. "), 3), QStringLiteral("attach03"));
     QCOMPARE(FileValidation::diskFileName(QStringLiteral("nota.txt:flusso"), 4), QStringLiteral("attach04"));
     QCOMPARE(FileValidation::diskFileName(QStringLiteral("senza estensione"), 123), QStringLiteral("attach123"));
-    QVERIFY(MainWindow::isRiskyFile(FileValidation::diskFileName(QStringLiteral("x.EXE"), 1)));
+    QVERIFY(FileValidation::isRisky(FileValidation::diskFileName(QStringLiteral("x.EXE"), 1)));
 
     m_model->clear(QStringLiteral("Documento ricevuto"));
     MindNode *node = addNode(QStringLiteral("Ricevuto"));

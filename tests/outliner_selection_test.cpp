@@ -4,6 +4,7 @@
 // piattaforma offscreen e impostazioni separate da quelle dell'applicazione.
 #include "bmapstorage.h"
 #include "mainwindow.h"
+#include "mapfolder.h"
 #include "mindmapmodel.h"
 
 #include <QAction>
@@ -295,6 +296,7 @@ void OutlinerSelectionTest::rootTitleWholeAfterOpeningFile() {
     window.show();
     QVERIFY(QTest::qWaitForWindowExposed(&window));
     window.setOpenFilePicker([path] { return path; });
+    MapFolder::setConfiguredPath(dir.path());  // FEAT-105: opened in place, never copied into the user's Documents
     QAction *open = nullptr;
     for (auto *candidate : window.findChildren<QAction *>())
         if (candidate->text() == QStringLiteral("Open…")) open = candidate;

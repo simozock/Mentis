@@ -37,8 +37,6 @@
 #include <QSet>
 #include <QFile>
 #include "jkqtmathtext/jkqtmathtext_imexport.h"
-#include <QWidget>
-#include <QLabel>
 #include <QHash>
 #include <QPainterPath>
 #include <QtMath>

@@ -1016,7 +1016,7 @@ void StylePageTest::widthArrowsChangeEachNodeWhenMixed() {
     // suo minimo; un numero scritto vale per tutti; "Adatta" li rende tutti automatici. Ogni
     // conferma e' un solo passo di storico.
     const QList<MindNode *> nodes = addNodes(3);
-    QVERIFY(m_model->setTitle(m_model->indexFromNode(nodes[2]), QStringLiteral("Un titolo piuttosto lungo"), QString()));
+    QVERIFY(m_window->findChild<Document *>()->editTitle(nodes[2], QStringLiteral("Un titolo piuttosto lungo"), QString()));
     QVERIFY(m_model->setCustomWidths({{nodes[0], 120}, {nodes[1], 200}}));
     QApplication::processEvents();
     select(nodes);

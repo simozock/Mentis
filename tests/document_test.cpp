@@ -55,6 +55,7 @@ private slots:
     void resourcesAreTheDocumentsAndOneStep();
     void nodeOperationsAreUndoableSteps();
     void contentOperationsNotifyTheNodes();
+    void typedTitlesAndDraggedTopicsAreSteps();
     void annotationsAreUndoableSteps();
     void pastedMarkdownBecomesBranchesOrTheWholeMap();
     void exportAndCopiedBranch();
@@ -790,6 +791,49 @@ void DocumentTest::contentOperationsNotifyTheNodes() {
     document.flushPendingStep();
     QCOMPARE(document.undo().outcome, Document::StepOutcome::Applied);  // modifiche ravvicinate: un passo
     QCOMPARE(document.model()->root()->children.front()->title, QStringLiteral("Area"));
+}
+
+// FEAT-096 stage 3: the title typed on the map or in the outliner and the topics dragged on the map,
+// through the document as from any front end.
+void DocumentTest::typedTitlesAndDraggedTopicsAreSteps() {
+    Document document;
+    document.startUntitled();
+    MindMapModel *model = document.model();
+    const QString rootTitle = model->root()->title;
+    MindNode *node = document.addChild(nullptr, QStringLiteral("Area"));
+    MindNode *floating = document.addFloatingTopic(QPointF(40, 50), QStringLiteral("Free"));
+    floating->manualOffset = QPointF(3, 4);  // not a floating topic's state: left as it is
+    document.flushPendingStep();
+    QSignalSpy data(model, &MindMapModel::dataChanged);
+    QSignalSpy structure(model, &MindMapModel::structureChanged);
+    QSignalSpy nodes(&document, &Document::nodesChanged);
+    QVERIFY(document.editTitle(node, QStringLiteral("Surface"), QStringLiteral("<i>Surface</i>")));
+    QCOMPARE(data.size(), 1);  // a topic in the tree: its row, not nodesChanged
+    QCOMPARE(data.front().front().value<QModelIndex>(), model->indexFromNode(node));
+    QCOMPARE(nodes.size(), 0);
+    QVERIFY(!document.editTitle(node, QStringLiteral("Surface"), QStringLiteral("<i>Surface</i>")));
+    QVERIFY(document.editTitle(model->root(), QStringLiteral("Map"), QString()));  // no row: nodesChanged
+    QCOMPARE(nodes.size(), 1);
+    QCOMPARE(data.size(), 1);
+    QCOMPARE(structure.size(), 2);
+    document.flushPendingStep();
+
+    const QPointF before = node->position;
+    QVERIFY(!document.placeTopics({}));
+    QVERIFY(document.placeTopics({{node, before + QPointF(30, -20), QPointF(30, -20)},
+                                  {floating, QPointF(90, 10), QPointF(7, 7)}}));
+    QCOMPARE(node->position, before + QPointF(30, -20));
+    QCOMPARE(node->manualOffset, QPointF(30, -20));
+    QCOMPARE(floating->position, QPointF(90, 10));
+    QCOMPARE(floating->manualOffset, QPointF(3, 4));
+    document.flushPendingStep();
+    QCOMPARE(document.undo().outcome, Document::StepOutcome::Applied);  // the drag, one step
+    QCOMPARE(model->root()->children.front()->manualOffset, QPointF());
+    QCOMPARE(model->root()->children.front()->position, before);
+    QCOMPARE(document.undo().outcome, Document::StepOutcome::Applied);  // both titles, one step
+    QCOMPARE(model->root()->title, rootTitle);
+    QCOMPARE(model->root()->children.front()->title, QStringLiteral("Area"));
+    QVERIFY(model->root()->children.front()->titleHtml.isEmpty());
 }
 
 // FEAT-066 tappa 3: relazioni, sommari e confini.

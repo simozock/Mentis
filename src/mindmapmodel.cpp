@@ -43,6 +43,28 @@ QStringList normalized(const QStringList &labels, bool sorted) {
 
 bool autoSort() { return QSettings().value(QStringLiteral("labels/autoSort"), true).toBool(); }
 void setAutoSort(bool on) { QSettings().setValue(QStringLiteral("labels/autoSort"), on); }
+
+QStringList typed(const QString &field) { return normalized(field.split(QLatin1Char(',')), false); }
+
+QStringList suggestions(const QString &field, const QStringList &all) {
+    const QStringList parts = field.split(QLatin1Char(','));
+    const QString typing = parts.back().trimmed();
+    const QStringList chosen = normalized(parts.mid(0, parts.size() - 1), false);
+    QStringList shown;
+    for (const QString &label : all) {
+        if (std::any_of(chosen.cbegin(), chosen.cend(), [&label](const QString &own) { return same(own, label); })) continue;
+        if (!typing.isEmpty() && !label.contains(typing, Qt::CaseInsensitive)) continue;
+        if (same(label, typing)) continue;
+        shown.append(label);
+    }
+    return shown;
+}
+
+QString withAdded(const QString &field, const QString &label) {
+    QStringList labels = typed(field);
+    if (std::none_of(labels.cbegin(), labels.cend(), [&label](const QString &own) { return same(own, label); })) labels.append(label);
+    return labels.join(QStringLiteral(", ")) + QStringLiteral(", ");
+}
 }  // namespace Labels
 
 qreal sanitizedManualNodeWidth(double widthPx) {
@@ -539,7 +561,6 @@ QList<Summary> summariesFromJson(const QJsonArray &array) {
         summary.topic = nodeFromJson(object.value(QStringLiteral("topic")).toObject(), nullptr);
         summary.topic->summaryTopic = true;
         summary.topic->floating = false;
-        summary.topic->collapsed = false;
         summaries.append(summary);
     }
     return summaries;
@@ -1114,17 +1135,6 @@ bool MindMapModel::setData(const QModelIndex &idx, const QVariant &value, int ro
     // Una modifica proveniente dall'outliner sostituisce l'intero titolo con testo semplice.
     node->titleHtml.clear();
     emit dataChanged(idx, idx, {role, Qt::DisplayRole});
-    emit structureChanged();
-    return true;
-}
-
-bool MindMapModel::setTitle(const QModelIndex &idx, const QString &title, const QString &html) {
-    auto *node = nodeFromIndex(idx);
-    if (!node) return false;
-    if (node->title == title && node->titleHtml == html) return true;  // come B2 in setData
-    node->title = title;
-    node->titleHtml = RichResources::withoutExternal(html);  // BUG-044
-    emit dataChanged(idx, idx, {Qt::EditRole, Qt::DisplayRole, TitleHtmlRole});
     emit structureChanged();
     return true;
 }

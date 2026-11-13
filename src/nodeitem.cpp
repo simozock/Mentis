@@ -81,8 +81,6 @@ QPixmap tintedIconPixmap(const QString &path, const QColor &color) {
 QPixmap linkIconPixmap(bool topic, const QColor &color) {
     return tintedIconPixmap(topic ? QStringLiteral(":/assets/hugeicons/link.svg") : QStringLiteral(":/assets/hugeicons/link-web.svg"), color);
 }
-
-bool hasNote(const MindNode *node) { return !node->notes.trimmed().isEmpty(); }  // FEAT-059
 }  // namespace
 
 namespace {
@@ -119,7 +117,9 @@ QPixmap loadScaledPixmap(const QString &path, const QSizeF &displaySize, qreal f
 }
 }
 
-NodeItem::NodeItem(MindNode *node, QGraphicsItem *parent) : QGraphicsObject(parent), m_node(node) {
+NodeItem::NodeItem(MindNode *node, QGraphicsItem *parent) : QGraphicsObject(parent), m_node(node), m_geometry(node) {
+    FormulaText::installRendering();  // FEAT-096: the core measures formulas through it
+    m_geometry.beforeChange = [this] { prepareGeometryChange(); };
     setFlags(ItemIsSelectable | ItemSendsGeometryChanges | ItemIsFocusable);
     setFlag(ItemIsMovable, !summaryTopicOf(node));  // FEAT-052: a summary topic and its branch follow the bracket
     setAcceptHoverEvents(true);  // cursore a I sopra il titolo
@@ -130,13 +130,13 @@ NodeItem::NodeItem(MindNode *node, QGraphicsItem *parent) : QGraphicsObject(pare
     // non consumano I/O e memoria durante l'apertura del documento.
     m_loadedImagePath = node->imagePath;
     m_loadedImageSize = node->imageSize;
-    m_hasImage = !node->imagePath.isEmpty() || !node->formula.isEmpty();  // B9: misure note subito, pixel caricati dopo
-    updateFormula();
+    m_geometry.setHasImage(!node->imagePath.isEmpty() || !node->formula.isEmpty());  // B9: misure note subito, pixel caricati dopo
+    m_geometry.updateText();
     m_geometryKey = geometryKey();  // P2
     // Bug 2026-11-02 (manual pictures): only syncFromNode laid these out, so a map just opened showed
     // no label pills, and no notes with "Show all notes", until the topic changed.
-    updateNotePreview();  // FEAT-059
-    updateLabelLayout();  // FEAT-060
+    m_geometry.updateNotePreview(scene() ? scene()->font() : QFont());  // FEAT-059
+    m_geometry.updateLabelLayout();  // FEAT-060
 }
 
 QSizeF NodeItem::formulaInsertionSize(const MindNode *node) {
@@ -182,54 +182,7 @@ void NodeItem::loadImage() {
 }
 
 namespace {
-// FEAT-020: con bordi piu' spessi (fino a 6 px) il bordo esce di meta' spessore. Without a border
-// nothing sticks out: the ring is "gap" px from the shape, 1 px (measured live, FEAT-072; before
-// 1 px more). Il tratto a mano libera (parte C) si
-// scosta ancora di NodeSketch::kBorderWobble: l'anello e l'area del nodo lo tengono dentro. Lo
-// stesso per le punte dei motivi (NodeSketch::kPatternReach).
-qreal borderOutside(const MindNode *node) {
-    qreal outside = 0.0;
-    if (node->borderStyle != NodeBorderStyle::Nessuno) {
-        const qreal wobble = NodeSketch::isFreehand(node->borderStyle) ? NodeSketch::kBorderWobble : 0;
-        // FEAT-030 stage B: round and curly brackets reach above and below the rectangle.
-        outside = std::max<qreal>(1.0, NodeShapes::markOverhang(node->shape) + node->borderWidth / 2 + wobble);
-    }
-    // Le punte dei motivi escono dalla forma (foto 24): anche loro restano dentro l'anello.
-    if (NodeStyle::isPatternFill(node->fillStyle) && !NodeShapes::isUnderline(node->shape))
-        outside = std::max(outside, NodeSketch::kPatternReach);
-    return outside;
-}
-}
-
-NodeItem::GeometryKey NodeItem::geometryKey() const {
-    // Il colore del testo conta solo per le formule, gia' disegnate nel loro colore da updateFormula();
-    // testo semplice e formattato prendono il colore in paint(). Prima ogni cambio di colore del
-    // testo rimisurava il nodo e ridisponeva la mappa (FEAT-020 parte C: un motivo scurisce il
-    // testo di 1.000 nodi).
-    const QRgb formulaColor = FormulaText::containsMath(m_node->title) ? m_node->text.rgba() : 0;
-    return {{shownTitle(), m_node->titleHtml, formulaColor, !m_node->parent, layoutCustomWidth(), m_node->strikeOut,
-             m_node->fontFamily, m_node->fontSize, m_node->fontWeight, static_cast<int>(m_node->textCase),
-             static_cast<int>(m_node->textAlign), m_node->italic, m_node->underline,
-             int(!m_node->topicLink.isEmpty()) + int(!m_node->webLink.isEmpty()) + int(hasNote(m_node) && !showAllNotes())
-                 + int(!m_node->files.isEmpty()),
-             hasSideImage() ? m_node->imageSize.width() : 0.0, int(m_node->task != MindNode::Task::None) + int(m_node->markers.size())},
-            m_node->imagePath, m_node->imageSize,
-            static_cast<int>(m_node->imagePlacement), borderOutside(m_node), static_cast<int>(m_node->shape),
-            m_node->borderWidth, showAllNotes() && hasNote(m_node),
-            showAllNotes() ? m_node->notes : QString(), showAllNotes() ? m_node->notesHtml : QString(), m_node->labels,
-            m_node->formula};
-}
-
-QString NodeItem::shownTitle() const { return Numbering::withNumber(m_node->number, m_node->title); }
-
-void NodeItem::prependNumber(QTextDocument &document) const {
-    if (m_node->number.isEmpty()) return;
-    // FEAT-024: in the format of the title's first character, like the rest of its first word.
-    QTextCursor cursor(&document);
-    cursor.movePosition(QTextCursor::NextCharacter, QTextCursor::KeepAnchor);
-    const QTextCharFormat format = cursor.charFormat();
-    cursor.setPosition(0);
-    cursor.insertText(m_node->title.isEmpty() ? m_node->number : m_node->number + u' ', format);
+qreal borderOutside(const MindNode *node) { return NodeGeometry::borderOutside(node); }
 }
 
 void NodeItem::setStackZ(qreal z) {
@@ -259,7 +212,7 @@ void NodeItem::syncFromNode() {
         // after switching to a rectangle until the next click).
         if (scene()) scene()->update(mapRectToScene(m_syncedBounds));
         prepareGeometryChange();
-        if (!(key.text == m_geometryKey.text)) updateFormula();
+        if (!(key.text == m_geometryKey.text)) m_geometry.updateText();
         m_geometryKey = key;
     }
     const QString formulaKey = m_node->formula.isEmpty() ? QString()
@@ -270,22 +223,20 @@ void NodeItem::syncFromNode() {
         m_loadedImageSize = m_node->imageSize;
         m_image = QPixmap();
         m_imageLoadPending = true;
-        m_hasImage = !m_node->imagePath.isEmpty() || !m_node->formula.isEmpty();  // B9 (prepareGeometryChange è già sopra)
-        if (!m_hasImage) setImageSelectedState(false);  // FEAT-040: immagine tolta (anche con Ctrl+Z)
+        m_geometry.setHasImage(!m_node->imagePath.isEmpty() || !m_node->formula.isEmpty());  // B9 (prepareGeometryChange è già sopra)
+        if (!m_geometry.hasImage()) setImageSelectedState(false);  // FEAT-040: immagine tolta (anche con Ctrl+Z)
     }
     if (pos() != m_node->position) setPos(m_node->position);
-    updateNotePreview();  // FEAT-059
-    updateLabelLayout();  // FEAT-060
+    m_geometry.updateNotePreview(scene() ? scene()->font() : QFont());  // FEAT-059
+    m_geometry.updateLabelLayout();  // FEAT-060
     m_syncedBounds = boundingRect();
     update();
 }
 
-qreal NodeItem::layoutCustomWidth() const { return std::max(m_node->customWidth, m_justifiedWidth); }
-
 void NodeItem::setJustifiedWidth(qreal width) {
-    if (std::abs(width - m_justifiedWidth) < 0.01) return;
-    if (m_justifiedWidth <= 0) rememberNaturalWidth();  // only nodes that get justified pay for it
-    m_justifiedWidth = width;
+    if (std::abs(width - m_geometry.justifiedWidth()) < 0.01) return;
+    if (m_geometry.justifiedWidth() <= 0) rememberNaturalWidth();  // only nodes that get justified pay for it
+    m_geometry.setJustifiedWidth(width);
     syncFromNode();
 }
 
@@ -295,33 +246,25 @@ void NodeItem::rememberNaturalWidth() {
 }
 
 qreal NodeItem::naturalWidth() {
-    if (m_justifiedWidth <= 0) return textRect().width();
+    if (m_geometry.justifiedWidth() <= 0) return textRect().width();
     // The remembered width holds while the geometry without justification is the same; otherwise
     // the node is laid out once without it, measured, and laid out again with it.
-    const qreal justified = std::exchange(m_justifiedWidth, 0.0);
+    const qreal justified = m_geometry.justifiedWidth();
+    m_geometry.setJustifiedWidth(0);
     const bool fresh = m_naturalKey && geometryKey() == *m_naturalKey;
     if (!fresh) {
         syncFromNode();
         rememberNaturalWidth();
     }
-    m_justifiedWidth = justified;
+    m_geometry.setJustifiedWidth(justified);
     if (!fresh) syncFromNode();
     return m_naturalWidth;
 }
 
 namespace {
-constexpr qreal kLabelHeightPx = 20;
-constexpr qreal kLabelPaddingPx = 8;
-constexpr qreal kLabelGapPx = 4;
-constexpr qreal kLabelTopGapPx = 4;      // sotto la forma
-constexpr qreal kLabelMinWidthPx = 160;  // larghezza minima a cui vanno a capo
-constexpr int kLabelFontPx = 12;
-
-QFont labelFont() {
-    QFont font;
-    font.setPixelSize(kLabelFontPx);
-    return font;
-}
+constexpr qreal kLabelHeightPx = NodeGeometry::kLabelHeightPx;
+constexpr qreal kLabelPaddingPx = NodeGeometry::kLabelPaddingPx;
+QFont labelFont() { return NodeGeometry::labelFont(); }
 }  // namespace
 
 // FEAT-060 (prova dell'utente 2026-10-19: testo un po' basso): centrato sull'altezza delle
@@ -333,47 +276,6 @@ void drawLabelText(QPainter *p, const QRectF &pill, const QString &label, qreal 
     p->drawText(QPointF(pill.center().x() - metrics.horizontalAdvance(text) / 2, baseline), text);
 }
 
-// FEAT-060: pillole delle etichette in righe centrate, a capo alla larghezza del nodo.
-void NodeItem::updateLabelLayout() {
-    LabelLayout next;
-    next.labels = m_node->labels;
-    next.width = std::max(shapeRect().width(), kLabelMinWidthPx);
-    if (next == m_labelLayout) return;
-    // Senza etichette ne' prima ne' dopo la geometria non cambia (solo la larghezza di riserva).
-    if (!next.labels.isEmpty() || !m_labelLayout.labels.isEmpty()) prepareGeometryChange();
-    if (!next.labels.isEmpty()) {
-        const QFontMetricsF metrics(labelFont());
-        QList<QList<QRectF>> rows(1);
-        qreal x = 0;
-        for (const QString &label : next.labels) {
-            const qreal width = std::min(next.width, std::ceil(metrics.horizontalAdvance(label)) + 2 * kLabelPaddingPx);
-            if (x > 0 && x + width > next.width) { rows.append(QList<QRectF>()); x = 0; }
-            rows.back().append(QRectF(x, (rows.size() - 1) * (kLabelHeightPx + kLabelGapPx), width, kLabelHeightPx));
-            x += width + kLabelGapPx;
-        }
-        for (const QList<QRectF> &row : rows) {
-            const qreal rowWidth = row.back().right() - row.front().left();
-            const qreal shift = (next.width - rowWidth) / 2;  // ogni riga centrata
-            for (const QRectF &pill : row) next.pills.append(pill.translated(shift, 0));
-        }
-        next.size = {next.width, rows.size() * kLabelHeightPx + (rows.size() - 1) * kLabelGapPx};
-    }
-    m_labelLayout = next;
-}
-
-qreal NodeItem::labelsBlockHeight() const {
-    return m_labelLayout.pills.isEmpty() ? 0 : kLabelTopGapPx + m_labelLayout.size.height();
-}
-
-QList<QRectF> NodeItem::labelRects() const {
-    QList<QRectF> rects;
-    if (m_labelLayout.pills.isEmpty()) return rects;
-    const QRectF shape = shapeRect();
-    const QPointF origin(shape.center().x() - m_labelLayout.width / 2, shape.bottom() + kLabelTopGapPx);
-    for (const QRectF &pill : m_labelLayout.pills) rects.append(pill.translated(origin));
-    return rects;
-}
-
 int NodeItem::labelAt(const QPointF &position) const {
     const QList<QRectF> rects = labelRects();
     for (int i = 0; i < rects.size(); ++i)
@@ -381,53 +283,9 @@ int NodeItem::labelAt(const QPointF &position) const {
     return -1;
 }
 
-bool &NodeItem::showAllNotes() {
-    static bool shown = false;
-    return shown;
-}
-
 namespace {
-constexpr qreal kNotePreviewPaddingPx = 8;
-constexpr qreal kNoteSideMarginPx = 16;
-constexpr qreal kNotePreviewMinTextPx = 128;
-constexpr qreal kNotePreviewMaxTextPx = 328;  // riquadro largo al massimo 344 px
-constexpr int kNotePreviewMaxLines = 6;
-constexpr int kNotePreviewFontPx = 12;
+constexpr qreal kNotePreviewPaddingPx = NodeGeometry::kNotePreviewPaddingPx;
 }  // namespace
-
-// FEAT-059 (rivisto dopo la prova, 2026-10-19: con "Mostra tutte le note" la nota sta
-// DENTRO il nodo, sotto immagine e testo (posto "sotto" del contratto), al posto dell'icona; il nodo
-// si allunga e la mappa si ridispone. Larga quanto il contenuto, fra 128 e 328 px di testo.
-void NodeItem::updateNotePreview() {
-    NotePreviewKey key;
-    key.shown = showAllNotes() && hasNote(m_node);
-    if (key.shown) {
-        key.notes = m_node->notes;
-        key.notesHtml = m_node->notesHtml;
-        key.color = m_node->text.rgba();
-        const qreal inner = contentLayout(false).content.width() - taskZoneWidth() - linkZoneWidth();
-        key.width = std::clamp(inner - 2 * kNoteSideMarginPx - 2 * kNotePreviewPaddingPx, kNotePreviewMinTextPx, kNotePreviewMaxTextPx);
-    }
-    if (key == m_notePreviewKey) return;
-    prepareGeometryChange();
-    m_notePreviewKey = key;
-    m_notePreview.reset();
-    m_notePreviewHeight = 0;
-    if (!key.shown) return;
-    m_notePreview = std::make_unique<QTextDocument>();
-    QFont font = scene() ? scene()->font() : QFont();
-    font.setPixelSize(kNotePreviewFontPx);
-    m_notePreview->setDefaultFont(font);
-    m_notePreview->setDocumentMargin(0);
-    if (key.notesHtml.isEmpty()) m_notePreview->setPlainText(key.notes);
-    else m_notePreview->setHtml(key.notesHtml);
-    FormulaText::renderInDocument(m_notePreview.get(), font, m_node->text);  // FEAT-064: $...$ nella nota
-    m_notePreview->setTextWidth(key.width);
-    const qreal maxText = QFontMetricsF(font).lineSpacing() * kNotePreviewMaxLines;
-    m_notePreviewHeight = std::min(m_notePreview->size().height(), maxText) + 2 * kNotePreviewPaddingPx;
-}
-
-QRectF NodeItem::notePreviewRect() const { return m_notePreview ? contentLayout().note : QRectF(); }
 
 NodeItem::SelectionStyle &NodeItem::selectionStyle() {
     static SelectionStyle style;
@@ -484,50 +342,14 @@ QRectF NodeItem::boundingRect() const {
 }
 
 namespace {
-// Larghezza massima di un nodo con formule: oltre si va a capo.
-constexpr qreal kMaxFormulaNodeWidth = 440;
-// Nodi di solo testo: larghezza su misura del titolo, poi a capo oltre kMaxTextNodeWidth.
-// Margini interni per ruolo (NodeStyle::textPadding, padX/padY). BUG-003 (2026-10-15): nessuna misura
-// minima fissa (prima 96x40, 128x48 per la radice): il riquadro automatico e' il contenuto piu' il
-// padding; solo un titolo vuoto resta largo quanto un carattere (m_minContentWidth).
-constexpr qreal kMaxTextNodeWidth = 280;
-// FEAT-072: the central topic wraps beyond 330 px (measured live 2026-10-23: 329).
-constexpr qreal kMaxCentralNodeWidth = 330;
 // Testo allineato a sinistra (richiesta 2026-10-13; prima centrato): distanza tra il bordo
 // sinistro del riquadro e il testo. Di norma il padding; si riduce solo quando il blocco di testo e'
 // piu' largo del riquadro meno due padding (righe impaginate con meno margine o formule larghe),
 // così resta lo stesso spazio ai due lati e il testo non tocca il bordo destro.
 qreal textLeftInset(qreal boxWidth, qreal blockWidth, qreal padding) { return std::min(padding, (boxWidth - blockWidth) / 2); }
 
-QFont nodeFont(const MindNode *node) {
-    QFont font = QApplication::font();
-    // FEAT-022: testo del nodo (predefiniti nella cascata, vedi NodeStyle::kRootFontSizePt). Senza un
-    // font scelto il predefinito delle mappe, incluso nell'app; un font non installato resta quello predefinito.
-    const QString family = node->fontFamily.isEmpty() ? NodeStyle::kDefaultMapFontFamily : node->fontFamily;
-    font.setFamilies({NodeItem::isFontInstalled(family) ? family : NodeStyle::kDefaultMapFontFamily});
-    font.setPointSizeF(node->fontSize);
-    font.setWeight(static_cast<QFont::Weight>(node->fontWeight));
-    font.setItalic(node->italic);
-    font.setUnderline(node->underline);
-    font.setStrikeOut(node->strikeOut);  // FEAT-020: stile Depenna, o scelto a mano (FEAT-022)
-    // Maiuscole/minuscole solo nel disegno: il titolo resta come scritto
-    // (https://doc.qt.io/qt-6/qfont.html#Capitalization-enum).
-    font.setCapitalization(node->textCase == TextCase::Maiuscolo   ? QFont::AllUppercase
-                           : node->textCase == TextCase::Minuscolo ? QFont::AllLowercase
-                                                                   : QFont::MixedCase);
-    return font;
-}
-
-// FEAT-022: allineamento del titolo per QTextOption e QTextDocument.
-Qt::Alignment textAlignment(const MindNode *node) {
-    switch (node->textAlign) {
-    case TextAlign::Centro: return Qt::AlignHCenter;
-    case TextAlign::Destra: return Qt::AlignRight;
-    case TextAlign::Giustificato: return Qt::AlignJustify;
-    case TextAlign::Sinistra: break;
-    }
-    return Qt::AlignLeft;
-}
+QFont nodeFont(const MindNode *node) { return NodeGeometry::titleFont(node); }
+Qt::Alignment textAlignment(const MindNode *node) { return NodeGeometry::textAlignment(node); }
 
 // Elenco dei font come finestra a comparsa vera (fuori dalla scena), richiesta 2026-10-12:
 // su Windows l'elenco del QComboBox, incorporato nella scena insieme alla barra
@@ -1097,231 +919,6 @@ private:
 };
 }
 
-void NodeItem::updateFormula() {
-    // FEAT-022: font e metriche del nodo preparati una volta per misura (prima il font si
-    // ricostruiva e il suo motore si cercava tre o quattro volte per nodo).
-    const QFont font = nodeFont(m_node);
-    const QFontMetricsF metrics(font);
-    // BUG-003: larghezza minima del contenuto = un carattere medio del font del nodo, cosi' un
-    // titolo vuoto non diventa un riquadro di soli margini. Si misura qui, al cambio dei dati.
-    m_minContentWidth = metrics.averageCharWidth();
-    // Il rendering si prepara solo per i titoli che contengono $...$: i nodi di solo
-    // testo non pagano nessun costo aggiuntivo.
-    if (FormulaText::containsMath(m_node->title))
-        m_formula.update(shownTitle(), font, m_node->text,
-                         layoutCustomWidth() > 0 ? std::max<qreal>(1, manualTextWidth() - 2 * padX())
-                                                 : kMaxFormulaNodeWidth - 22);
-    else
-        m_formula = FormulaText();
-    if (!m_node->titleHtml.isEmpty() && m_formula.isEmpty()) {
-        if (!m_richDocument) m_richDocument = new QTextDocument(this);
-        m_richDocument->setDocumentMargin(0);
-        m_richDocument->setDefaultFont(font);
-        m_richDocument->setHtml(RichTitle::withoutDocumentFont(m_node->titleHtml));  // FEAT-022: vale il font del nodo
-        prependNumber(*m_richDocument);
-        QTextOption richOption = m_richDocument->defaultTextOption();
-        richOption.setAlignment(textAlignment(m_node));
-        // (richiesta 2026-10-13: una parola più larga del nodo usciva dal riquadro e veniva
-        // tagliata. Ora va a capo anche dentro la parola, ma solo quando non c'è altro modo:
-        // https://doc.qt.io/qt-6/qtextoption.html#WrapMode-enum)
-        richOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-        m_richDocument->setDefaultTextOption(richOption);
-        m_richDocument->setTextWidth(-1);
-        const qreal naturalWidth = std::ceil(m_richDocument->idealWidth());
-        m_richDocument->setTextWidth(layoutCustomWidth() > 0 ? std::max<qreal>(1, manualTextWidth() - 2 * padX())
-                                                             : std::min(naturalWidth, maxTextNodeWidth() - 2 * padX()));
-        m_textSize = m_richDocument->size();
-        return;
-    }
-    if (m_richDocument) { m_richDocument->deleteLater(); m_richDocument = nullptr; }
-    // Misura del testo semplice per il riquadro su misura (vedi textRect()). La
-    // larghezza utile per il testo è quella usata in paint(): riquadro meno 11 px per lato.
-    const QString plain = shownTitle().replace(QStringLiteral("\\$"), QStringLiteral("$"));
-    const qreal singleLine = metrics.horizontalAdvance(plain);
-    // Un titolo con "a capo" (Maiusc+Invio, nella mappa o nell'outliner) non è mai una riga
-    // sola: prima veniva misurato alto una riga e l'ultima riga usciva dal riquadro.
-    // Larghezza scelta trascinando i lati: il testo va a capo a quella larghezza meno i margini.
-    if (layoutCustomWidth() > 0)
-        m_textSize = plainTextLayout(plain, font, plainWrapWidth(manualTextWidth()), nullptr);
-    else if (!plain.contains(QLatin1Char('\n')) && singleLine + 2 * padX() <= maxTextNodeWidth())
-        m_textSize = {singleLine, metrics.height()};
-    else
-        // (richiesta 2026-10-13: con Qt::TextWordWrap una parola più larga del nodo non va a
-        // capo; Qt::TextWrapAnywhere invece spezzerebbe tutte le parole. La misura ora usa la
-        // stessa impaginazione del disegno, vedi plainTextLayout(): per i testi con spazi il
-        // risultato è identico a prima.)
-        // The usable width is the box limit minus the padding of the role (FEAT-072: was a fixed 22,
-        // the old padding, so a title of the central topic was measured on one line and drawn on two).
-        m_textSize = plainTextLayout(plain, font, plainWrapWidth(maxTextNodeWidth()), nullptr);
-    updatePlainLayout(font, metrics.height());  // P5
-}
-
-// P5 (2026-10-13): stessa impaginazione di QPainter::drawText(rect, Qt::AlignCenter |
-// Qt::TextWordWrap, testo), che prima veniva rifatta a ogni paint(). Riproduce qt_format_text()
-// di Qt (src/gui/painting/qpainter.cpp): righe larghe quanto il riquadro meno 11 px per lato,
-// interlinea (leading) tra le righe, ogni riga portata al pixel intero (qCeil) e alta
-// ascent + descent. La centratura orizzontale riga per riga si fa in paint().
-// Verificato pixel per pixel contro drawText (test scratch, Qt 6.4.2).
-void NodeItem::updatePlainLayout(const QFont &font, qreal fontHeight) {
-    if (!m_formula.isEmpty() || m_richDocument) { m_plainLayout.reset(); return; }
-    const QString plain = shownTitle().replace(QStringLiteral("\\$"), QStringLiteral("$"));
-    const qreal width = plainWrapWidth(textBlockWidth(m_textSize.width(), maxTextNodeWidth()));
-    m_plainLayout = std::make_unique<QTextLayout>();
-    const QSizeF size = plainTextLayout(plain, font, width, m_plainLayout.get());
-    m_plainLayoutSize = {width, size.height()};
-    // FEAT-022: giustificato. Le righe si allargano fino alla larghezza utile del riquadro (meno
-    // 16 px per lato): con la larghezza automatica e' la riga piu' lunga, con quella scelta a mano
-    // e' il limite dell'a capo. Gli a capo non cambiano: ogni riga ci stava gia'.
-    if (m_node->textAlign == TextAlign::Giustificato && m_plainLayout->lineCount() > 1) {
-        const qreal usable = textBlockWidth(m_textSize.width(), maxTextNodeWidth()) - 2 * padX();
-        plainTextLayout(plain, font, std::max(size.width(), std::min(usable, width)), m_plainLayout.get(), Qt::AlignJustify);
-    }
-    m_plainLayoutFontHeight = fontHeight;
-    m_metricsDevice = nullptr;  // impaginazione nuova: il confronto col dispositivo va rifatto
-}
-
-// Impaginazione del titolo semplice (P5), usata sia per misurarlo sia per disegnarlo: stessi
-// passi di qt_format_text() come descritto sopra. L'unica differenza da drawText(...,
-// Qt::TextWordWrap) è l'a capo dentro una parola più larga della riga (richiesta 2026-10-13):
-// WrapAtWordBoundaryOrAnywhere spezza la parola solo se non c'è un punto migliore.
-// Restituisce la larghezza della riga più lunga e l'altezza totale; layout può essere nullptr
-// quando serve solo la misura.
-QSizeF NodeItem::plainTextLayout(const QString &plain, const QFont &font, qreal width, QTextLayout *layout,
-                                 Qt::Alignment alignment) {
-    QTextLayout local;
-    QTextLayout *target = layout ? layout : &local;
-    target->setText(QString(plain).replace(QLatin1Char('\n'), QChar::LineSeparator));
-    target->setFont(font);
-    // Come qt_format_text: allineamento a sinistra nel layout, centro e destra fatti a mano in
-    // paint(); il giustificato lo fa il layout (FEAT-022).
-    QTextOption option(alignment);
-    option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-    target->setTextOption(option);
-    const qreal leading = QFontMetricsF(font).leading();
-    qreal height = -leading;
-    qreal widest = 0;
-    target->beginLayout();
-    for (QTextLine line = target->createLine(); line.isValid(); line = target->createLine()) {
-        line.setLineWidth(width);
-        height += leading;
-        height = std::ceil(height);
-        line.setPosition(QPointF(0, height));
-        height += line.ascent() + line.descent();
-        widest = std::max(widest, line.naturalTextWidth());
-    }
-    target->endLayout();
-    return {widest, std::max<qreal>(0, height)};
-}
-
-QRectF NodeItem::textRect() const { return contentLayout().box; }
-
-bool NodeItem::hasSideImage() const {
-    return m_hasImage && !m_node->title.trimmed().isEmpty()
-           && (m_node->imagePlacement == MindNode::ImagePlacement::Left || m_node->imagePlacement == MindNode::ImagePlacement::Right);
-}
-
-qreal NodeItem::textBlockWidth(qreal content, qreal maxWidth) const {
-    // Larghezza scelta dall'utente: il blocco riempie lo spazio lasciato da immagine affiancata e
-    // bottoni; si allarga solo se il contenuto non può andare a capo più stretto (una formula),
-    // così nulla esce dal bordo.
-    if (layoutCustomWidth() > 0) return std::max(manualTextWidth(), std::ceil(content) + 2 * padX());
-    return std::clamp(std::max(content, m_minContentWidth) + 2 * padX(), 0.0, maxWidth);
-}
-
-NodeItem::ContentLayout NodeItem::contentLayout(bool withNote) const {
-    // Blocco del testo: durante la modifica segue il testo che si sta scrivendo; con formule cresce
-    // per contenerle; un titolo vuoto con immagine non ha blocco (solo l'immagine).
-    QSizeF block;
-    bool hasText = true;
-    if (m_editor) block = {textBlockWidth(m_editorSize.width(), std::max(maxTextNodeWidth(), kMaxFormulaNodeWidth)), m_editorSize.height() + 2 * padY()};
-    else if (m_node->title.trimmed().isEmpty() && m_hasImage) hasText = false;
-    else if (!m_formula.isEmpty()) block = {textBlockWidth(m_formula.size().width(), kMaxFormulaNodeWidth), m_formula.size().height() + 2 * padY()};
-    else block = {textBlockWidth(m_textSize.width(), maxTextNodeWidth()), m_textSize.height() + 2 * padY()};
-    // BUG-020 (foto dell'utente): un nodo senza testo e senza immagine e' un quadrato alto
-    // quanto un nodo di una riga, cosi' resta visibile e cliccabile; con la larghezza a mano vale quella.
-    if (!m_editor && hasText && m_node->title.trimmed().isEmpty() && !m_hasImage && layoutCustomWidth() <= 0)
-        block.setWidth(block.height());
-    // FEAT-037: immagine dentro il nodo, 16/8 px di margine come il testo, 8 px dal testo; il blocco
-    // del testo ha gia' i suoi margini, che fanno da spazio verso l'immagine sopra o sotto. Bottoni
-    // dei collegamenti (FEAT-027) sempre a destra di tutto.
-    const QSizeF image = m_hasImage ? m_node->imageSize : QSizeF();
-    const bool side = hasText && hasSideImage();
-    qreal inner = 0, height = 0;
-    if (!m_hasImage) { inner = block.width(); height = block.height(); }
-    else if (!hasText) { inner = image.width() + 2 * padX(); height = image.height() + 2 * padY(); }
-    else if (side) { inner = image.width() + kImageGapPx + block.width(); height = std::max(block.height(), image.height() + 2 * padY()); }
-    else { inner = std::max(block.width(), image.width() + 2 * padX()); height = block.height() + image.height() + padY(); }
-    const qreal links = linkZoneWidth();
-    const qreal task = taskZoneWidth();  // FEAT-048: colonna della casella, speculare ai collegamenti
-    if (layoutCustomWidth() > 0) inner = std::max(inner, layoutCustomWidth() - links - task);
-    // FEAT-059: nota mostrata dentro il nodo, sotto il contenuto (8 px sotto, margini laterali 16).
-    qreal noteWidth = 0, noteHeight = 0;
-    if (withNote && m_notePreview) {
-        noteWidth = m_notePreviewKey.width + 2 * kNotePreviewPaddingPx;
-        noteHeight = m_notePreviewHeight;
-        inner = std::max(inner, noteWidth + 2 * padX());
-    }
-    const qreal extra = noteHeight > 0 ? noteHeight + padY() : 0;
-    ContentLayout layout;
-    layout.box = {-(task + inner + links) / 2, -(height + extra) / 2, task + inner + links, height + extra};
-    const QRectF &box = layout.box;
-    layout.content = {box.left(), box.top(), box.width(), height};
-    const QRectF &content = layout.content;
-    const qreal left0 = box.left() + task;  // inizio del contenuto (immagine e testo)
-    const qreal centerX = left0 + inner / 2;
-    if (noteHeight > 0) layout.note = {centerX - noteWidth / 2, content.bottom(), noteWidth, noteHeight};
-    if (!m_hasImage) {
-        layout.text = {left0, content.top(), inner, height};
-    } else if (!hasText) {
-        layout.image = {centerX - image.width() / 2, content.center().y() - image.height() / 2, image.width(), image.height()};
-    } else if (side) {
-        // Il margine sinistro del blocco del testo (16 px) copre lo spazio di 8 px dall'immagine.
-        const qreal textWidth = inner - image.width() - kImageGapPx;
-        const bool left = m_node->imagePlacement == MindNode::ImagePlacement::Left;
-        const qreal imageX = left ? left0 + padX() : left0 + textWidth - padX() + kImageGapPx;
-        layout.image = {imageX, content.center().y() - image.height() / 2, image.width(), image.height()};
-        layout.text = {left ? layout.image.right() + kImageGapPx - padX() : left0, content.center().y() - block.height() / 2,
-                       textWidth, block.height()};
-    } else {
-        const bool above = m_node->imagePlacement == MindNode::ImagePlacement::Above;
-        const qreal imageY = above ? content.top() + padY() : content.top() + block.height();
-        layout.image = {centerX - image.width() / 2, imageY, image.width(), image.height()};
-        layout.text = {centerX - block.width() / 2, above ? layout.image.bottom() : content.top(), block.width(), block.height()};
-    }
-    return layout;
-}
-
-qreal NodeItem::linkZoneWidth() const {
-    // Colonna a destra: nota (FEAT-059) e collegamenti (FEAT-027).
-    const int count = int(!m_node->topicLink.isEmpty()) + int(!m_node->webLink.isEmpty()) + int(hasNote(m_node) && !showAllNotes())
-                      + int(!m_node->files.isEmpty());  // FEAT-049
-    return count == 0 ? 0 : kLinkTextGapPx + count * kLinkButtonPx + (count - 1) * kLinkIconGapPx;
-}
-
-qreal NodeItem::manualTextWidth() const {
-    // FEAT-037: un'immagine a sinistra o a destra toglie la sua larghezza (piu' lo spazio) al testo.
-    const qreal sideImage = hasSideImage() ? m_node->imageSize.width() + kImageGapPx : 0;
-    return std::max<qreal>(1, layoutCustomWidth() - linkZoneWidth() - taskZoneWidth() - sideImage);
-}
-
-qreal NodeItem::taskZoneWidth() const {
-    // Come i collegamenti: 8 px dal contenuto e un bottone di 22 (piu' 4 fra due bottoni); il margine
-    // di 16 px del testo fa il resto. FEAT-051: prima i marcatori, poi la casella.
-    const int count = int(m_node->markers.size()) + int(m_node->task != MindNode::Task::None);
-    return count == 0 ? 0 : kLinkTextGapPx + count * kLinkButtonPx + (count - 1) * kLinkIconGapPx;
-}
-
-QList<QRectF> NodeItem::markerRects() const {
-    QList<QRectF> rects;
-    if (m_node->markers.isEmpty()) return rects;
-    const QRectF box = textRect();
-    if (box.isEmpty()) return rects;
-    const qreal y = contentLayout().content.center().y() - kLinkButtonPx / 2;
-    for (int i = 0; i < m_node->markers.size(); ++i)
-        rects.append({box.left() + padX() + i * (kLinkButtonPx + kLinkIconGapPx), y, kLinkButtonPx, kLinkButtonPx});
-    return rects;
-}
-
 int NodeItem::markerAt(const QPointF &position) const {
     if (m_editor) return -1;
     const QList<QRectF> rects = markerRects();
@@ -1330,48 +927,7 @@ int NodeItem::markerAt(const QPointF &position) const {
     return -1;
 }
 
-QRectF NodeItem::taskRect() const {
-    if (m_node->task == MindNode::Task::None) return {};
-    const QRectF box = textRect();
-    if (box.isEmpty()) return {};
-    const qreal markers = m_node->markers.size() * (kLinkButtonPx + kLinkIconGapPx);  // FEAT-051: dopo i marcatori
-    return {box.left() + padX() + markers, contentLayout().content.center().y() - kLinkButtonPx / 2, kLinkButtonPx, kLinkButtonPx};
-}
-
-QRectF NodeItem::textArea() const { return contentLayout().text; }
-
-QRectF NodeItem::linkIconRect(LinkKind kind) const {
-    const bool topic = !m_node->topicLink.isEmpty(), web = !m_node->webLink.isEmpty();
-    if ((kind == LinkKind::Topic && !topic) || (kind == LinkKind::Web && !web)) return {};
-    const QRectF box = textRect();
-    if (box.isEmpty()) return {};
-    // Da destra: margine del testo, la graffetta dei file (FEAT-049), poi l'icona web, poi (piu' a
-    // sinistra) quella dell'argomento.
-    qreal right = box.right() - padX() - (m_node->files.isEmpty() ? 0 : kLinkButtonPx + kLinkIconGapPx);
-    if (kind == LinkKind::Topic && web) right -= kLinkButtonPx + kLinkIconGapPx;
-    const qreal centerY = contentLayout().content.center().y();  // FEAT-059: non sulla nota mostrata
-    return {right - kLinkButtonPx, centerY - kLinkButtonPx / 2, kLinkButtonPx, kLinkButtonPx};
-}
-
-QRectF NodeItem::noteRect() const {
-    if (!hasNote(m_node) || showAllNotes()) return {};  // nota mostrata: niente icona
-    const QRectF box = textRect();
-    if (box.isEmpty()) return {};
-    // Prima dei collegamenti: da destra, margine, poi i bottoni dei collegamenti presenti, poi la nota.
-    const int links = int(!m_node->topicLink.isEmpty()) + int(!m_node->webLink.isEmpty()) + int(!m_node->files.isEmpty());
-    const qreal right = box.right() - padX() - links * (kLinkButtonPx + kLinkIconGapPx);
-    return {right - kLinkButtonPx, contentLayout().content.center().y() - kLinkButtonPx / 2, kLinkButtonPx, kLinkButtonPx};
-}
-
 QRectF NodeItem::formulaRect() const { return m_node->formula.isEmpty() ? QRectF() : imageRect(); }
-
-QRectF NodeItem::filesRect() const {
-    if (m_node->files.isEmpty()) return {};
-    const QRectF box = textRect();
-    if (box.isEmpty()) return {};
-    const qreal right = box.right() - padX();
-    return {right - kLinkButtonPx, contentLayout().content.center().y() - kLinkButtonPx / 2, kLinkButtonPx, kLinkButtonPx};
-}
 
 std::optional<NodeItem::LinkKind> NodeItem::linkAt(const QPointF &position) const {
     if (m_editor) return std::nullopt;
@@ -1410,26 +966,11 @@ void NodeItem::placeFormatBar() {
     m_formatBar->setTransform(QTransform::fromTranslate(-bar.width() / 2, -bar.height() - kBarGapPx));
 }
 
-qreal NodeItem::cornerRadius() const { return m_node->summaryTopic ? Summaries::kTopicRadiusPx : -1; }
-
-qreal NodeItem::padX() const { return NodeStyle::textPadding(m_node).x(); }
-
-qreal NodeItem::padY() const { return NodeStyle::textPadding(m_node).y(); }
-
 // Area the plain title is drawn in: the padding minus 5 px across and 2 px down (with the old 16x8
 // padding it was 11x6), so antialiased edges are not cut.
 qreal NodeItem::textClipX() const { return std::max<qreal>(0, padX() - 5); }
 
 qreal NodeItem::textClipY() const { return std::max<qreal>(0, padY() - 2); }
-
-qreal NodeItem::maxTextNodeWidth() const { return m_node && !m_node->parent ? kMaxCentralNodeWidth : kMaxTextNodeWidth; }
-
-qreal NodeItem::plainWrapWidth(qreal boxWidth) const {
-    // Automatica: righe larghe quanto il riquadro meno il padding, con 10 px di gioco (P5, come
-    // drawText prima: con il padding di 16 era riquadro - 22). Scelta dall'utente: meno il padding
-    // intero, così il testo ha sempre lo stesso margine e una riga lunga non si avvicina al bordo.
-    return std::max<qreal>(1, boxWidth - (layoutCustomWidth() > 0 ? 2 * padX() : 2 * padX() - 10));
-}
 
 int NodeItem::resizeSideAt(const QPointF &position) const {
     if (m_editor || m_draggingImage) return 0;
@@ -1439,93 +980,6 @@ int NodeItem::resizeSideAt(const QPointF &position) const {
     if (position.x() >= box.left() - 4 && position.x() <= box.left() + 5) return -1;
     if (position.x() >= box.right() - 5 && position.x() <= box.right() + 4) return 1;
     return 0;
-}
-
-qreal NodeItem::minimumCustomWidth() const {
-    // Si impagina il titolo a larghezza 1: ogni riga contiene un solo carattere (Qt mette sempre
-    // almeno un carattere per riga), e la riga più larga è il carattere più largo.
-    const QFont font = nodeFont(m_node);
-    qreal content = 0;
-    if (!m_formula.isEmpty()) {
-        FormulaText narrow;
-        narrow.update(shownTitle(), font, m_node->text, 1);
-        content = narrow.size().width();
-    } else if (m_richDocument) {
-        QTextDocument narrow;
-        narrow.setDocumentMargin(0);
-        narrow.setDefaultFont(font);
-        narrow.setHtml(RichTitle::withoutDocumentFont(m_node->titleHtml));
-        prependNumber(narrow);
-        narrow.setDefaultTextOption(m_richDocument->defaultTextOption());
-        narrow.setTextWidth(1);
-        content = narrow.idealWidth();
-    } else {
-        const QString plain = shownTitle().replace(QStringLiteral("\\$"), QStringLiteral("$"));
-        content = plainTextLayout(plain, font, 1, nullptr).width();
-    }
-    // FEAT-027: le icone restano; FEAT-037: l'immagine non si stringe trascinando il bordo.
-    const qreal text = std::ceil(content) + 2 * padX();
-    qreal inner = text;
-    if (m_hasImage) {
-        const qreal image = m_node->imageSize.width();
-        if (m_node->title.trimmed().isEmpty()) inner = image + 2 * padX();
-        else if (hasSideImage()) inner = image + kImageGapPx + text;
-        else inner = std::max(text, image + 2 * padX());
-    }
-    return inner + linkZoneWidth() + taskZoneWidth();
-}
-
-qreal NodeItem::anchorHalfWidth() const {
-    const QRectF shape = shapeRect();
-    return shape.isEmpty() ? 105.0 : shape.width() / 2;
-}
-
-QRectF NodeItem::shapeRect() const {
-    const QRectF content = textRect();
-    return NodeShapes::outerRect(m_node->shape, content, m_node->borderWidth, std::max<qreal>(0, content.width() - 2 * padX()));
-}
-
-QPointF NodeItem::branchAnchor(bool right) const {
-    const QRectF shape = shapeRect();
-    if (shape.isEmpty()) return {right ? 105.0 : -105.0, 0};
-    return NodeShapes::branchAnchor(m_node->shape, shape, m_node->borderWidth, right);
-}
-
-qreal NodeItem::layoutHeight() const {
-    // FEAT-060: il layout tratta il nodo come centrato sulla sua altezza: lo spazio delle etichette
-    // sotto la forma si conta sopra e sotto, cosi' non coprono il nodo seguente.
-    return normalBoundingRect().height() + 2 * labelsBlockHeight();
-}
-
-QRectF NodeItem::imageRect() const {
-    // FEAT-037: l'immagine sta dentro il nodo (prima fuori dalla forma, a 10 px dal riquadro).
-    return m_hasImage ? contentLayout().image : QRectF();
-}
-
-QRectF NodeItem::normalBoundingRect() const {
-    QRectF bounds = shapeRect();
-    if (!imageRect().isEmpty()) bounds = bounds.isEmpty() ? imageRect() : bounds.united(imageRect());
-    if (bounds.isEmpty()) bounds = {-105, -34, 210, 68};
-    return bounds.adjusted(-4, -4, 4, 4);
-}
-
-QList<QRectF> NodeItem::imageDropZones() const {
-    // Nell'ordine di MindNode::ImagePlacement. Come nella foto 3 (dell'utente, 2026-10-17) il nodo
-    // stesso si divide: a sinistra e a destra due strisce larghe un quarto, alte quanto il nodo; in
-    // mezzo la meta' alta (Sopra) e quella bassa (Sotto). Prima erano quattro riquadri attorno al
-    // nodo con il nome della posizione.
-    const QRectF box = textRect();
-    const qreal side = box.width() / 4;
-    const qreal middle = box.width() - 2 * side;
-    const qreal half = box.height() / 2;
-    return {{box.left() + side, box.top(), middle, half}, {box.left() + side, box.top() + half, middle, half},
-            {box.left(), box.top(), side, box.height()}, {box.right() - side, box.top(), side, box.height()}};
-}
-
-int NodeItem::imageDropZoneAt(const QPointF &position) const {
-    const QList<QRectF> zones = imageDropZones();
-    for (int i = 0; i < zones.size(); ++i) if (zones[i].contains(position)) return i;
-    return -1;
 }
 
 int NodeItem::imageHandleAt(const QPointF &position) const {
@@ -1679,7 +1133,7 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
         loadImage();
         // FEAT-039 (prima B9 toglieva lo spazio): file mancante o rovinato, l'immagine tiene il suo
         // posto e si disegna un segnaposto "Immagine non disponibile".
-        m_imageMissing = m_image.isNull() && m_hasImage;
+        m_imageMissing = m_image.isNull() && m_geometry.hasImage();
     }
     p->setRenderHint(QPainter::Antialiasing);
     // (2026-10-13: la selezione ora è l'anello esterno disegnato qui sotto; il bordo del nodo
@@ -1786,7 +1240,7 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
     if (QStyleOptionGraphicsItem::levelOfDetailFromTransform(p->worldTransform()) < Performance::detailZoomThreshold()
         && !(mapScene && mapScene->exportImageScale() > 0) && !m_editor && !m_draggingImage) {
         drawShape();
-        if (!m_image.isNull() && m_hasImage) p->drawPixmap(imageRect(), m_image, m_image.rect());
+        if (!m_image.isNull() && m_geometry.hasImage()) p->drawPixmap(imageRect(), m_image, m_image.rect());
         return;
     }
     if (!shapeBox.isEmpty()) {
@@ -1797,15 +1251,15 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
         // radici, integrali, matrici...). \$ resta un dollaro letterale.
         // In modifica il testo lo mostra il campo sopra il riquadro.
         if (m_editor || textBox.isEmpty()) {
-        } else if (!m_formula.isEmpty()) {
+        } else if (const FormulaRendering::TitleFormula *formula = m_geometry.formula()) {
             // FEAT-022: centro e destra anche per le formule (giustificato = sinistra).
-            const qreal inset = textLeftInset(textBox.width(), m_formula.size().width(), padX());
+            const qreal inset = textLeftInset(textBox.width(), formula->size().width(), padX());
             const Qt::Alignment horizontal = textAlignment(m_node) == Qt::AlignJustify ? Qt::AlignLeft : textAlignment(m_node);
-            m_formula.draw(p, textBox.adjusted(inset, 6, horizontal == Qt::AlignLeft ? -11 : -inset, -6), horizontal | Qt::AlignVCenter);
+            formula->draw(p, textBox.adjusted(inset, 6, horizontal == Qt::AlignLeft ? -11 : -inset, -6), horizontal | Qt::AlignVCenter);
         }
-        else if (m_richDocument) {
+        else if (m_geometry.richDocument()) {
             const QRectF target = textBox.adjusted(padX(), padY(), -padX(), -padY());
-            const QSizeF size = m_richDocument->size();
+            const QSizeF size = m_geometry.richDocument()->size();
             p->save();
             p->setClipRect(target);
             // (richiesta 2026-10-13: testo a sinistra; il documento è già allineato a sinistra al suo interno)
@@ -1816,13 +1270,16 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
             QAbstractTextDocumentLayout::PaintContext context;
             context.palette.setColor(QPalette::Text, m_node->text);
             context.clip = QRectF(QPointF(), size);
-            m_richDocument->documentLayout()->draw(p, context);
+            m_geometry.richDocument()->documentLayout()->draw(p, context);
             p->restore();
-        } else if (m_plainLayout && std::abs(plainWrapWidth(textBox.width()) - m_plainLayoutSize.width()) < 0.01 &&
+        } else if (const QTextLayout *plainLayout = m_geometry.plainLayout();
+                   plainLayout && std::abs(plainWrapWidth(textBox.width()) - m_geometry.plainLayoutSize().width()) < 0.01 &&
                    [&] {
-                       if (p->device() != m_metricsDevice) {
+                       // Checked again for another device or a new layout.
+                       if (p->device() != m_metricsDevice || m_metricsGeneration != m_geometry.plainLayoutGeneration()) {
                            m_metricsDevice = p->device();
-                           m_metricsDeviceMatches = QFontMetricsF(p->font()).height() == m_plainLayoutFontHeight;
+                           m_metricsGeneration = m_geometry.plainLayoutGeneration();
+                           m_metricsDeviceMatches = QFontMetricsF(p->font()).height() == m_geometry.plainLayoutFontHeight();
                        }
                        return m_metricsDeviceMatches;
                    }()) {
@@ -1833,8 +1290,8 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
             // Come drawText: si smette di disegnare righe quando il riquadro è pieno.
             int lineCount = 0;
             qreal height = 0, width = 0;
-            while (lineCount < m_plainLayout->lineCount()) {
-                const QTextLine line = m_plainLayout->lineAt(lineCount++);
+            while (lineCount < plainLayout->lineCount()) {
+                const QTextLine line = plainLayout->lineAt(lineCount++);
                 height = line.y() + line.ascent() + line.descent();
                 width = std::max(width, line.naturalTextWidth());
                 if (height >= target.height()) break;
@@ -1854,7 +1311,7 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
             // FEAT-022: centro e destra spostano ogni riga dentro il blocco largo quanto la piu' lunga.
             const qreal factor = m_node->textAlign == TextAlign::Centro ? 0.5 : m_node->textAlign == TextAlign::Destra ? 1.0 : 0.0;
             for (int i = 0; i < lineCount; ++i) {
-                const QTextLine line = m_plainLayout->lineAt(i);
+                const QTextLine line = plainLayout->lineAt(i);
                 line.draw(p, QPointF(left + (width - line.naturalTextWidth()) * factor, target.y() + yoff));
             }
             if (clip) p->restore();
@@ -1989,7 +1446,7 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
     }
     // FEAT-059: nota dentro il nodo (Mostra tutte le note): fondo leggermente piu' chiaro o piu' scuro
     // del nodo, testo del colore del testo del nodo, al massimo 6 righe.
-    if (const QRectF note = notePreviewRect(); !note.isEmpty() && m_notePreview) {
+    if (const QRectF note = notePreviewRect(); !note.isEmpty() && m_geometry.notePreview()) {
         p->save();
         const bool lightText = NodeStyle::readableTextOn(m_node->text) != QColor(Qt::white);  // testo chiaro
         p->setPen(Qt::NoPen);
@@ -2001,9 +1458,9 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
         QAbstractTextDocumentLayout::PaintContext context;
         context.palette.setColor(QPalette::Text, m_node->text);
         context.clip = QRectF(QPointF(0, 0), text.size());
-        m_notePreview->documentLayout()->draw(p, context);
+        m_geometry.notePreview()->documentLayout()->draw(p, context);
         p->restore();
-        if (m_notePreview->size().height() > text.height() + 1) {  // testo tagliato
+        if (m_geometry.notePreview()->size().height() > text.height() + 1) {  // testo tagliato
             p->setPen(m_node->text);
             p->drawText(QRectF(note.right() - 24, note.bottom() - 18, 18, 14), Qt::AlignRight | Qt::AlignBottom, QStringLiteral("…"));
         }
@@ -2142,7 +1599,7 @@ void NodeItem::mousePressEvent(QGraphicsSceneMouseEvent *event) {
         }
     }
     // Clic sull'immagine: la sceglie (maniglie al rilascio); trascinandola si sposta (zone).
-    if (m_hasImage && imageRect().contains(event->pos()) && event->button() == Qt::LeftButton) {
+    if (m_geometry.hasImage() && imageRect().contains(event->pos()) && event->button() == Qt::LeftButton) {
         if (!isSelected()) {
             if (scene() && !(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))) scene()->clearSelection();
             setSelected(true);
@@ -2315,7 +1772,7 @@ void NodeItem::setImageSelectedState(bool selected) {
 }
 
 void NodeItem::selectImage() {
-    if (!m_hasImage) return;
+    if (!m_geometry.hasImage()) return;
     if (!isSelected()) {
         if (scene()) scene()->clearSelection();
         setSelected(true);
@@ -2324,7 +1781,7 @@ void NodeItem::selectImage() {
 }
 
 QPixmap NodeItem::picture() {
-    if (!m_hasImage) return {};
+    if (!m_geometry.hasImage()) return {};
     if (m_imageLoadPending || (m_image.isNull() && !m_loadedImagePath.isEmpty())) loadImage();
     return m_image;
 }
@@ -2343,20 +1800,6 @@ QPixmap NodeItem::dragPreview(qreal scale) const {
     self->paint(&painter, &option, nullptr);
     self->m_hovered = hovered;
     return pixmap;
-}
-
-qreal NodeItem::imageRoomWidth() const {
-    return textRect().width() - taskZoneWidth() - linkZoneWidth() - 2 * padX();
-}
-
-QSizeF NodeItem::insertionImageSize(const QString &path) {
-    QImageReader reader(path);
-    reader.setAutoTransform(true);
-    QSizeF size = reader.size();
-    if (reader.transformation() & QImageIOHandler::TransformationRotate90) size.transpose();
-    if (size.isEmpty()) size = {180, 120};
-    if (size.width() > kMaxImageWidthPx) size = size.scaled(kMaxImageWidthPx, size.height(), Qt::KeepAspectRatio);
-    return {std::round(size.width()), std::round(size.height())};
 }
 
 QVariant NodeItem::itemChange(GraphicsItemChange change, const QVariant &value) {
@@ -2738,6 +2181,7 @@ void NodeItem::startInlineEditor() {
     editor->finished = [this](bool commit) { finishEditing(commit); };
     m_halfBeforeEditing = anchorHalfWidth();  // FEAT-034: misura senza il campo
     m_editor = editor;
+    m_geometry.setEditingSize(m_editorSize);
     // Bug 2026-10-13 (foto dell'utente): la barra di formattazione è figlia del nodo, quindi il suo
     // setZValue(20) vale solo tra i figli del nodo; i nodi aggiunti dopo nella scena (stesso z 0)
     // venivano disegnati sopra la barra. Durante la modifica il nodo sale sopra gli altri nodi
@@ -2849,6 +2293,7 @@ void NodeItem::layoutEditor() {
     m_editor->setTextWidth(width);
     prepareGeometryChange();
     m_editorSize = document->size();
+    m_geometry.setEditingSize(m_editorSize);
     keepParentSide(oldHalf);
     // Testo a sinistra (2026-10-13): il campo parte dove parte il titolo disegnato, anche quando
     // il nodo è più largo del testo (larghezza minima).
@@ -2875,6 +2320,7 @@ void NodeItem::finishEditing(bool commit) {
     const qreal halfWhileEditing = anchorHalfWidth();
     prepareGeometryChange();
     m_editor = nullptr;
+    m_geometry.setEditingSize(std::nullopt);
     keepParentSide(halfWhileEditing);  // FEAT-034: il layout dopo la conferma tiene lo stesso lato fermo
     // La barra resta nella scena, nascosta e staccata dal nodo, per la prossima modifica.
     if (m_formatBar) {
@@ -2929,49 +2375,4 @@ void NodeItem::finishEditing(bool commit) {
     if (pendingTask) emit taskTyped(this, pendingTask);  // FEAT-068: "- [ ] " a inizio titolo
 }
 
-QFont NodeItem::titleFont(const MindNode *node) { return nodeFont(node); }
-
 int NodeItem::boldWeightFor(const MindNode *node) { return node->fontWeight >= QFont::Bold ? QFont::Black : QFont::Bold; }
-
-void NodeItem::loadBundledFonts() {
-    // Registered once, before the font list is read.
-    static const bool loaded = [] {
-        // FEAT-072: the fonts of the mind map variants (all SIL OFL 1.1, see each LEGGIMI.txt).
-        for (const char *path : {":/assets/fonts/roboto/Roboto[wdth,wght].ttf", ":/assets/fonts/montserrat/Montserrat[wght].ttf",
-                                 ":/assets/fonts/arvo/Arvo-Regular.ttf", ":/assets/fonts/arvo/Arvo-Bold.ttf"})
-            QFontDatabase::addApplicationFont(QString::fromLatin1(path));
-        // Fonts for readability, offered in the font list: Atkinson Hyperlegible and OpenDyslexic (SIL OFL 1.1).
-        loadInterfaceFont();
-        for (const char *name : {"Regular", "Italic", "Bold", "Bold-Italic"})
-            QFontDatabase::addApplicationFont(QStringLiteral(":/assets/fonts/opendyslexic/OpenDyslexic-%1.otf").arg(QLatin1String(name)));
-        // Atkinson Hyperlegible Next and Mono, every weight with its italic.
-        for (const char *weight : {"ExtraLight", "Light", "Regular", "Medium", "SemiBold", "Bold", "ExtraBold"})
-            for (const char *family : {"Next", "Mono"})
-                for (const char *italic : {"", "Italic"}) {
-                    const QString name = QLatin1String(weight) + QLatin1String(italic);
-                    QFontDatabase::addApplicationFont(QStringLiteral(":/assets/fonts/atkinson-hyperlegible-%1/AtkinsonHyperlegible%2-%3.otf")
-                                                          .arg(QString::fromLatin1(family).toLower(), QLatin1String(family), name));
-                }
-        return true;
-    }();
-    Q_UNUSED(loaded);
-}
-
-void NodeItem::loadInterfaceFont() {
-    static const bool loaded = [] {
-        for (const char *name : {"Regular", "Italic", "Bold", "BoldItalic"})
-            QFontDatabase::addApplicationFont(QStringLiteral(":/assets/fonts/atkinson-hyperlegible/AtkinsonHyperlegible-%1.ttf").arg(QLatin1String(name)));
-        return true;
-    }();
-    Q_UNUSED(loaded);
-}
-
-bool NodeItem::isFontInstalled(const QString &family) {
-    loadBundledFonts();
-    // Elenco letto una volta: QFontDatabase::families() costa e nodeFont() si chiama a ogni misura.
-    static const QSet<QString> families = [] {
-        const QStringList list = QFontDatabase::families();
-        return QSet<QString>(list.cbegin(), list.cend());
-    }();
-    return families.contains(family);
-}

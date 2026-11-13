@@ -1,13 +1,16 @@
 #include "mindmapscene.h"
 
+#include "document.h"
+
 #include <QTimer>
 #include <QImage>
 #include <QBuffer>
-#include "richresources.h"
 #include "branchpath.h"
+#include "mapnavigation.h"
 #include "mapvariants.h"
 #include "mapstructure.h"
 #include "mindmapmodel.h"
+#include "maplayout.h"
 #include "nodeitem.h"
 #include "nodeshape.h"
 #include "nodesketch.h"
@@ -33,6 +36,8 @@
 #include <utility>
 #include <cmath>
 #include <algorithm>
+
+using namespace MapLayoutRules;
 
 namespace {
 // Ramo tra due nodi. QGraphicsPathItem::boundingRect() con penna di spessore > 0 ricava il
@@ -86,108 +91,28 @@ private:
     qreal m_markWidth = 0;
 };
 
-// FEAT-015 (foto dell'utente 2026-10-21): segnaposto azzurro dove comparira' il nodo,
-// raggio 4; oltre il lato esterno di un nodo senza figli il rilascio vale fino a questa distanza.
-constexpr QSizeF kReorderSlotPx{36, 12};
-constexpr qreal kReorderLeafReachPx = 200;
-constexpr qreal kReorderBodyMarginPx = 4;   // attorno alla forma: rilascio sopra il nodo
-constexpr qreal kReorderVerticalReachPx = 24;  // sopra e sotto il gruppo dei figli
-constexpr qreal kReorderGhostOpacity = 0.6;
-
-// Distanze del layout, misurate sulle foto di riferimento dell'utente (2026-10-21) e approvate: il riferimento
-// stacca i rami principali e compatta i loro discendenti.
-// Valori: dal centrale ai rami principali, da un nodo ai suoi figli (dal ramo principale in giu'), fra
-// i rami principali (fra i loro ingombri), fra due foglie vicine dentro lo stesso ramo principale, e
-// fattore per le distanze di organigramma e albero. Live reference values (FEAT-072, user decisions
-// 2026-10-21/22): central to main topics 54 (was 80), a node to its children 28 (was 32), 35 between
-// the shapes of main topics (was 32 plus the hidden 4 px margins). "Mappa compatta" (FEAT-043, richiesta
-// dell'utente 2026-10-21: "diminuisce leggermente gli spazi"): circa tre quarti, sulla griglia di 4 px.
-constexpr qreal kNormalSpacing[] = {54, 28, 35, 6, 1};
-constexpr qreal kCompactSpacing[] = {40, 24, 24, 4, 0.75};
-constexpr qreal kFanLevelFactor = 54.0 / 28.0;  // FEAT-072: fans put the children 54 px out (reference live)
 constexpr qreal kRootSquareInsetPx = 50;  // FEAT-072: right-angle lines from the central topic (reference 51)
 // FEAT-072: curves to underlined main topics start inside the corner by 0.75 x the child's distance above or
 // below the central topic (reference photos 2026-10-23: 0.73-0.75 over 7-123 px; a fixed 35 px fitted only close topics).
 constexpr qreal kRootUnderlineInsetPerPx = 0.75;
-constexpr qreal kLogicRootFactor = 100.0 / 54.0;  // FEAT-072: logic chart, main topics 100 px from the central (reference live)
-// FEAT-026 phase E, brace map (reference live 2026-10-24): cusp 12 px out from the parent, arcs of radius
-// 18.5 from the central topic and 7 below, children 17 px past the arms' ends.
-constexpr qreal kBraceCuspGapPx = 12;
-constexpr qreal kBraceRootRadiusPx = 18.5;
-constexpr qreal kBraceRadiusPx = 7;
-constexpr qreal kBraceEndGapPx = 17;
-qreal braceRadius(const MindNode *parent) { return parent->parent ? kBraceRadiusPx : kBraceRootRadiusPx; }
-// Shape to shape, from a parent of a brace map to its children.
-qreal braceLevelGap(const MindNode *parent) { return kBraceCuspGapPx + 2 * braceRadius(parent) + kBraceEndGapPx; }
-bool isBraceParent(const MindNode *node) { return MapStructure::typeOf(node) == MapStructure::Type::Brace; }
-// FEAT-026 phase E, timeline (reference live 2026-10-24). On the axis (variants 1 and 2): 100 px between
-// consecutive topics. Off the axis (variant 3): main topics 25 px above and below the axis in turn, the
-// first 25 px from the central topic, each centre 37 px past the previous topic's right edge, the axis
-// 40 px past the last one, dots of twice the line width in radius. Either way a main topic's branch
-// (topic and children) stays that gap from the previous branch on its side, and its children stand in
-// a column 25 px above or below it, 27 px beside the stem from the middle of its side.
-constexpr qreal kTimelineGapPx = 100;
-constexpr qreal kTimelineOffAxisGapPx = 37;
-constexpr qreal kTimelineAxisGapPx = 25;
-constexpr qreal kTimelineAxisOvershootPx = 40;
-constexpr qreal kTimelineChildGapPx = 25;
-constexpr qreal kTimelineStemIndentPx = 27;
 constexpr qreal kTimelineObliqueSlope = 0.577;  // variant 3: the last stretch to a subtopic rises at 30 degrees
-// FEAT-052: position of a summary topic with this shape beside the bracket of `covered`.
-QPointF summaryTopicPosition(const QRectF &covered, Summaries::Side side, const QRectF &shape) {
-    const QPointF anchor = Summaries::topicAnchor(covered, side);
-    switch (side) {
-    case Summaries::Side::Right: return {anchor.x() - shape.left(), anchor.y() - shape.center().y()};
-    case Summaries::Side::Left: return {anchor.x() - shape.right(), anchor.y() - shape.center().y()};
-    case Summaries::Side::Down: return {anchor.x() - shape.center().x(), anchor.y() - shape.top()};
-    case Summaries::Side::Up: return {anchor.x() - shape.center().x(), anchor.y() - shape.bottom()};
-    }
-    return anchor;
-}
-// The node that sets a timeline: the central topic of a timeline sheet, or a branch with that type.
-bool setsTimeline(const MindNode *node) {
-    return node && MapStructure::typeOf(node) == MapStructure::Type::Timeline
-        && (!node->parent || MapStructure::typeFromKey(node->structure) == MapStructure::Type::Timeline);
-}
-// FEAT-026 phase E, fishbone (reference live 2026-10-24, variant 1 at 100%). The spine runs from the central
-// topic's side; main topics stand above and below it in turn, each on a bone at 60 degrees from its foot
-// on the spine to the middle of the topic's side facing the spine. Subtopics sit between the topic and the
-// spine, one under the other, each on a horizontal tick 36 px long from the bone; their centres are 65 px
-// from the spine (the nearest), 37 apart, 39 from the topic (the farthest); a topic without subtopics is
-// 50 px from the spine. A branch (topic, subtopics, bone) stays 52 px from the central topic and 35 from
-// the previous branch on its side; each foot is at least 35 px past the previous one. The spine ends where
-// the farthest branch ends, in the last main topic's colour.
-constexpr qreal kFishboneSlope = 0.577;  // tan 30 degrees: horizontal run of a bone per pixel of height
-constexpr qreal kFishboneHeadGapPx = 52;
-constexpr qreal kFishboneBranchGapPx = 35;
-constexpr qreal kFishboneFootGapPx = 35;
-constexpr qreal kFishboneTickPx = 36;
-constexpr qreal kFishboneSpineCentrePx = 65;  // spine to the nearest subtopic's centre
-constexpr qreal kFishboneTopicCentrePx = 39;  // farthest subtopic's centre to the main topic
-constexpr qreal kFishboneSubPitchPx = 37;     // centre to centre; taller subtopics keep the sibling gap
-constexpr qreal kFishboneBarePx = 50;
-bool setsFishbone(const MindNode *node) {
-    return node && MapStructure::typeOf(node) == MapStructure::Type::Fishbone
-        && (!node->parent || MapStructure::typeFromKey(node->structure) == MapStructure::Type::Fishbone);
-}
-// FEAT-028: the topic that sets a tree table (the central topic of a table sheet, or a branch with
-// that type). Reference live 2026-10-25: a row at least 48 px tall (46.5 plus the border); below a main
-// topic every cell takes its colour mixed 80% with white (#FF6B6B -> #FFE1E1).
-bool setsTreeTable(const MindNode *node) {
-    return node && MapStructure::typeOf(node) == MapStructure::Type::TreeTable
-        && (!node->parent || MapStructure::typeFromKey(node->structure) == MapStructure::Type::TreeTable);
-}
-constexpr qreal kTableRowPx = 48;
-constexpr qreal kTableInsetPx = 16;  // stage 2: a branch inside a cell from its edges (reference live: 15-16)
+// FEAT-028 (reference live 2026-10-25): below a main topic every cell takes its colour mixed 80% with
+// white (#FF6B6B -> #FFE1E1).
 constexpr qreal kTableTintWhite = 0.8;
 QColor solidFill(const MindNode *node) { return node->fill.alpha() > 0 ? node->fill : node->branchColor; }
-constexpr qreal kMinMainLeafHalfPx = 16;  // un ramo principale senza figli occupa almeno 32 px (passo 64)
-// NodeItem::normalBoundingRect allarga la forma di 4 px per lato: lo spazio fra le foglie si misura
-// sulla forma, come appare.
-constexpr qreal kLayoutMarginPx = 4;
 }
 
-MindMapScene::MindMapScene(MindMapModel *model, QObject *parent) : QGraphicsScene(parent), m_model(model) {
+MindMapScene::MindMapScene(MindMapModel *model, QObject *parent) : QGraphicsScene(parent), m_model(model), m_layout(model) {
+    // FEAT-096 stage 2: the layout reads the items' measures and, for the summaries, the last placement.
+    m_layout.geometryOf = [this](const MindNode *node) -> const NodeGeometry * {
+        const NodeItem *item = m_items.value(const_cast<MindNode *>(node));
+        return item ? &item->geometry() : nullptr;
+    };
+    m_layout.nodeById = [this](const QString &id) -> const MindNode * {
+        const NodeItem *item = m_itemsById.value(id);
+        return item ? item->node() : nullptr;
+    };
+    m_layout.branchesCovered = [this](const QStringList &topics) { return branchesCovered(topics); };
     setBackgroundBrush(QColor("#f6f7fb"));
     connect(model, &MindMapModel::modelReset, this, &MindMapScene::rebuild);
     // Si aggiungono/rimuovono solo gli item dei nodi coinvolti (prima ogni inserimento o
@@ -246,28 +171,13 @@ QRectF MindMapScene::nodeSceneRect(const MindNode *node) const {
     return item ? item->sceneBoundingRect() : QRectF();
 }
 
-BranchShape MindMapScene::effectiveBranchShape(const MindNode *parent) const {
-    if (!parent || parent->branchShape != BranchShape::Auto) return parent ? parent->branchShape : BranchShape::Auto;
-    const MapVariants::Variant *variant = MapVariants::find(m_model->sheetStyle.variant);
-    if (variant && variant->line != MapVariants::Line::Curve) return BranchShape::Auto;
-    const MapStructure::Type type = MapStructure::typeOf(parent);
-    // Measured live 2026-10-23: in the logic chart curves from the central topic, the rounded bracket below.
-    if (type == MapStructure::Type::LogicChart) return parent->parent ? BranchShape::RoundedBracket : BranchShape::Curve;
-    if (type == MapStructure::Type::TreeChart) return BranchShape::RoundedBracket;  // below the trunk
-    if (type != MapStructure::Type::MindMap) return BranchShape::Auto;
-    // Measured live 2026-10-23: variants with underlined subtopics (2, 3, the hand-drawn one) join
-    // them with curves, the others with the rounded bracket.
-    if (parent->parent) return variant && variant->sub.look == MapVariants::Look::Underline ? BranchShape::Curve : BranchShape::RoundedBracket;
-    return BranchShape::Auto;
-}
-
 QRectF MindMapScene::nodeShapeSceneRect(const MindNode *node) const {
     const NodeItem *item = m_items.value(const_cast<MindNode *>(node));
     return item && item->isVisible() ? item->mapRectToScene(item->shapeRect()) : QRectF();
 }
 
 void MindMapScene::refreshTableCells() {
-    if (!m_tableCells.isEmpty()) computeAutoPositions();  // with no table, applyTableCells finds a new one
+    if (!m_layout.tableCells().isEmpty()) computeAutoPositions();  // with no table, applyTableCells finds a new one
     applyTableCells();
     for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) updateEdge(it.key());
 }
@@ -384,27 +294,18 @@ void MindMapScene::addNodeRecursive(MindNode *node) {
         for (QGraphicsView *view : views()) view->ensureVisible(i, 24, 24);
     });
     connect(item, &NodeItem::titleEdited, this, [this](NodeItem *i, const QString &title, const QString &html) {
-        // testo semplice. Il titolo formattato viene salvato direttamente insieme al plain text.
         const qreal halfBefore = i->anchorHalfWidth();  // FEAT-034
         const QSizeF sizeBefore = i->shapeRect().size();
-        i->node()->title = title;
-        i->node()->titleHtml = RichResources::withoutExternal(html);  // BUG-044
-        // P8 (2026-10-13): per i figli il dataChanged emesso qui sotto aggiorna già il nodo
-        // (vedi il costruttore): prima l'aggiornamento avveniva due volte. La radice non ha
-        // indice nel modello, quindi per lei si aggiorna qui.
-        if (!i->node()->parent || summaryTopicOf(i->node())) updateNode(i->node());  // FEAT-052: no index either
-        const QModelIndex index = m_model->indexFromNode(i->node());
-        if (index.isValid()) emit m_model->dataChanged(index, index, {Qt::EditRole, Qt::DisplayRole});
+        // The document's dataChanged or nodesChanged updates the item (once: P8, 2026-10-13) and its
+        // structureChanged the outliner, the history and the "Modified" state.
+        if (!m_document || !m_document->editTitle(i->node(), title, html)) return;
         // FEAT-034: con il titolo nuovo il lato verso il genitore resta dov'era (nello stesso passo
         // della modifica; il layout seguente lo tiene li').
         i->keepParentSide(halfBefore);
-        i->node()->position = i->pos();
         // A new size moves the topics around it (FEAT-072): e.g. a central topic going to two
         // lines pushes the main topics clear of it. Before, only its branches followed.
         if (i->shapeRect().size() != sizeBefore) autoLayout();
         else updateEdgesFor(i->node());
-        emit m_model->structureChanged();  // aggiorna outliner, storico e stato "Modificato"
-        // selezionato da solo; riselezionarlo toglierebbe la selezione al nodo appena cliccato)
     });
     connect(item, &NodeItem::editingResized, this, &MindMapScene::onEditingResized);
     connect(item, &NodeItem::imageSelectionChanged, this, &MindMapScene::imageSelectionChanged);
@@ -485,59 +386,6 @@ Summaries::Side MindMapScene::summarySide(const Summary &summary, const QRectF &
     return Summaries::sideFor(points, covered, parentCentre, setsFishbone(summary.topic->parent));
 }
 
-QMarginsF MindMapScene::boundaryPad(const QList<MindNode *> &children, int index, bool alongX, bool ascending) const {
-    QMarginsF pad;
-    const QString &id = children[index]->id;
-    for (const Boundary &boundary : std::as_const(m_model->boundaries)) {
-        if (!boundary.topics.contains(id)) continue;
-        QList<int> run;
-        for (int i = 0; i < children.size(); ++i) if (boundary.topics.contains(children[i]->id)) run.append(i);
-        if (run.size() != boundary.topics.size()) continue;  // topics under other parents: just surrounded
-        const int low = ascending ? run.front() : run.back();  // the smallest coordinate
-        const int high = ascending ? run.back() : run.front();
-        const qreal side = Boundaries::padBelow(boundary);  // margin and half the stroke
-        const qreal above = Boundaries::padAbove(boundary);  // with the title tab
-        if (alongX) {
-            pad.setTop(std::max(pad.top(), above));
-            pad.setBottom(std::max(pad.bottom(), side));
-            if (index == low) pad.setLeft(std::max(pad.left(), side));
-            if (index == high) pad.setRight(std::max(pad.right(), side));
-        } else {
-            pad.setLeft(std::max(pad.left(), side));
-            pad.setRight(std::max(pad.right(), side));
-            if (index == low) pad.setTop(std::max(pad.top(), above));
-            if (index == high) pad.setBottom(std::max(pad.bottom(), side));
-        }
-    }
-    return pad;
-}
-
-QRectF MindMapScene::summaryRoom(const MindNode *node, const QList<MindNode *> &children, const QList<QRectF> &placed,
-                                 const QList<QPointF> &centres, const QPointF &nodeAt, bool row) const {
-    QRectF room;
-    for (const Summary &summary : std::as_const(m_model->summaries)) {
-        if (summary.topic->parent != node) continue;
-        QRectF covered;
-        QList<QPointF> points;
-        for (int i = 0; i < children.size(); ++i)
-            if (summary.topics.contains(children[i]->id)) {
-                covered = covered.isNull() ? placed[i] : covered.united(placed[i]);
-                points.append(centres[i]);
-            }
-        if (covered.isNull()) continue;
-        if (points.size() < 2) points = centres;
-        const NodeItem *item = m_items.value(summary.topic.get());
-        const QSizeF size = item ? item->shapeRect().size() : QSizeF(80, 22);
-        const Summaries::Side side = Summaries::sideFor(points, covered, nodeAt, row);
-        QRectF extent = Summaries::extent(covered, side, size);
-        // With the topic's branch, from where the topic stands in this frame.
-        if (const auto bounds = m_summaryBranchBounds.constFind(summary.topic.get()); item && bounds != m_summaryBranchBounds.cend())
-            extent = extent.united(bounds->translated(summaryTopicPosition(covered, side, item->shapeRect())));
-        room = room.isNull() ? extent : room.united(extent);
-    }
-    return room;
-}
-
 void MindMapScene::syncSummaryItems() {
     QSet<QString> present;
     // Placing a summary topic is not a move by the user: no nodeChanged, no annotation refresh.
@@ -576,11 +424,11 @@ void MindMapScene::syncSummaryItems() {
         item->syncFromNode();
         // Its branch grows away from the bracket (to the right below and above a row).
         const int sign = side == Summaries::Side::Left ? -1 : 1;
-        layoutSummaryBranch(items.topic.get(), sign);
+        m_layout.layoutSummaryBranch(items.topic.get(), sign);
         const std::function<void(MindNode *)> place = [&](MindNode *node) {
             for (const auto &child : node->children) {
                 if (NodeItem *childItem = m_items.value(child.get())) {
-                    childItem->setGrowSide(m_sides.value(child.get(), sign));
+                    childItem->setGrowSide(m_layout.sides().value(child.get(), sign));
                     childItem->syncFromNode();
                 }
                 updateEdge(child.get());
@@ -600,73 +448,6 @@ void MindMapScene::syncSummaryItems() {
     m_batchUpdate = wasBatch;
 }
 
-void MindMapScene::collectBoundaryRuns() {
-    m_boundaryRuns.clear();
-    m_boundaryRunsOf.clear();
-    m_summaryBranchBounds.clear();
-    const auto addRun = [this](const QStringList &ids, qreal above, qreal below) {
-        // Room only for a run of siblings; topics moved under other parents are just surrounded.
-        QList<const MindNode *> topics;
-        for (const QString &id : ids)
-            if (const NodeItem *item = m_itemsById.value(id)) topics.append(item->node());
-        if (topics.isEmpty() || std::any_of(topics.cbegin(), topics.cend(), [&](const MindNode *t) { return t->parent != topics.front()->parent; }))
-            return;
-        const int index = int(m_boundaryRuns.size());
-        m_boundaryRuns.append({above, below, int(topics.size()), 0});
-        for (const MindNode *topic : std::as_const(topics)) m_boundaryRunsOf[topic].append(index);
-    };
-    for (const Boundary &boundary : std::as_const(m_model->boundaries))
-        addRun(boundary.topics, Boundaries::padAbove(boundary), Boundaries::padBelow(boundary));
-    // FEAT-052: a summary topic taller than its run moves the siblings apart (the run's height from the
-    // last layout: the room lies outside it, so the result does not change it).
-    for (const Summary &summary : std::as_const(m_model->summaries)) {
-        const NodeItem *item = m_items.value(summary.topic.get());
-        const QRectF covered = branchesCovered(summary.topics);
-        if (!item || covered.isNull()) continue;
-        // With the topic's branch, laid out where the topic stands (only its extent counts here).
-        const QRectF bounds = layoutSummaryBranch(summary.topic.get(), sideOf(summary.topic.get()) < 0 ? -1 : 1)
-                                  .translated(-summary.topic->position);
-        m_summaryBranchBounds.insert(summary.topic.get(), bounds);
-        const qreal centre = item->shapeRect().center().y();
-        const qreal half = covered.height() / 2 + Summaries::kOverhangPx;
-        const qreal above = centre - bounds.top() - half;
-        const qreal below = bounds.bottom() - centre - half;
-        if (above > 0 || below > 0) addRun(summary.topics, std::max<qreal>(0, above), std::max<qreal>(0, below));
-    }
-    for (BoundaryRun &run : m_boundaryRuns) run.visited = 0;  // for the main layout
-}
-
-QRectF MindMapScene::layoutSummaryBranch(MindNode *topic, int sign) {
-    // As a floating topic's branch: the children in a column beside the topic, centred on it. Run
-    // after the main layout and more than once per layout: the boundary runs in it start afresh.
-    for (BoundaryRun &run : m_boundaryRuns) run.visited = 0;
-    m_autoPositions[topic] = topic->position;
-    m_sides[topic] = sign;
-    const NodeItem *topicItem = m_items.value(topic);
-    QRectF bounds = topicItem ? topicItem->shapeRect().translated(topic->position) : QRectF();
-    QList<MindNode *> laid;
-    qreal cursor = 0;
-    m_lastLeafStride = -1;
-    m_leafYs.clear();
-    m_startsBranch = true;
-    for (const auto &child : topic->children)
-        if (!child->floating) { layoutSubtree(child.get(), 2, cursor, sign); laid.append(child.get()); }
-    if (laid.isEmpty()) return bounds;
-    // The topic halfway between its first and last child, as layoutSubtree centres a parent.
-    const qreal middle = (m_autoPositions.value(laid.front()).y() + m_autoPositions.value(laid.back()).y()) / 2;
-    for (MindNode *child : std::as_const(laid)) shiftSubtree(child, topic->position.y() - middle);
-    const std::function<void(const MindNode *)> unite = [&](const MindNode *node) {
-        if (childrenHidden(node)) return;
-        for (const auto &child : node->children) {
-            if (const NodeItem *item = m_items.value(child.get()))
-                bounds = bounds.united(item->shapeRect().translated(m_autoPositions.value(child.get())));
-            unite(child.get());
-        }
-    };
-    unite(topic);
-    return bounds;
-}
-
 void MindMapScene::onSummaryBranchAboutToChange(MindNode *topic) {
     for (const auto &child : topic->children) removeNodeItems(child.get());
 }
@@ -674,141 +455,6 @@ void MindMapScene::onSummaryBranchAboutToChange(MindNode *topic) {
 void MindMapScene::onSummaryBranchChanged(MindNode *topic) {
     if (!m_items.contains(topic)) return;  // its items come with the summary's (syncSummaryItems)
     for (const auto &child : topic->children) addNodeRecursive(child.get());
-}
-
-qreal MindMapScene::layoutSubtree(MindNode *node, int depth, qreal &cursor, int sign) {
-    // FEAT-052: room for the boundaries starting here; the guard adds the room after the last
-    // topic of a run once this subtree is placed (it runs after the return value is computed).
-    const QList<int> runs = m_boundaryRunsOf.value(node);
-    for (const int run : runs) if (m_boundaryRuns[run].visited == 0) cursor += m_boundaryRuns[run].above;
-    struct RoomAfter {
-        MindMapScene *scene; const QList<int> &runs; qreal &cursor;
-        ~RoomAfter() {
-            for (const int run : runs)
-                if (++scene->m_boundaryRuns[run].visited == scene->m_boundaryRuns[run].size) cursor += scene->m_boundaryRuns[run].below;
-        }
-    } roomAfter{this, runs, cursor};
-    // La distanza orizzontale tiene conto della larghezza reale dei nodi (i nodi con formule possono
-    // essere piu' larghi) e quella verticale della loro altezza (distanze: costanti k*GapPx).
-    auto *item = m_items.value(node);
-    // B7: il risultato va in m_autoPositions; node->position lo imposta autoLayout().
-    QPointF &autoPosition = m_autoPositions[node];
-    const qreal halfWidth = item ? item->anchorHalfWidth() : 105.0;
-    if (node->parent) {
-        auto *parentItem = m_items.value(node->parent);
-        const qreal parentHalf = parentItem ? parentItem->anchorHalfWidth() : 105.0;
-        // FEAT-012: a sinistra lo specchio della destra. Il lato verso il genitore resta alla stessa
-        // distanza dal genitore: il nodo si allarga dal lato libero (FEAT-034). 80 px dal centrale,
-        // 32 dagli altri genitori (2026-10-21; prima 80 per tutti i livelli).
-        // FEAT-072: under a fan-shaped parent the children sit 54 px out, not 28. Since
-        // 2026-10-26 (user's decision) also the default curves of the underlined variants: they have the
-        // fan's stub too (before, they left the underline end directly at the usual gap).
-        const qreal levelGap = NodeStyle::isFanShape(effectiveBranchShape(node->parent)) ? m_spacing.level * kFanLevelFactor : m_spacing.level;
-        const bool logic = MapStructure::typeOf(node->parent) == MapStructure::Type::LogicChart;
-        const qreal gap = isBraceParent(node->parent) ? braceLevelGap(node->parent)
-                        : node->parent->parent ? levelGap : m_spacing.rootLevel * (logic ? kLogicRootFactor : 1.0);
-        autoPosition.setX(m_autoPositions.value(node->parent).x() + sign * (parentHalf + gap + halfWidth));
-        m_sides[node] = sign;
-    } else {
-        autoPosition.setX(0);
-    }
-    const bool hasLayoutChildren = !childrenHidden(node) &&
-        std::any_of(node->children.cbegin(), node->children.cend(), [](const auto &child) { return !child->floating; });
-    // FEAT-026 fase C: un ramo con tipo a blocchi (organigramma, albero) occupa il suo ingombro,
-    // anche asimmetrico (i figli sotto); il nodo resta alla sua x come gli altri.
-    if (hasLayoutChildren && node->parent && !node->structure.isEmpty() &&
-        MapStructure::laysOutAsBlock(MapStructure::typeFromKey(node->structure))) {
-        QHash<MindNode *, Placement> rel;
-        const QRectF block = layoutBlock(node, sign, rel);
-        // L'ingombro non torna verso il genitore oltre il bordo interno del nodo (una riga di
-        // organigramma centrata sotto il nodo coprirebbe il centrale): il ramo si sposta in fuori.
-        const qreal halfWidth = item ? item->anchorHalfWidth() : 105.0;
-        const qreal outward = sign > 0 ? std::max<qreal>(0, -halfWidth - block.left()) : std::max<qreal>(0, block.right() - halfWidth);
-        const qreal x = m_autoPositions.value(node).x() + sign * outward;
-        const qreal gap = m_startsBranch ? m_spacing.branch : m_spacing.sibling;
-        const qreal y = m_lastLeafStride < 0 ? cursor - block.top() : cursor + gap - block.top();
-        m_autoPositions[node] = QPointF(x, y);
-        placeBlock(node, rel);
-        m_lastLeafY = y;
-        m_lastLeafStride = block.bottom();
-        m_startsBranch = false;
-        m_leafYs.append(y);
-        cursor = y + block.bottom();
-        return y;
-    }
-    if (!hasLayoutChildren) {
-        // (2026-10-13, testi lunghi a capo senza altezza massima: due foglie vicine distano meta'
-        // altezza dell'una piu' meta' altezza dell'altra piu' lo spazio, cosi' una foglia alta non
-        // copre la precedente.) cursor e' il bordo inferiore dell'ultima foglia.
-        // 2026-10-21 (foto di riferimento): dentro un ramo principale 8 px fra le forme, fra i rami
-        // principali 32 px come prima; un ramo principale senza figli conta come prima
-        // (passo max(64, altezza + 32)). Prima 32 px a ogni livello, con il minimo di 64.
-        const qreal height = item ? item->layoutHeight() : 0;
-        // Gaps between the visible shapes at every level (FEAT-072: before, main topics also counted
-        // the 4 px layout margins, so two main topics were 40 px apart instead of the gap).
-        const bool mainTopic = depth <= 1;
-        const qreal half = std::max(mainTopic ? kMinMainLeafHalfPx : 0.0, height / 2 - kLayoutMarginPx);
-        const qreal gap = m_startsBranch ? m_spacing.branch : m_spacing.sibling;
-        const qreal y = m_lastLeafStride < 0 ? cursor + half : cursor + gap + half;
-        autoPosition.setY(y);
-        m_lastLeafY = y;
-        m_lastLeafStride = half;
-        m_startsBranch = false;
-        m_leafYs.append(y);
-        cursor = y + half;
-        return autoPosition.y();
-    }
-    // La Y della prima foglia del ramo si conosce solo dopo averla posizionata (vedi sopra).
-    const qsizetype firstLeaf = m_leafYs.size();
-    // Top edge of this subtree: where its first leaf starts (the same gap rule as the leaves).
-    const qreal blockTop = m_lastLeafStride < 0 ? cursor : cursor + (m_startsBranch ? m_spacing.branch : m_spacing.sibling);
-    for (const auto &child : node->children) if (!child->floating) layoutSubtree(child.get(), depth + 1, cursor, sign);
-    // FEAT-072, live 2026-10-22: centred between its first and last direct child, then
-    // at the height of the nearest child when one is clearly nearest, so that line is straight (one
-    // child, the middle of an odd count, or a group pushed by a large subtree). Before: centred on
-    // all the leaves of its branch.
-    // The snap lines up the branch's own points, not the centres (FEAT-072, reference live 2026-10-23):
-    // with underlined topics the line leaves the parent's underline and reaches the child's, so the
-    // middle child's underline sits exactly at the parent's (a straight line).
-    const auto anchorDy = [this](const MindNode *at, bool right) {
-        const NodeItem *atItem = m_items.value(const_cast<MindNode *>(at));
-        return atItem ? atItem->branchAnchor(right).y() : 0.0;
-    };
-    const qreal ownAnchor = anchorDy(node, sign > 0);
-    QList<std::pair<qreal, qreal>> childYs;  // centre, centre moved so its entry point meets ownAnchor
-    for (const auto &child : node->children)
-        if (!child->floating) {
-            const qreal childY = m_autoPositions.value(child.get()).y();
-            childYs.append({childY, childY + anchorDy(child.get(), sign < 0) - ownAnchor});
-        }
-    // A brace's cusp stays halfway between its arms, at the centres (reference live 2026-10-24): no snap.
-    const bool brace = isBraceParent(node);
-    // Elsewhere the branch's points: the parent's line point halfway between the first and the last
-    // child's (user's photos 2026-10-26: with two children the centres were halfway, so with underlined
-    // topics the junction sat off the middle of the two lines).
-    const auto point = [brace](const std::pair<qreal, qreal> &child) { return brace ? child.first : child.second; };
-    qreal y = childYs.isEmpty() ? m_lastLeafY : (point(childYs.front()) + point(childYs.back())) / 2;
-    if (childYs.size() > 1 && !brace) {
-        std::sort(childYs.begin(), childYs.end(), [y](const auto &a, const auto &b) { return std::abs(a.second - y) < std::abs(b.second - y); });
-        if (std::abs(childYs[1].second - y) - std::abs(childYs[0].second - y) > 0.5) y = childYs[0].second;
-    } else if (childYs.size() == 1 && !brace) {
-        y = childYs.front().second;
-    }
-    // FEAT-072, live: a topic taller than its children's block keeps its own height,
-    // so the next topic does not come closer (before, a 41 px main topic with one 28 px child let
-    // the next main topic come 6 px nearer).
-    const qreal ownHalf = item ? std::max<qreal>(0, item->layoutHeight() / 2 - kLayoutMarginPx) : 0;
-    if (y - ownHalf < blockTop) {
-        const qreal shift = blockTop - (y - ownHalf);
-        for (const auto &child : node->children) if (!child->floating) shiftSubtree(child.get(), shift);
-        for (qsizetype i = firstLeaf; i < m_leafYs.size(); ++i) m_leafYs[i] += shift;
-        m_lastLeafY += shift;
-        cursor += shift;
-        y += shift;
-    }
-    cursor = std::max(cursor, y + ownHalf);
-    m_autoPositions[node].setY(y);  // il riferimento può essere invalidato dai figli
-    return y;
 }
 
 QByteArray MindMapScene::homePreviewJpeg(const QHash<QString, QJsonObject> &sheet) {
@@ -848,7 +494,7 @@ void MindMapScene::autoLayout() {
         if (it.key()->branchShape != BranchShape::Auto) m_laidOutShapes.insert(it.key(), it.key()->branchShape);
     syncAllItems();
     justifyLevels();
-    collectBoundaryRuns();  // FEAT-052: after the sizes, which a summary topic's branch needs
+    m_layout.collectBoundaryRuns();  // FEAT-052: after the sizes, which a summary topic's branch needs
     // B7 (2026-10-13): il layout calcola il posto "automatico" di ogni nodo; poi si aggiunge lo
     // spostamento fatto a mano (manualOffset), così un nodo trascinato resta dove l'hai messo
     // rispetto al suo posto anche quando la mappa cambia. I nodi flottanti non sono toccati.
@@ -860,8 +506,6 @@ void MindMapScene::autoLayout() {
     refreshAll();
     applyCollapse();
 }
-
-bool MindMapScene::childrenHidden(const MindNode *node) { return node->parent && node->collapsed; }
 
 // FEAT-043 Justify (user's decision 2026-10-24): the shown nodes of each level are as wide as the
 // widest of that level across the sheet, up to the hand-width cap; a width set by hand is widened
@@ -899,255 +543,17 @@ void MindMapScene::justifyLevels() {
     if (m_batchMoved) emit nodeChanged();
 }
 
-// FEAT-026 fase C (foto di riferimento dell'utente 2026-10-21). Ogni figlio ha il suo ingombro (il nodo
-// con i suoi discendenti) e si mette accanto ai fratelli senza sovrapporsi:
-// - organigramma: figli in riga sotto il genitore (sopra con la direzione "alto"), la riga centrata
-//   sul genitore; 48 px dal centrale, 32 dagli altri; 32 px fra i rami principali, 8 fra gli altri;
-// - grafico ad albero: figli in colonna sotto il genitore, a 24 px a destra (o a sinistra) del
-//   tronco che scende dal suo centro; 16 px sotto il genitore, 32 fra i rami principali, 8 fra gli altri;
-// - mappa mentale e grafico logico dentro questi tipi: figli in colonna accanto al genitore, come nella
-//   mappa (32 px, 8 fra i fratelli).
-// Su due lati (solo il centrale) i rami principali si dividono con balancedSides: in basso e in alto,
-// o a destra e a sinistra. Ogni nodo si allarga dal lato libero (growSide).
-QRectF MindMapScene::layoutBlock(MindNode *node, int inheritedSide, QHash<MindNode *, Placement> &rel) {
-    using MapStructure::Type;
-    using MapStructure::Direction;
-    const NodeItem *item = m_items.value(node);
-    const qreal halfWidth = item ? item->anchorHalfWidth() : 105.0;
-    const qreal halfHeight = item ? std::max<qreal>(0, item->layoutHeight() / 2 - kLayoutMarginPx) : 20.0;
-    const QRectF self(-halfWidth, -halfHeight, 2 * halfWidth, 2 * halfHeight);
-    if (setsTreeTable(node)) return layoutTable(node, rel);
-    QList<MindNode *> children;
-    if (!childrenHidden(node))
-        for (const auto &child : node->children) if (!child->floating) children.append(child.get());
-    if (children.isEmpty()) return self;
-    if (setsTimeline(node)) return layoutTimeline(node, self, children, rel);
-    if (setsFishbone(node)) return layoutFishbone(node, self, children, rel);
-    const Type type = MapStructure::typeOf(node);
-    const Direction direction = MapStructure::directionOf(node);
-    const bool isRoot = !node->parent;
-    const bool org = type == Type::OrgChart;
-    // FEAT-072 (reference live 2026-10-23): the trunk is only for the children of the topic that sets the
-    // tree chart (the central topic, or a branch with that type); further down the children sit
-    // beside their parent on the rounded bracket, like a logic chart.
-    const bool tree = type == Type::TreeChart && (isRoot || MapStructure::typeFromKey(node->structure) == Type::TreeChart);
-    // Lato dei figli: per i tipi a blocchi dalla direzione, per gli altri dal ramo (o dalla direzione).
-    const auto sideFor = [&](Direction d) {
-        if (d == Direction::Up || d == Direction::Left) return -1;
-        if (d == Direction::Down || d == Direction::Right) return 1;
-        return inheritedSide < 0 ? -1 : 1;
-    };
-    QList<int> sides(children.size(), sideFor(direction));
-    if (isRoot && direction == Direction::BothSides && (org || tree)) {
-        QList<double> weights;
-        QList<int> fixed;
-        const std::function<int(const MindNode *)> rows = [&rows](const MindNode *at) {
-            int count = 0;
-            if (!childrenHidden(at)) for (const auto &child : at->children) if (!child->floating) count += rows(child.get());
-            return std::max(1, count);
-        };
-        for (MindNode *child : std::as_const(children)) {
-            weights.append(rows(child));
-            fixed.append(child->side == MindNode::Side::Right ? 1 : child->side == MindNode::Side::Left ? -1 : 0);
-        }
-        sides = MapStructure::balancedSides(weights, fixed);
-    }
-    QList<QRectF> blocks;
-    for (int i = 0; i < children.size(); ++i)
-        blocks.append(layoutBlock(children[i], org ? inheritedSide : sides[i], rel));
-    // FEAT-052: boundaries on these children keep their room (user 2026-10-25; before, a known limit).
-    for (int i = 0; i < children.size(); ++i) blocks[i] = blocks[i].marginsAdded(boundaryPad(children, i, org, true));
-    QRectF block = self;
-    for (const int side : {1, -1}) {
-        QList<int> group;
-        for (int i = 0; i < children.size(); ++i) if (sides[i] == side) group.append(i);
-        if (group.isEmpty()) continue;
-        if (org) {
-            // Measured live 2026-10-23: main topics 100 px under the central topic, the others 40 (was 48 and 32).
-            const qreal levelGap = (isRoot ? 100 : 40) * m_spacing.block;
-            const qreal siblingGap = isRoot ? m_spacing.branch : m_spacing.sibling;  // foto di riferimento: circa 8 fra le foglie
-            qreal total = -siblingGap;
-            for (const int i : std::as_const(group)) total += blocks[i].width() + siblingGap;
-            // Centrata sul genitore; in un ramo con tipo proprio dentro una mappa la riga parte dal
-            // bordo del nodo rivolto al genitore, cosi' non copre il centrale ne' il ramo che arriva.
-            qreal cursor = -total / 2;
-            if (node->parent && !node->structure.isEmpty())
-                cursor = inheritedSide < 0 ? std::min(cursor, self.right() - total) : std::max(cursor, self.left());
-            // I nodi della riga sono in linea (foto dell'utente 2026-10-21): bordi allineati, e tutta la
-            // riga si allontana quanto serve perche' nessun ramo (un grafico logico si allarga sopra e
-            // sotto il suo nodo) arrivi alla linea che li collega al genitore.
-            const auto halfHeightOf = [this](const MindNode *child) {
-                const NodeItem *childItem = m_items.value(const_cast<MindNode *>(child));
-                return childItem ? std::max<qreal>(0, childItem->layoutHeight() / 2 - kLayoutMarginPx) : 20.0;
-            };
-            qreal overhang = 0;
-            for (const int i : std::as_const(group))
-                overhang = std::max(overhang, side > 0 ? -blocks[i].top() - halfHeightOf(children[i]) : blocks[i].bottom() - halfHeightOf(children[i]));
-            for (const int i : std::as_const(group)) {
-                const qreal childHalfHeight = halfHeightOf(children[i]);
-                const qreal x = cursor - blocks[i].left();
-                const qreal y = side > 0 ? self.bottom() + levelGap + overhang + childHalfHeight : self.top() - levelGap - overhang - childHalfHeight;
-                rel[children[i]] = {QPointF(x, y), 0};
-                block = block.united(blocks[i].translated(x, y));
-                cursor += blocks[i].width() + siblingGap;
-            }
-        } else if (tree) {
-            const qreal siblingGap = isRoot ? m_spacing.branch : m_spacing.sibling;
-            // Measured live 2026-10-23: the first branch starts 56 px under the parent, each topic 50 px
-            // beside the trunk (was 16 and 24).
-            qreal cursor = self.bottom() + 56 * m_spacing.block;
-            for (const int i : std::as_const(group)) {
-                const NodeItem *childItem = m_items.value(children[i]);
-                const qreal childHalf = childItem ? childItem->anchorHalfWidth() : 105.0;
-                const qreal x = side * (50 * m_spacing.block + childHalf);
-                const qreal y = cursor - blocks[i].top();
-                rel[children[i]] = {QPointF(x, y), side};
-                block = block.united(blocks[i].translated(x, y));
-                cursor = y + blocks[i].bottom() + siblingGap;
-            }
-        } else {
-            const qreal levelGap = type == Type::Brace ? braceLevelGap(node) : isRoot ? m_spacing.rootLevel : m_spacing.level;
-            const qreal siblingGap = isRoot ? m_spacing.branch : m_spacing.sibling;
-            qreal total = -siblingGap;
-            for (const int i : std::as_const(group)) total += blocks[i].height() + siblingGap;
-            qreal cursor = -total / 2;
-            for (const int i : std::as_const(group)) {
-                const NodeItem *childItem = m_items.value(children[i]);
-                const qreal childHalf = childItem ? childItem->anchorHalfWidth() : 105.0;
-                const qreal x = side * (halfWidth + levelGap + childHalf);
-                const qreal y = cursor - blocks[i].top();
-                rel[children[i]] = {QPointF(x, y), side};
-                block = block.united(blocks[i].translated(x, y));
-                cursor += blocks[i].height() + siblingGap;
-            }
-        }
-    }
-    // FEAT-052: the summaries over these children count in the branch, so its neighbours keep clear.
-    QList<QRectF> placed;
-    QList<QPointF> centres;
-    for (int i = 0; i < children.size(); ++i) {
-        const QPointF at = rel.value(children[i]).offset;
-        placed.append(blocks[i].translated(at));
-        centres.append(at);
-    }
-    if (const QRectF room = summaryRoom(node, children, placed, centres, QPointF()); !room.isNull()) block = block.united(room);
-    return block;
-}
-
-// FEAT-028: the header across the table, the main topics in rows under it, each child in the next
-// column beside its parent. A column is as wide as the widest topic of its level; a cell is as tall
-// as its rows (a leaf at least kTableRowPx) and a leaf reaches the table's right edge. Every topic
-// keeps its own shape's left edge on the cell's (text on the left) and its centre on the cell's
-// middle row; the header's text stays centred. Topics of a table are all cells (stage 1: a type of
-// their own does not apply yet).
-QRectF MindMapScene::layoutTable(MindNode *owner, QHash<MindNode *, Placement> &rel) {
-    const auto shapeOf = [this](const MindNode *node) {
-        const NodeItem *item = m_items.value(const_cast<MindNode *>(node));
-        return item ? item->shapeRect() : QRectF(-105, -20, 210, 40);
-    };
-    // Stage 2: a topic with a type of its own (not Mind map) holds its branch in its cell,
-    // laid out by that type; the cell is a leaf of the table.
-    const auto holdsBranch = [owner](const MindNode *node) {
-        if (node == owner || node->structure.isEmpty() || childrenHidden(node)) return false;
-        if (MapStructure::typeFromKey(node->structure) == MapStructure::Type::MindMap) return false;
-        return std::any_of(node->children.cbegin(), node->children.cend(), [](const auto &child) { return !child->floating; });
-    };
-    const auto rowsOf = [&holdsBranch](const MindNode *node) {
-        QList<MindNode *> rows;
-        if (!childrenHidden(node) && !holdsBranch(node))
-            for (const auto &child : node->children) if (!child->floating) rows.append(child.get());
-        return rows;
-    };
-    QList<qreal> columns;
-    struct Held { QRectF block; qreal leftEdge = 0; int depth = 0; };  // block in the topic's coordinates
-    QHash<const MindNode *, Held> held;
-    const std::function<void(const MindNode *, int)> measure = [&](const MindNode *node, int depth) {
-        for (MindNode *row : rowsOf(node)) {
-            if (columns.size() <= depth) columns.resize(depth + 1, 0.0);
-            columns[depth] = std::max(columns[depth], shapeOf(row).width());
-            if (holdsBranch(row)) {
-                const QRectF block = layoutBlock(row, 1, rel);
-                // The topic stays on the cell's left edge, as the other cells; a branch reaching further
-                // left (an org chart under it, a table's header) keeps the inset there too.
-                const qreal shapeLeft = shapeOf(row).left();
-                held.insert(row, {block, block.left() < shapeLeft - 0.5 ? block.left() - kTableInsetPx : shapeLeft, depth});
-            }
-            measure(row, depth + 1);
-        }
-    };
-    measure(owner, 0);
-    const QRectF ownShape = shapeOf(owner);
-    qreal width = 0;
-    for (const qreal column : std::as_const(columns)) width += column;
-    if (!columns.isEmpty() && ownShape.width() > width) columns.back() += ownShape.width() - width;
-    width = std::max(width, ownShape.width());
-    // A branch wider than the columns widens the table (its last column).
-    for (const Held &branch : std::as_const(held)) {
-        qreal start = 0;
-        for (int d = 0; d < branch.depth; ++d) start += columns[d];
-        const qreal need = start + branch.block.right() + kTableInsetPx - branch.leftEdge;
-        if (need > width) {
-            columns.back() += need - width;
-            width = need;
-        }
-    }
-    const qreal headerHeight = columns.isEmpty() ? ownShape.height() : std::max(kTableRowPx, ownShape.height());
-    const QRectF header(ownShape.center().x() - width / 2, ownShape.center().y() - headerHeight / 2, width, headerHeight);
-    m_tableCells.insert(owner->id, {header, owner->id, {}});
-    QList<qreal> lefts{header.left()};
-    for (const qreal column : std::as_const(columns)) lefts.append(lefts.back() + column);
-    const std::function<qreal(const MindNode *)> heightOf = [&](const MindNode *node) {
-        qreal rows = 0;
-        for (const MindNode *row : rowsOf(node)) rows += heightOf(row);
-        if (const auto it = held.constFind(node); it != held.cend()) rows = it->block.height() + 2 * kTableInsetPx;
-        return std::max({rows, kTableRowPx, shapeOf(node).height()});
-    };
-    // A cell taller than its rows gives the rest to its last row.
-    const std::function<void(MindNode *, int, qreal, qreal, QPointF, const QString &)> place =
-        [&](MindNode *node, int depth, qreal top, qreal height, QPointF parentAt, const QString &levelOne) {
-            const QRectF shape = shapeOf(node);
-            const QList<MindNode *> rows = rowsOf(node);
-            const qreal left = lefts[depth];
-            const QRectF cell(left, top, rows.isEmpty() ? header.right() - left : columns[depth], height);
-            QPointF at(left - shape.left(), cell.center().y() - shape.center().y());
-            if (const auto it = held.constFind(node); it != held.cend()) {
-                // The branch inside the cell, centred in its height.
-                at = QPointF(left - it->leftEdge, cell.center().y() - it->block.center().y());
-                if (setsTreeTable(node)) {  // its own table: this cell around it, the topic its header
-                    rel[node] = {at - parentAt, 1};
-                    m_tableFrames.insert(node->id, {cell.translated(-at), owner->id, levelOne, true});
-                    return;
-                }
-            }
-            rel[node] = {at - parentAt, 1};
-            m_tableCells.insert(node->id, {cell.translated(-at), owner->id, levelOne, held.contains(node)});
-            qreal y = top;
-            for (int i = 0; i < rows.size(); ++i) {
-                const qreal rowHeight = i + 1 < rows.size() ? heightOf(rows[i]) : top + height - y;
-                place(rows[i], depth + 1, y, rowHeight, at, levelOne);
-                y += rowHeight;
-            }
-        };
-    qreal y = header.bottom();
-    for (MindNode *main : rowsOf(owner)) {
-        const qreal height = heightOf(main);
-        place(main, 0, y, height, QPointF(), main->id);
-        y += height;
-    }
-    return QRectF(header.left(), header.top(), width, y - header.top());
-}
-
 bool MindMapScene::isTableCell(const MindNode *node) const {
-    const auto it = m_tableCells.constFind(node->id);
-    return (it != m_tableCells.cend() && it->owner != node->id) || m_tableFrames.contains(node->id);
+    const auto it = m_layout.tableCells().constFind(node->id);
+    return (it != m_layout.tableCells().cend() && it->owner != node->id) || m_layout.tableFrames().contains(node->id);
 }
 
 // FEAT-028: colours from the topics as they are now (a fill set by hand on a cell wins), so a style
 // change needs no new layout. A step of the history restores positions without a layout: when the
 // cells no longer match the types, they are worked out again (the auto positions only).
 bool MindMapScene::tablePlaceStale(const MindNode *node) const {
-    const auto place = m_tableCells.constFind(node->id);
-    if (place == m_tableCells.cend()) {
+    const auto place = m_layout.tableCells().constFind(node->id);
+    if (place == m_layout.tableCells().cend()) {
         if (!MapStructure::inTreeTable(node)) return false;
         for (const MindNode *up = node; up; up = up->parent)
             if (up->floating || (up != node && childrenHidden(up))) return false;  // not laid out in the table
@@ -1160,8 +566,8 @@ void MindMapScene::applyTableCells() {
     const bool stale = std::any_of(m_items.cbegin(), m_items.cend(), [this](const NodeItem *item) { return tablePlaceStale(item->node()); });
     if (stale) computeAutoPositions();
     for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
-        const auto place = m_tableCells.constFind(it.key()->id);
-        if (place == m_tableCells.cend()) {
+        const auto place = m_layout.tableCells().constFind(it.key()->id);
+        if (place == m_layout.tableCells().cend()) {
             it.value()->setTableCell(std::nullopt);
             continue;
         }
@@ -1178,7 +584,7 @@ void MindMapScene::applyTableCells() {
             // A table in a cell keeps the outer table's borders: its own colour is the cell's, so
             // its borders would not show.
             QString outer = at.owner;
-            for (auto frame = m_tableFrames.constFind(outer); frame != m_tableFrames.cend(); frame = m_tableFrames.constFind(outer))
+            for (auto frame = m_layout.tableFrames().constFind(outer); frame != m_layout.tableFrames().cend(); frame = m_layout.tableFrames().constFind(outer))
                 outer = frame->owner;
             const NodeItem *outerItem = m_itemsById.value(outer);
             const MindNode *borderFrom = outerItem ? outerItem->node() : ownerItem ? ownerItem->node() : node;
@@ -1186,179 +592,12 @@ void MindMapScene::applyTableCells() {
         };
         const auto [fill, border] = colours(*place);
         NodeItem::TableCell cell{place->rect, fill, border, place->holdsBranch};
-        if (const auto frame = m_tableFrames.constFind(node->id); frame != m_tableFrames.cend()) {
+        if (const auto frame = m_layout.tableFrames().constFind(node->id); frame != m_layout.tableFrames().cend()) {
             std::tie(cell.frameFill, cell.frameBorder) = colours(*frame);
             cell.frame = frame->rect;
             cell.holdsBranch = true;
         }
         it.value()->setTableCell(cell);
-    }
-}
-
-// FEAT-026 phase E (reference live 2026-10-24): main topics left to right along the axis, the first one's
-// children above, the next one's below, and so on; their descendants beside them like a logic chart.
-QRectF MindMapScene::layoutTimeline(MindNode *node, const QRectF &self, const QList<MindNode *> &mains,
-                                    QHash<MindNode *, Placement> &rel) {
-    const bool offAxis = MapStructure::directionOf(node) == MapStructure::Direction::OffAxis;
-    const qreal gap = (offAxis ? kTimelineOffAxisGapPx : kTimelineGapPx) * m_spacing.block;
-    const auto halfHeightOf = [this](const MindNode *at) {
-        const NodeItem *atItem = m_items.value(const_cast<MindNode *>(at));
-        return atItem ? std::max<qreal>(0, atItem->layoutHeight() / 2 - kLayoutMarginPx) : 20.0;
-    };
-    QRectF block = self;
-    qreal previousRight = self.right();
-    std::optional<QRectF> lastOnSide[2];  // the previous branch above, below
-    QList<QRectF> mainBranches;  // FEAT-052: for the summaries over the main topics
-    QList<QPointF> mainCentres;
-    for (int i = 0; i < mains.size(); ++i) {
-        MindNode *main = mains[i];
-        const int side = i % 2 == 0 ? -1 : 1;
-        const NodeItem *mainItem = m_items.value(main);
-        const qreal halfWidth = mainItem ? mainItem->anchorHalfWidth() : 105.0;
-        const qreal halfHeight = halfHeightOf(main);
-        QRectF branch(-halfWidth, -halfHeight, 2 * halfWidth, 2 * halfHeight);
-        if (!childrenHidden(main)) {
-            QList<MindNode *> subs;
-            for (const auto &child : main->children) if (!child->floating) subs.append(child.get());
-            QList<QRectF> blocks;
-            qreal total = -m_spacing.sibling;
-            for (int j = 0; j < subs.size(); ++j) {
-                blocks.append(layoutBlock(subs[j], 1, rel).marginsAdded(boundaryPad(subs, j, false, true)));  // FEAT-052
-                total += blocks.back().height() + m_spacing.sibling;
-            }
-            qreal cursor = side < 0 ? -halfHeight - kTimelineChildGapPx - total : halfHeight + kTimelineChildGapPx;
-            QList<QRectF> placed;
-            QList<QPointF> centres;
-            for (int j = 0; j < subs.size(); ++j) {
-                const NodeItem *subItem = m_items.value(subs[j]);
-                const qreal x = kTimelineStemIndentPx + (subItem ? subItem->anchorHalfWidth() : 105.0);
-                const qreal y = cursor - blocks[j].top();
-                rel[subs[j]] = {QPointF(x, y), 1};
-                placed.append(blocks[j].translated(x, y));
-                centres.append(QPointF(x, y));
-                branch = branch.united(placed.back());
-                cursor += blocks[j].height() + m_spacing.sibling;
-            }
-            // FEAT-052: room for the summaries over the subtopics.
-            if (const QRectF room = summaryRoom(main, subs, placed, centres, QPointF()); !room.isNull()) branch = branch.united(room);
-        }
-        branch = branch.marginsAdded(boundaryPad(mains, i, true, true));  // FEAT-052
-        const qreal y = offAxis ? side * (kTimelineAxisGapPx + halfHeight) : 0;
-        qreal x = !offAxis ? previousRight + gap + halfWidth
-                : i == 0   ? previousRight + kTimelineAxisGapPx + halfWidth
-                           : previousRight + gap;
-        std::optional<QRectF> &previous = lastOnSide[side < 0 ? 0 : 1];
-        if (previous) x = std::max(x, previous->right() + gap - branch.left());
-        rel[main] = {QPointF(x, y), 1};
-        previous = branch.translated(x, y);
-        block = block.united(*previous);
-        previousRight = x + halfWidth;
-        mainBranches.append(*previous);
-        mainCentres.append(QPointF(x, y));
-    }
-    if (offAxis) block.setRight(std::max(block.right(), previousRight + kTimelineAxisOvershootPx));
-    // FEAT-052: room for the summaries over the main topics (below or above the axis).
-    if (const QRectF room = summaryRoom(node, mains, mainBranches, mainCentres, QPointF()); !room.isNull()) block = block.united(room);
-    return block;
-}
-
-// FEAT-026 phase E (reference live 2026-10-24): main topics along the spine, above and below in turn, their
-// subtopics on the bone, their descendants beside them like a logic chart. Worked out with the head on the
-// left (direction Right) and mirrored for Left.
-QRectF MindMapScene::layoutFishbone(MindNode *node, const QRectF &self, const QList<MindNode *> &mains,
-                                    QHash<MindNode *, Placement> &rel) {
-    const int s = MapStructure::directionOf(node) == MapStructure::Direction::Left ? -1 : 1;
-    const auto mirrored = [s](const QRectF &r) { return s > 0 ? r : QRectF(-r.right(), r.top(), r.width(), r.height()); };
-    const auto halfHeightOf = [this](const MindNode *at) {
-        const NodeItem *atItem = m_items.value(const_cast<MindNode *>(at));
-        return atItem ? std::max<qreal>(0, atItem->layoutHeight() / 2 - kLayoutMarginPx) : 20.0;
-    };
-    const auto halfWidthOf = [this](const MindNode *at) {
-        const NodeItem *atItem = m_items.value(const_cast<MindNode *>(at));
-        return atItem ? atItem->anchorHalfWidth() : 105.0;
-    };
-    const qreal headGap = kFishboneHeadGapPx * m_spacing.block;
-    const qreal branchGap = kFishboneBranchGapPx * m_spacing.block;
-    const qreal footGap = kFishboneFootGapPx * m_spacing.block;
-    QRectF block = self;  // symmetric, the same in either frame
-    QList<QRectF> mainBranches;  // FEAT-052: for the summaries over the main topics
-    QList<QPointF> mainCentres;
-    std::optional<qreal> previousFoot;
-    std::optional<QRectF> lastOnSide[2];  // the previous branch above, below (head-left frame)
-    for (int i = 0; i < mains.size(); ++i) {
-        MindNode *main = mains[i];
-        const int v = i % 2 == 0 ? -1 : 1;  // above, below
-        // The bone ends on the shape, which a thick border makes taller than the layout height.
-        const NodeItem *mainItem = m_items.value(main);
-        const QRectF mainShape = mainItem ? mainItem->shapeRect() : QRectF(-105, -20, 210, 40);
-        const qreal halfWidth = halfWidthOf(main);
-        // Subtopics outward from the spine; distances from the spine to their centres.
-        QList<MindNode *> subs;
-        if (!childrenHidden(main))
-            for (const auto &child : main->children) if (!child->floating) subs.append(child.get());
-        if (v < 0) std::reverse(subs.begin(), subs.end());
-        QList<QRectF> blocks;
-        QList<qreal> centres;
-        qreal distance = kFishboneBarePx;
-        qreal previousCentre = 0, previousAway = 0;
-        for (int j = 0; j < subs.size(); ++j) {
-            // FEAT-052: the list runs outward from the spine, upward above it.
-            blocks.append(mirrored(layoutBlock(subs[j], s, rel)).marginsAdded(boundaryPad(subs, j, false, v > 0)));
-            const QRectF &b = blocks.back();
-            const qreal toward = v > 0 ? -b.top() : b.bottom();
-            const qreal away = v > 0 ? b.bottom() : -b.top();
-            const qreal nodeHalf = halfHeightOf(subs[j]);
-            const qreal centre = j == 0 ? kFishboneSpineCentrePx + std::max<qreal>(0, toward - nodeHalf)
-                                        : std::max(previousCentre + kFishboneSubPitchPx, previousAway + m_spacing.sibling + toward);
-            centres.append(centre);
-            previousCentre = centre;
-            previousAway = centre + away;
-            distance = std::max(centre + kFishboneTopicCentrePx, previousAway + m_spacing.sibling);
-        }
-        // The branch with its foot at x = 0 (head-left frame).
-        const QPointF mainAt(distance * kFishboneSlope, v * distance + (v < 0 ? -mainShape.bottom() : -mainShape.top()));
-        QRectF branch(mainAt.x() - halfWidth, mainAt.y() + mainShape.top(), 2 * halfWidth, mainShape.height());
-        QList<QPointF> subAt;
-        QList<QRectF> placed;
-        for (int j = 0; j < subs.size(); ++j) {
-            subAt.append(QPointF(centres[j] * kFishboneSlope + kFishboneTickPx + halfWidthOf(subs[j]), v * centres[j]));
-            placed.append(blocks[j].translated(subAt.back()));
-            branch = branch.united(placed.back());
-        }
-        // FEAT-052: room for the summaries over the subtopics (user's photo 2026-10-25: one covered
-        // the next main topic).
-        if (const QRectF room = summaryRoom(main, subs, placed, subAt, mainAt); !room.isNull()) branch = branch.united(room);
-        branch = branch.marginsAdded(boundaryPad(mains, i, true, true));  // FEAT-052: head-left frame
-        branch.setLeft(std::min<qreal>(branch.left(), 0));
-        if (v < 0) branch.setBottom(std::max<qreal>(branch.bottom(), 0));
-        else branch.setTop(std::min<qreal>(branch.top(), 0));
-        qreal foot = self.right() + headGap - branch.left();
-        if (previousFoot) foot = std::max(foot, *previousFoot + footGap);
-        std::optional<QRectF> &previous = lastOnSide[v < 0 ? 0 : 1];
-        if (previous) foot = std::max(foot, previous->right() + branchGap - branch.left());
-        rel[main] = {QPointF(s * (foot + mainAt.x()), mainAt.y()), s};
-        for (int j = 0; j < subs.size(); ++j) rel[subs[j]] = {QPointF(s * (subAt[j].x() - mainAt.x()), subAt[j].y() - mainAt.y()), s};
-        previous = branch.translated(foot, 0);
-        previousFoot = foot;
-        block = block.united(*previous);
-        mainBranches.append(*previous);
-        mainCentres.append(QPointF(foot + mainAt.x(), mainAt.y()));
-    }
-    m_fishboneReach.insert(node, block.right());
-    // FEAT-052: room for the summaries over the main topics, along the spine.
-    if (const QRectF room = summaryRoom(node, mains, mainBranches, mainCentres, QPointF(), true); !room.isNull()) block = block.united(room);
-    return mirrored(block);
-}
-
-void MindMapScene::placeBlock(MindNode *node, const QHash<MindNode *, Placement> &rel) {
-    if (childrenHidden(node)) return;
-    const QPointF origin = m_autoPositions.value(node);
-    for (const auto &child : node->children) {
-        const auto it = rel.constFind(child.get());
-        if (child->floating || it == rel.cend()) continue;
-        m_autoPositions[child.get()] = origin + it->offset;
-        m_sides[child.get()] = it->growSide;
-        placeBlock(child.get(), rel);
     }
 }
 
@@ -1387,7 +626,7 @@ void MindMapScene::collapseBranch(MindNode *root, bool rootHidden) {
         NodeItem::CollapseControl left, right;
         // Il centrale non si chiude (decisione dell'utente 2026-10-21).
         const auto firstChild = std::find_if(node->children.cbegin(), node->children.cend(), [](const auto &child) { return !child->floating; });
-        if (node->parent && !node->summaryTopic && firstChild != node->children.cend()) {  // FEAT-052: a summary topic stays open
+        if (node->parent && firstChild != node->children.cend()) {  // FEAT-052: a summary topic closes too (user, 2026-11-12)
             // Children above or below (org chart, tree trunk; 2026-10-24): the control sits on the junction
             // there, on the elbow's bar in the org chart. Elsewhere beside the topic, on the children's side.
             const MapStructure::Type type = MapStructure::typeOf(node);
@@ -1410,9 +649,18 @@ void MindMapScene::collapseBranch(MindNode *root, bool rootHidden) {
     visit(root, rootHidden);
 }
 
+void MindMapScene::computeAutoPositions() {
+    m_layout.computeAutoPositions();
+    // FEAT-034: ogni nodo si allarga dal lato lontano dal genitore (centrale e nodi liberi dai due lati).
+    for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
+        const MindNode *node = it.key();
+        it.value()->setGrowSide(node->floating || !node->parent ? 0 : m_layout.sideOf(node));
+    }
+}
+
 void MindMapScene::placeBranch(MindNode *node, QPointF inheritedOffset) {
-    const auto autoPosition = m_autoPositions.constFind(node);
-    if (autoPosition == m_autoPositions.cend()) return;  // nodo flottante: resta dov'e', con il suo ramo
+    const auto autoPosition = m_layout.autoPositions().constFind(node);
+    if (autoPosition == m_layout.autoPositions().cend()) return;  // nodo flottante: resta dov'e', con il suo ramo
     // FEAT-028: a cell stays in its table (no free position there).
     const QPointF offset = inheritedOffset + (isTableCell(node) ? QPointF() : node->manualOffset);
     node->position = autoPosition.value() + offset;
@@ -1442,156 +690,6 @@ void MindMapScene::collectFollowers(NodeItem *dragged) {
     visit(dragged->node());
 }
 
-void MindMapScene::shiftSubtree(MindNode *node, qreal dy) {
-    m_autoPositions[node].ry() += dy;
-    if (childrenHidden(node)) return;  // FEAT-016: i figli nascosti non hanno un posto
-    for (const auto &child : node->children) if (!child->floating) shiftSubtree(child.get(), dy);
-}
-
-// FEAT-012 (passo 4a): Mappa mentale su due lati. Il centrale sta in (0, 0); i rami principali si
-// dividono fra destra e sinistra (MapStructure::balancedSides sui loro ingombri verticali, oppure i
-// lati scelti); a destra nell'ordine dall'alto in basso, a sinistra gli altri dal basso in alto (in
-// senso orario); su due lati i rami principali di ogni lato si dispongono attorno al
-// centrale, con una direzione sola il lato e' centrato sul centrale.
-void MindMapScene::computeAutoPositions() {
-    const qreal *spacing = m_model->sheetStyle.compact ? kCompactSpacing : kNormalSpacing;
-    m_spacing = {spacing[0], spacing[1], spacing[2], spacing[3], spacing[4]};
-    m_autoPositions.clear();
-    m_sides.clear();
-    m_fishboneReach.clear();
-    m_tableCells.clear();
-    m_tableFrames.clear();
-    MindNode *root = m_model->root();
-    m_autoPositions[root] = QPointF(0, 0);
-    m_sides[root] = 0;
-    if (MapStructure::laysOutAsBlock(MapStructure::typeOf(root))) {  // FEAT-026 fasi C ed E
-        QHash<MindNode *, Placement> rel;
-        layoutBlock(root, 1, rel);
-        placeBlock(root, rel);
-    } else {
-    QList<MindNode *> mains;
-    for (const auto &child : root->children) if (!child->floating) mains.append(child.get());
-    // Peso di ogni ramo: le sue righe, cioe' le foglie disposte (un ramo senza figli = 1), come
-    // Foto di riferimento (dell'utente 2026-10-21; prima l'ingombro in pixel, che con nodi di misure diverse
-    // da quelle del riferimento spostava i rami molto prima).
-    const std::function<int(const MindNode *)> rows = [&rows](const MindNode *node) {
-        int count = 0;
-        if (!childrenHidden(node))
-            for (const auto &child : node->children) if (!child->floating) count += rows(child.get());
-        return std::max(1, count);
-    };
-    QList<double> weights;
-    QList<int> fixed;
-    for (MindNode *main : std::as_const(mains)) {
-        weights.append(rows(main));
-        fixed.append(main->side == MindNode::Side::Right ? 1 : main->side == MindNode::Side::Left ? -1 : 0);
-    }
-    QList<int> sides;
-    const MapStructure::Direction direction = MapStructure::directionOf(root);
-    if (direction == MapStructure::Direction::Right || direction == MapStructure::Direction::Left) {
-        sides = QList<int>(mains.size(), direction == MapStructure::Direction::Right ? 1 : -1);
-    } else if (m_model->balanced && !m_model->sheetStyle.freeBranches) {
-        sides = MapStructure::balancedSides(weights, fixed);
-    } else {
-        // Bilanciamento spento: lati fissi. Un ramo nuovo (automatico) va dal lato con meno rami
-        // principali, a parita' a destra, e il lato gli resta (contratto, "Nodi nuovi").
-        int right = 0, left = 0;
-        for (const int side : std::as_const(fixed)) (side > 0 ? right : left) += side != 0;
-        for (int i = 0; i < mains.size(); ++i) {
-            if (fixed[i] == 0) {
-                fixed[i] = left < right ? -1 : 1;
-                (fixed[i] > 0 ? right : left)++;
-                mains[i]->side = fixed[i] > 0 ? MindNode::Side::Right : MindNode::Side::Left;
-            }
-        }
-        sides = fixed;
-    }
-    const NodeItem *rootItem = m_items.value(root);
-    const qreal rootHalfHeight = rootItem ? rootItem->layoutHeight() / 2 : 0;
-    // FEAT-072 A2, live: with two or more main topics on a side, the first and last may reach
-    // into the central box by half its vertical padding (two per side: centres 130 px apart). A lone
-    // topic was not measured live and keeps the rule from the photos.
-    const qreal rootClearance = rootItem ? rootHalfHeight - kLayoutMarginPx - NodeStyle::textPadding(root).y() / 2 : 0;
-    const auto halfHeight = [this](MindNode *node) {
-        const NodeItem *item = m_items.value(node);
-        return item ? item->layoutHeight() / 2 : 0.0;
-    };
-    for (const int sign : {1, -1}) {
-        QList<MindNode *> group;
-        for (int i = 0; i < mains.size(); ++i) if (sides[i] == sign) group.append(mains[i]);
-        for (MindNode *main : std::as_const(group)) m_sides[main] = sign;  // anche nascosti (FEAT-016)
-        if (group.isEmpty()) continue;
-        if (sign < 0) std::reverse(group.begin(), group.end());  // in senso orario: dal basso in alto
-        qreal cursor = 0;
-        m_lastLeafStride = -1;
-        m_leafYs.clear();
-        for (MindNode *main : std::as_const(group)) {
-            m_startsBranch = true;
-            layoutSubtree(main, 1, cursor, sign);
-        }
-        if (direction != MapStructure::Direction::BothSides) {
-            // The brace's cusp: halfway between the first and last main topic (reference live 2026-10-24).
-            const qreal middle = isBraceParent(root)
-                ? (m_autoPositions.value(group.front()).y() + m_autoPositions.value(group.back()).y()) / 2
-                : (m_leafYs.value(0, m_lastLeafY) + m_lastLeafY) / 2;
-            for (MindNode *main : std::as_const(group)) shiftSubtree(main, -middle);
-            continue;
-        }
-        // Due lati (foto dell'utente 2026-10-21): conta la posizione dei rami principali,
-        // non l'ingombro dei loro figli. Il primo e l'ultimo del lato stanno alla stessa distanza dal
-        // centrale (con un numero dispari quello di mezzo e' alla sua altezza) e non lo affiancano:
-        // il primo sta sopra il suo bordo superiore, l'ultimo sotto quello inferiore. Se i rami sono
-        // piu' vicini di cosi', lo spazio in piu' si divide fra loro. Un ramo da solo segue il senso
-        // orario: a destra sopra il centrale, a sinistra sotto (foto di riferimento 2026-10-21).
-        MindNode *first = group.front();
-        MindNode *last = group.back();
-        if (group.size() == 1) {
-            const qreal y = sign > 0 ? -rootHalfHeight - halfHeight(first) : rootHalfHeight + halfHeight(first);
-            shiftSubtree(first, y - m_autoPositions.value(first).y());
-            continue;
-        }
-        const qreal span = m_autoPositions.value(last).y() - m_autoPositions.value(first).y();
-        const qreal neededSpan = 2 * rootClearance + halfHeight(first) + halfHeight(last);
-        if (span < neededSpan) {
-            const qreal extra = (neededSpan - span) / (group.size() - 1);
-            for (int i = 1; i < group.size(); ++i) shiftSubtree(group[i], i * extra);
-        }
-        // Centred by the branch points, not the centres (FEAT-072, user's reference photos 2026-10-23):
-        // underlines sit as far above the central topic as below it.
-        const auto branchY = [this, sign](MindNode *node) {
-            const NodeItem *item = m_items.value(node);
-            return m_autoPositions.value(node).y() + (item ? item->branchAnchor(sign < 0).y() : 0.0);
-        };
-        const qreal middle = (branchY(first) + branchY(last)) / 2;
-        for (MindNode *main : std::as_const(group)) shiftSubtree(main, -middle);
-    }
-    }  // mappa mentale e grafico logico
-    // Argomenti mobili: restano dove sono e i loro figli si dispongono a destra, centrati su di loro
-    // (prima i figli restavano dove erano nati).
-    for (const auto &child : root->children) {
-        MindNode *floatingTopic = child.get();
-        if (!floatingTopic->floating) continue;
-        m_autoPositions[floatingTopic] = floatingTopic->position;
-        m_sides[floatingTopic] = 1;
-        qreal cursor = 0;
-        m_lastLeafStride = -1;
-        m_leafYs.clear();
-        m_startsBranch = true;
-        QList<MindNode *> laid;
-        if (floatingTopic->collapsed) continue;  // FEAT-016
-        for (const auto &grandchild : floatingTopic->children)
-            if (!grandchild->floating) { layoutSubtree(grandchild.get(), 2, cursor, 1); laid.append(grandchild.get()); }
-        if (laid.isEmpty()) continue;
-        const qreal middle = (m_leafYs.value(0, m_lastLeafY) + m_lastLeafY) / 2;
-        for (MindNode *node : std::as_const(laid)) shiftSubtree(node, floatingTopic->position.y() - middle);
-    }
-    // FEAT-034: ogni nodo si allarga dal lato lontano dal genitore (centrale e nodi liberi dai due lati).
-    for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
-        const MindNode *node = it.key();
-        it.value()->setGrowSide(node->floating || !node->parent ? 0 : m_sides.value(node, 1));
-    }
-}
-
 void MindMapScene::onDragFinished(NodeItem *item) {
     // B7: un trascinamento (non un clic) diventa uno spostamento manuale per tutti i nodi
     // selezionati, che si muovono insieme. Si salva la distanza dal posto automatico.
@@ -1604,159 +702,34 @@ void MindMapScene::onDragFinished(NodeItem *item) {
         // prima gli antenati (un nodo selezionato insieme a un suo discendente).
         auto depth = [](const MindNode *node) { int d = 0; for (; node->parent; node = node->parent) ++d; return d; };
         std::sort(moved.begin(), moved.end(), [&](const NodeItem *a, const NodeItem *b) { return depth(a->node()) < depth(b->node()); });
+        // Each offset is written before the next one is measured: a descendant's inherited offset
+        // reads its ancestors' new ones.
         for (auto *nodeItem : std::as_const(moved)) {
             MindNode *node = nodeItem->node();
-            const auto autoPosition = m_autoPositions.constFind(node);
-            if (node->floating || autoPosition == m_autoPositions.cend()) continue;
-            node->manualOffset = node->position - autoPosition.value() - inheritedOffset(node);
+            const auto autoPosition = m_layout.autoPositions().constFind(node);
+            const QPointF offset = node->floating || autoPosition == m_layout.autoPositions().cend()
+                ? node->manualOffset
+                : node->position - autoPosition.value() - inheritedOffset(node);
+            if (m_document) m_document->placeTopics({{node, node->position, offset}});
         }
     }
     updateSceneRect();
 }
 
 MindNode *MindMapScene::neighbour(MindNode *node, Qt::Key key) const {
-    using MapStructure::Type;
-    using MapStructure::Direction;
-    if (!node) return nullptr;
-    const auto visible = [this](const MindNode *at) {
+    MapNavigation::Scene scene;
+    scene.layout = &m_layout;
+    for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) scene.nodes.append(it.key());
+    scene.shown = [this](const MindNode *at) {
         const NodeItem *item = m_items.value(const_cast<MindNode *>(at));
         return item && item->isVisible();
     };
-    const auto centre = [this](const MindNode *at) {
+    scene.centre = [this](const MindNode *at) {
         const NodeItem *item = m_items.value(const_cast<MindNode *>(at));
         return item ? item->pos() : QPointF();
     };
-    const auto sideOfNode = [this](const MindNode *at) { return at->floating ? 1 : sideOf(at); };
-    // Tasto che porta ai figli di "at": in un organigramma in basso (o in alto), altrove verso l'esterno.
-    const auto childKey = [&](const MindNode *at, int side) {
-        if (MapStructure::typeOf(at) == Type::OrgChart) return MapStructure::directionOf(at) == Direction::Up ? Qt::Key_Up : Qt::Key_Down;
-        return side < 0 ? Qt::Key_Left : Qt::Key_Right;
-    };
-    const auto opposite = [](Qt::Key k) {
-        switch (k) {
-        case Qt::Key_Left: return Qt::Key_Right;
-        case Qt::Key_Right: return Qt::Key_Left;
-        case Qt::Key_Up: return Qt::Key_Down;
-        default: return Qt::Key_Up;
-        }
-    };
-    const auto shownChildren = [&](const MindNode *at) {
-        QList<MindNode *> list;
-        if (!childrenHidden(at))
-            for (const auto &child : at->children) if (!child->floating && visible(child.get())) list.append(child.get());
-        return list;
-    };
-    const QList<MindNode *> children = shownChildren(node);
-    // FEAT-028 (user's request 2026-10-25): in a tree table Up and Down go to the cell drawn right above
-    // or below, whatever its level (a level-5 cell to the level-3 leaf under it); among the cells
-    // touching that edge, the one starting nearest on the left. Left and Right follow the usual rules
-    // (Right to the first child, Left to the parent).
-    if ((key == Qt::Key_Up || key == Qt::Key_Down) && m_tableCells.contains(node->id)) {
-        const QString owner = m_tableCells.value(node->id).owner;
-        const QRectF from = nodeOutlineSceneRect(node);
-        MindNode *best = nullptr;
-        qreal bestGap = 0, bestLeft = 0;
-        for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
-            MindNode *other = it.key();
-            const auto place = m_tableCells.constFind(other->id);
-            if (other == node || place == m_tableCells.cend() || place->owner != owner || !visible(other)) continue;
-            const QRectF to = nodeOutlineSceneRect(other);
-            if (std::min(from.right(), to.right()) - std::max(from.left(), to.left()) <= 1) continue;  // not above or below
-            const qreal gap = key == Qt::Key_Down ? to.top() - from.bottom() : from.top() - to.bottom();
-            if (gap < -0.5) continue;
-            const qreal left = std::abs(to.left() - from.left());
-            if (!best || gap < bestGap - 0.5 || (gap < bestGap + 0.5 && left < bestLeft)) { best = other; bestGap = gap; bestLeft = left; }
-        }
-        if (best) return best;
-    }
-    // FEAT-026 phase E: a timeline or a fishbone runs along its axis or spine (from topic to topic, away
-    // from the central topic) and each column of subtopics across it (Up/Down), so the keys follow what is
-    // drawn, not the mind map's rule.
-    const auto setsAxis = [](const MindNode *at) { return setsTimeline(at) || setsFishbone(at); };
-    const auto alongKey = [](const MindNode *at) {
-        return setsFishbone(at) && MapStructure::directionOf(at) == Direction::Left ? Qt::Key_Left : Qt::Key_Right;
-    };
-    if (setsAxis(node) && key == alongKey(node) && !children.isEmpty()) return children.front();
-    // Nearest of the candidates above (Up) or below (Down) node.
-    const auto nearestVertically = [&](const QList<MindNode *> &candidates) {
-        MindNode *best = nullptr;
-        qreal bestDistance = 0;
-        for (MindNode *other : candidates) {
-            const qreal dy = centre(other).y() - centre(node).y();
-            const qreal distance = key == Qt::Key_Up ? -dy : dy;
-            if (other == node || distance <= 0.5) continue;
-            if (!best || distance < bestDistance) { best = other; bestDistance = distance; }
-        }
-        return best;
-    };
-    if (node->parent && !node->floating && setsAxis(node->parent)) {
-        const QList<MindNode *> mains = shownChildren(node->parent);
-        const qsizetype index = mains.indexOf(node);
-        const Qt::Key along = alongKey(node->parent);
-        if (key == along) return index >= 0 && index + 1 < mains.size() ? mains[index + 1] : nullptr;
-        if (key == opposite(along)) return index > 0 ? mains[index - 1] : node->parent;
-        return nearestVertically(children);  // the column on that side, if the children are there
-    }
-    if (node->parent && node->parent->parent && !node->floating && !node->parent->floating && setsAxis(node->parent->parent)
-        && (key == Qt::Key_Up || key == Qt::Key_Down)) {
-        // Within the column only; past its end towards the axis, the main topic.
-        if (MindNode *sibling = nearestVertically(shownChildren(node->parent))) return sibling;
-        return nearestVertically({node->parent});
-    }
-    // Centrale: i primi rami di ogni lato (in senso orario: a destra il piu' alto, a sinistra il piu' basso).
-    if (!node->parent) {
-        const bool org = MapStructure::typeOf(node) == Type::OrgChart;
-        for (MindNode *child : std::as_const(children)) {
-            const QPointF at = centre(child) - centre(node);
-            const Qt::Key towards = org ? (at.y() < 0 ? Qt::Key_Up : Qt::Key_Down) : (at.x() < 0 ? Qt::Key_Left : Qt::Key_Right);
-            if (towards == key) return child;
-        }
-        return nullptr;
-    }
-    const int side = sideOfNode(node);
-    if (key == childKey(node, side)) {
-        // Il figlio piu' vicino lungo l'altro asse (la riga o la colonna dei figli).
-        MindNode *best = nullptr;
-        qreal bestDistance = 0;
-        const bool vertical = key == Qt::Key_Up || key == Qt::Key_Down;
-        for (MindNode *child : std::as_const(children)) {
-            const QPointF delta = centre(child) - centre(node);
-            const qreal distance = std::abs(vertical ? delta.x() : delta.y());
-            if (!best || distance < bestDistance - 0.5) { best = child; bestDistance = distance; }
-        }
-        return best;
-    }
-    if (!node->floating && key == opposite(childKey(node->parent, node->parent->parent ? sideOfNode(node->parent) : side)))
-        return node->parent;
-    // Stesso livello e stesso lato, nell'ordine in cui si vedono lungo l'altro asse.
-    const bool alongX = MapStructure::typeOf(node->parent) == Type::OrgChart && !node->floating;
-    if (alongX ? (key != Qt::Key_Left && key != Qt::Key_Right) : (key != Qt::Key_Up && key != Qt::Key_Down)) return nullptr;
-    const auto depthOf = [](const MindNode *at) { int depth = 0; for (; at->parent; at = at->parent) ++depth; return depth; };
-    const int depth = depthOf(node);
-    const qreal here = alongX ? centre(node).x() : centre(node).y();
-    const bool forward = key == Qt::Key_Down || key == Qt::Key_Right;
-    MindNode *best = nullptr;
-    qreal bestDistance = 0;
-    for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
-        MindNode *other = it.key();
-        if (other == node || !other->parent || !visible(other) || depthOf(other) != depth || sideOfNode(other) != side) continue;
-        const qreal there = alongX ? centre(other).x() : centre(other).y();
-        const qreal distance = forward ? there - here : here - there;
-        if (distance <= 0.5) continue;
-        if (!best || distance < bestDistance) { best = other; bestDistance = distance; }
-    }
-    if (best) return best;
-    // No topic of the same level that way (user's request 2026-10-25): the nearest of any level on
-    // the same side, so a deep topic still reaches the branch below it.
-    for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
-        MindNode *other = it.key();
-        if (other == node || !other->parent || !visible(other) || sideOfNode(other) != side) continue;
-        const qreal there = alongX ? centre(other).x() : centre(other).y();
-        const qreal distance = forward ? there - here : here - there;
-        if (distance <= 0.5) continue;
-        if (!best || distance < bestDistance) { best = other; bestDistance = distance; }
-    }
-    return best;
+    scene.box = [this](const MindNode *at) { return nodeOutlineSceneRect(at); };
+    return MapNavigation::neighbour(scene, node, key);
 }
 
 QPainterPath MindMapScene::edgePath(const MindNode *child) const {
@@ -1772,118 +745,25 @@ bool MindMapScene::isReorderDrag(const MindNode *node) const {
            MapStructure::directionOf(m_model->root()) == MapStructure::Direction::BothSides;
 }
 
-MindMapScene::ReorderTarget MindMapScene::reorderTargetAt(const MindNode *dragged, const QPointF &scenePos) const {
-    using Kind = ReorderTarget::Kind;
-    ReorderTarget result;
-    if (!dragged || !dragged->parent) return result;  // il centrale non si sposta
-    MindNode *root = m_model->root();
-    const auto boxOf = [this](const MindNode *node) {
+ReorderTarget MindMapScene::reorderTargetAt(const MindNode *dragged, const QPointF &scenePos) const {
+    ReorderTarget::Scene scene;
+    scene.model = m_model;
+    scene.layout = &m_layout;
+    scene.nodes = m_items.keys();
+    scene.box = [this](const MindNode *node) {
         const NodeItem *item = m_items.value(const_cast<MindNode *>(node));
         if (item && item->tableCell()) return item->mapRectToScene(item->tableCell()->rect);  // FEAT-028
         return item ? item->mapRectToScene(item->shapeRect()) : QRectF();
     };
-    // Candidati: nodi disposti e visibili, fuori dal ramo trascinato (i nodi liberi e i loro rami no).
-    const auto candidate = [&](const MindNode *node) {
+    scene.shown = [this](const MindNode *node) {
         const NodeItem *item = m_items.value(const_cast<MindNode *>(node));
-        if (!item || !item->isVisible() || !m_autoPositions.contains(const_cast<MindNode *>(node))) return false;
-        for (const MindNode *up = node; up; up = up->parent) if (up == dragged) return false;
-        return true;
+        return item && item->isVisible();
     };
-    // Lato verso cui crescono i figli di un nodo; per il centrale quello del mouse.
-    const auto outward = [&](const MindNode *node) {
-        if (node == root) return scenePos.x() < boxOf(root).center().x() ? -1 : 1;
-        return sideOf(node) < 0 ? -1 : 1;
+    scene.branchStart = [this](const MindNode *node, bool right) {
+        const NodeItem *item = m_items.value(const_cast<MindNode *>(node));
+        return item->pos() + item->branchAnchor(right);
     };
-    // Figli disposti del genitore dal lato s, dall'alto in basso, senza il trascinato (gli argomenti
-    // mobili non sono rami del centrale).
-    const auto visualChildren = [&](const MindNode *parent, int s) {
-        QList<MindNode *> list;
-        for (const auto &child : parent->children)
-            if (child.get() != dragged && !child->floating && candidate(child.get()) && (parent != root || outward(child.get()) == s)) list.append(child.get());
-        std::sort(list.begin(), list.end(), [&](const MindNode *x, const MindNode *y) { return boxOf(x).center().y() < boxOf(y).center().y(); });
-        return list;
-    };
-    // 1. Sopra un nodo: suo figlio, in fondo. 2. Oltre il suo lato esterno: il piu' vicino.
-    MindNode *parent = nullptr;
-    bool onBody = false;
-    qreal bestDistance = 0;
-    for (auto it = m_items.cbegin(); it != m_items.cend(); ++it) {
-        MindNode *node = it.key();
-        if (!candidate(node)) continue;
-        const QRectF box = boxOf(node);
-        if (box.adjusted(-kReorderBodyMarginPx, -kReorderBodyMarginPx, kReorderBodyMarginPx, kReorderBodyMarginPx).contains(scenePos)) {
-            parent = node;
-            onBody = true;
-            break;
-        }
-        const int s = outward(node);
-        const qreal distance = (scenePos.x() - (s > 0 ? box.right() : box.left())) * s;
-        if (distance < 0) continue;
-        const QList<MindNode *> children = visualChildren(node, s);
-        QRectF span = box;
-        qreal reach = kReorderLeafReachPx;
-        if (!children.isEmpty()) {
-            reach = 0;
-            for (const MindNode *child : children) {
-                const QRectF childBox = boxOf(child);
-                span = span.united(childBox);
-                reach = std::max(reach, (s > 0 ? childBox.right() - box.right() : box.left() - childBox.left()));
-            }
-        }
-        if (distance > reach || scenePos.y() < span.top() - kReorderVerticalReachPx || scenePos.y() > span.bottom() + kReorderVerticalReachPx) continue;
-        if (!parent || distance < bestDistance) { parent = node; bestDistance = distance; }
-    }
-    if (!parent) {
-        // Sullo sfondo: argomento mobile, ma non sopra il nodo stesso.
-        const QRectF own = boxOf(dragged);
-        if (!own.adjusted(-kReorderBodyMarginPx, -kReorderBodyMarginPx, kReorderBodyMarginPx, kReorderBodyMarginPx).contains(scenePos))
-            result.kind = Kind::Float;
-        return result;
-    }
-    const int s = outward(parent);
-    const QList<MindNode *> children = visualChildren(parent, s);
-    const auto rowOf = [](const MindNode *node) {
-        const auto &siblings = node->parent->children;
-        return int(std::find_if(siblings.cbegin(), siblings.cend(), [node](const auto &child) { return child.get() == node; }) - siblings.cbegin());
-    };
-    // Posto fra i figli visibili (dall'alto): sopra il nodo = in fondo nell'ordine.
-    const bool mirrored = parent == root && s < 0;  // a sinistra i rami principali vanno dal basso in alto
-    int index = int(children.size());
-    if (!onBody) {
-        index = 0;
-        while (index < children.size() && boxOf(children[index]).center().y() < scenePos.y()) ++index;
-    } else if (mirrored) {
-        index = 0;  // in fondo nell'ordine = in alto a sinistra
-    }
-    if (children.isEmpty()) result.row = int(parent->children.size());
-    else if (index < children.size()) result.row = rowOf(children[index]) + (mirrored ? 1 : 0);
-    else result.row = rowOf(children.back()) + (mirrored ? 0 : 1);
-    if (onBody && !mirrored) result.row = int(parent->children.size());
-    if (parent == root) result.row = std::min(result.row, m_model->firstFloatingRow());  // prima degli argomenti mobili
-    result.parent = parent;
-    if (parent == root && s != sideOf(dragged)) result.side = s;
-    // Stesso genitore e stesso posto (come MindMapModel::moveNode): nessun effetto.
-    if (parent == dragged->parent && result.side == 0) {
-        const int from = rowOf(dragged);
-        const int destination = from < result.row ? result.row - 1 : result.row;
-        if (destination == from) return {};
-    }
-    // Segnaposto: alla distanza dei figli dal genitore, fra i fratelli vicini (o al centro del
-    // genitore se non ha figli da quel lato).
-    const QRectF box = boxOf(parent);
-    const qreal gap = parent == root ? m_spacing.rootLevel : m_spacing.level;
-    qreal y = box.center().y();
-    if (!children.isEmpty()) {
-        if (index == 0) y = boxOf(children.front()).top() - m_spacing.sibling / 2 - kReorderSlotPx.height() / 2;
-        else if (index == children.size()) y = boxOf(children.back()).bottom() + m_spacing.sibling / 2 + kReorderSlotPx.height() / 2;
-        else y = (boxOf(children[index - 1]).bottom() + boxOf(children[index]).top()) / 2;
-    }
-    const qreal x = s > 0 ? box.right() + gap : box.left() - gap - kReorderSlotPx.width();
-    result.slot = QRectF(QPointF(x, y - kReorderSlotPx.height() / 2), kReorderSlotPx);
-    const NodeItem *parentItem = m_items.value(parent);
-    result.from = parentItem->pos() + parentItem->branchAnchor(s > 0);
-    result.kind = onBody ? Kind::Child : Kind::Insert;
-    return result;
+    return ReorderTarget::at(scene, dragged, scenePos);
 }
 
 void MindMapScene::onReorderMoved(NodeItem *item, const QPointF &scenePos) {
@@ -1893,7 +773,7 @@ void MindMapScene::onReorderMoved(NodeItem *item, const QPointF &scenePos) {
         // nitido fino allo zoom 200%.
         auto *ghost = new QGraphicsPixmapItem(item->dragPreview(2.0));
         ghost->setOffset(item->boundingRect().topLeft());
-        ghost->setOpacity(kReorderGhostOpacity);
+        ghost->setOpacity(ReorderTarget::kGhostOpacity);
         ghost->setZValue(1000);
         ghost->setAcceptedMouseButtons(Qt::NoButton);
         m_reorderGhost = ghost;
@@ -1918,8 +798,8 @@ void MindMapScene::onReorderMoved(NodeItem *item, const QPointF &scenePos) {
         const qreal middle = (target.from.x() + end.x()) / 2;
         branch.cubicTo({middle, target.from.y()}, {middle, end.y()}, end);
         QPainterPath slot;
-        slot.addRoundedRect(target.slot, 4, 4);
-        path = QPainterPathStroker(QPen(color, 2, Qt::SolidLine, Qt::RoundCap)).createStroke(branch).united(slot);
+        slot.addRoundedRect(target.slot, ReorderTarget::kSlotRadiusPx, ReorderTarget::kSlotRadiusPx);
+        path = QPainterPathStroker(QPen(color, ReorderTarget::kBranchWidthPx, Qt::SolidLine, Qt::RoundCap)).createStroke(branch).united(slot);
     }
     m_reorderIndicator->setPath(path);
 }
@@ -2044,7 +924,7 @@ void MindMapScene::updateEdge(MindNode *child) {
                                            [](const auto &sibling) { return !sibling->floating; });
             if (last->get() == child) {
                 path.moveTo(s > 0 ? headShape.right() : headShape.left(), axisY);
-                path.lineTo(headShape.center().x() + s * m_fishboneReach.value(headNode, 0), axisY);
+                path.lineTo(headShape.center().x() + s * m_layout.fishboneReach().value(headNode, 0), axisY);
                 zValue = -2;
             }
         } else {
@@ -2357,18 +1237,12 @@ std::optional<Relationships::Geometry> MindMapScene::relationGeometry(const Rela
 }
 
 RelationshipItem::Look MindMapScene::relationLook(const Relationship &relationship) const {
-    const NodeStyle::Backdrop backdrop = m_model->backdrop();
+    const Relationships::Look shared = Relationships::look(relationship, m_model->backdrop(), m_model->sheetStyle.fontFamily);
     RelationshipItem::Look look;
-    const QColor line = relationship.lineColor.value_or(NodeStyle::annotationColor(Relationships::kDefaultLineColor, backdrop));
-    look.pen = QPen(line, relationship.lineWidth.value_or(Relationships::kDefaultLineWidth),
-                    static_cast<Qt::PenStyle>(relationship.linePattern.value_or(Relationships::kDefaultLinePattern)),
-                    Qt::FlatCap, Qt::RoundJoin);
-    const QString family = relationship.fontFamily.isEmpty() ? m_model->sheetStyle.fontFamily : relationship.fontFamily;
-    look.font.setFamily(family.isEmpty() ? NodeStyle::kDefaultMapFontFamily : family);  // as the topics
-    look.font.setPixelSize(qRound(relationship.fontSize.value_or(Relationships::kDefaultFontSize)));
-    look.font.setWeight(QFont::DemiBold);  // default label
-    look.textColor = relationship.textColor.value_or(NodeStyle::annotationColor(QColor("#303640"), backdrop));
-    look.backdrop = backdrop.color;
+    look.pen = QPen(shared.lineColor, shared.lineWidth, static_cast<Qt::PenStyle>(shared.linePattern), Qt::FlatCap, Qt::RoundJoin);
+    look.font = shared.font;
+    look.textColor = shared.textColor;
+    look.backdrop = shared.backdrop;
     look.placeholder = tr("Relationship");
     return look;
 }
@@ -2387,7 +1261,6 @@ void MindMapScene::syncRelationItems() {
             item->geometryFor = [this](const Relationship &changed) {
                 return relationGeometry(changed).value_or(Relationships::Geometry());
             };
-            item->elementAt = [this](const QPointF &scenePos) { return elementAt(scenePos); };
             connect(item, &RelationshipItem::edited, this, &MindMapScene::relationEdited);
             connect(item, &RelationshipItem::menuRequested, this, &MindMapScene::relationMenuRequested);
         }
@@ -2446,25 +1319,8 @@ QRectF MindMapScene::branchesCovered(const QStringList &topics) const {
 }
 
 BoundaryItem::Look MindMapScene::boundaryLook(const Boundary &boundary) const {
-    // Black alphas on the default canvas; on a dark backdrop the same alphas of its readable color.
-    const QColor ink = NodeStyle::annotationColor(Qt::black, m_model->backdrop());
-    QColor line = ink;
-    line.setAlphaF(Boundaries::kLineAlpha);
-    QColor fill = ink;
-    fill.setAlphaF(Boundaries::kFillAlpha);
-    BoundaryItem::Look look;
-    const qreal width = boundary.lineWidth.value_or(Boundaries::kDefaultLineWidth);
-    look.pen = QPen(boundary.lineColor.value_or(line), width, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin);
-    const int pattern = boundary.linePattern.value_or(Boundaries::kDefaultLinePattern);
-    if (pattern == Qt::DashLine) look.pen.setDashPattern({Boundaries::kDashOnPx / width, Boundaries::kDashOffPx / width});
-    else look.pen.setStyle(static_cast<Qt::PenStyle>(pattern));
-    look.fill = boundary.fillColor.value_or(fill);
-    look.titleText = NodeStyle::annotationColor(QColor("#303640"), m_model->backdrop());
-    const QString family = m_model->sheetStyle.fontFamily;
-    look.font.setFamily(family.isEmpty() ? NodeStyle::kDefaultMapFontFamily : family);  // as the topics
-    look.font.setPixelSize(qRound(Boundaries::kTitleFontPx));
-    look.placeholder = tr("Title");
-    return look;
+    const Boundaries::Look shared = Boundaries::look(boundary, m_model->backdrop(), m_model->sheetStyle.fontFamily);
+    return BoundaryItem::Look{shared.pen, shared.fill, shared.titleText, shared.font, tr("Title")};
 }
 
 QRectF MindMapScene::boundaryCovered(const Boundary &boundary) const {
@@ -2487,20 +1343,7 @@ void MindMapScene::syncBoundaryItems() {
             return false;
         });
     };
-    for (bool grown = true; grown;) {
-        grown = false;
-        for (qsizetype o = 0; o < boundaries.size(); ++o)
-            for (qsizetype i = 0; i < boundaries.size(); ++i) {
-                if (i == o || covers[i].isNull() || covers[o].isNull() || !inside(boundaries[i], boundaries[o])) continue;
-                if (inside(boundaries[o], boundaries[i]) && o < i) continue;  // same topics: the later one is outside
-                QRectF need = Boundaries::strokeRect(covers[i]);
-                const qreal half = boundaries[i].lineWidth.value_or(Boundaries::kDefaultLineWidth) / 2;
-                need.adjust(-half, -half - (boundaries[i].title.isEmpty() ? 0 : Boundaries::kTitleHeightPx), half, half);
-                if (covers[o].contains(need)) continue;
-                covers[o] = covers[o].united(need);
-                grown = true;
-            }
-    }
+    Boundaries::widenAroundNested(boundaries, covers, inside);
     QSet<QString> present;
     QList<std::pair<BoundaryItem *, QRectF>> shown;
     for (qsizetype index = 0; index < boundaries.size(); ++index) {
@@ -2559,9 +1402,18 @@ int MindMapScene::selectTargets(const SelectionCommands::Targets &targets, bool 
     for (const QString &id : targets.boundaries)
         if (BoundaryItem *item = m_boundaryItems.value(id); item && item->isVisible()) items.append(item);
     if (!apply || items.isEmpty()) return int(items.size());
-    clearSelection();
-    for (QGraphicsItem *item : std::as_const(items)) item->setSelected(true);
+    clearSelection();  // with its signals: an editor that loses the selection finishes its edit
+    {
+        // One selectionChanged for the whole set, not one per item: each refreshes the side panel,
+        // which made a thousand items cost seconds (FEAT-109). Selecting emits nothing else but the
+        // topics' nodeSelected, sent after in the same order.
+        const QSignalBlocker blocker(this);
+        for (QGraphicsItem *item : std::as_const(items)) item->setSelected(true);
+    }
+    for (QGraphicsItem *item : std::as_const(items))
+        if (auto *nodeItem = qgraphicsitem_cast<NodeItem *>(item)) emit nodeSelected(nodeItem->node());
     setFocusItem(items.first());
+    emit selectionChanged();
     return int(items.size());
 }
 

@@ -1,6 +1,7 @@
 // FEAT-035 parte A: finestra Impostazioni scura a schede, scelte applicate subito, interruttore.
 // Impostazioni separate, piattaforma offscreen.
 #include "mainwindow.h"
+#include "mapfolder.h"
 #include "mcpmaptools.h"
 #include "mindmapmodel.h"
 #include "mindmapscene.h"
@@ -16,6 +17,8 @@
 #include <QApplication>
 #include <QLabel>
 #include <QClipboard>
+#include <QDir>
+#include <QFile>
 #include <QTemporaryDir>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -42,6 +45,7 @@ private slots:
     void choicesAreSavedAtOnce();
     void agentsAreOffUntilAllowed();
     void updatesCard();
+    void mentisFolderIsChangedWithTheMapsOrWithout();
     void editorDefaultsRestoreTheStyle();
     void appearanceAppliesAtOnceAndDefaultsReset();
     void escapeAndCloseButtonClose();
@@ -115,6 +119,49 @@ void SettingsUiTest::tabsWithoutOkOrCancel() {
         QVERIFY(button->text() != QStringLiteral("Cancel"));
     }
     QVERIFY(dialog.windowFlags().testFlag(Qt::FramelessWindowHint));
+}
+
+// FEAT-105 stage 3: the row shows the folder; a new one is saved and the window is told whether to
+// move the maps; a cancelled question changes nothing.
+void SettingsUiTest::mentisFolderIsChangedWithTheMapsOrWithout() {
+    QTemporaryDir oldRoot, newRoot;
+    MapFolder::setConfiguredPath(oldRoot.path());
+    QFile map(QDir(oldRoot.path()).filePath(QStringLiteral("Plan.mentis")));
+    QVERIFY(map.open(QIODevice::WriteOnly));
+    map.close();
+    SettingsDialog dialog;
+    auto *path = dialog.findChild<QLabel *>(QStringLiteral("MentisFolderPath"));
+    auto *change = dialog.findChild<QPushButton *>(QStringLiteral("MentisFolderChange"));
+    QVERIFY(path && change);
+    QCOMPARE(path->text(), QDir::toNativeSeparators(MapFolder(oldRoot.path()).path()));
+    QSignalSpy changed(&dialog, &SettingsDialog::mentisFolderChanged);
+    dialog.chooseMentisFolder = [&newRoot](const QString &) { return newRoot.path(); };
+
+    dialog.askMoveMaps = [] { return -1; };
+    change->click();
+    QCOMPARE(changed.size(), 0);
+    QCOMPARE(MapFolder::current().path(), MapFolder(oldRoot.path()).path());
+
+    dialog.askMoveMaps = [] { return 1; };
+    change->click();
+    QCOMPARE(changed.size(), 1);
+    QCOMPARE(changed.first().at(0).toString(), MapFolder(oldRoot.path()).path());
+    QCOMPARE(changed.first().at(1).toBool(), true);
+    QCOMPARE(MapFolder::current().path(), MapFolder(newRoot.path()).path());
+    QCOMPARE(path->text(), QDir::toNativeSeparators(MapFolder(newRoot.path()).path()));
+
+    // Back to the old folder, the maps left where they are; the same folder again = nothing.
+    // (The window moves the maps, not the dialog: the new folder gets one here to be asked about.)
+    QFile other(QDir(newRoot.path()).filePath(QStringLiteral("Other.mentis")));
+    QVERIFY(other.open(QIODevice::WriteOnly));
+    other.close();
+    dialog.chooseMentisFolder = [&oldRoot](const QString &) { return oldRoot.path(); };
+    dialog.askMoveMaps = [] { return 0; };
+    change->click();
+    QCOMPARE(changed.size(), 2);
+    QCOMPARE(changed.last().at(1).toBool(), false);
+    change->click();
+    QCOMPARE(changed.size(), 2);
 }
 
 void SettingsUiTest::toggleAppliesAtOnceWithClickAndSpace() {

@@ -184,7 +184,7 @@ void NodeWidthTest::doubleClickAt(const MindNode *node, qreal localX) {
 }
 
 void NodeWidthTest::setTitle(MindNode *node, const QString &title, const QString &html) {
-    QVERIFY(m_model->setTitle(m_model->indexFromNode(node), title, html));
+    QVERIFY(m_window->findChild<Document *>()->editTitle(node, title, html));
     flushHistory();
 }
 

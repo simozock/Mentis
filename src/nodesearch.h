@@ -44,6 +44,19 @@ QList<std::pair<int, int>> occurrences(const QString &text, const QString &query
 // Fields of the entry that contain the query (Field bits), only among options.fields.
 int matchingFields(const Entry &entry, const QString &query, const Options &options);
 
+// A text to show with the parts to highlight (start, length).
+struct Shown {
+    QString text;
+    QList<std::pair<int, int>> ranges;
+};
+
+// Words around the first occurrence on one line, so a match in a long note fits a row.
+Shown snippet(const QString &text, const QString &query, const Options &options);
+
+// A found topic as listed: number and title on one line; found only in a note, tag or link
+// (fields from matchingFields), " · " and a snippet of that text follow.
+Shown resultLine(const Entry &entry, const QString &query, const Options &options, int fields);
+
 // Text with every occurrence of query replaced (same rules as occurrences); unchanged without any.
 QString replaced(const QString &text, const QString &query, const QString &replacement, const Options &options);
 

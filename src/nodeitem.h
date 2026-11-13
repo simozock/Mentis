@@ -11,6 +11,7 @@
 #include <memory>
 
 #include "formulatext.h"
+#include "nodegeometry.h"
 #include "nodesketch.h"
 
 struct MindNode;
@@ -38,20 +39,21 @@ public:
     QPainterPath shape() const override;
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override;
     MindNode *node() const { return m_node; }
+    const NodeGeometry &geometry() const { return m_geometry; }  // FEAT-096: read by MapLayout
     // Font del titolo sulla mappa (FEAT-022: font, dimensione, peso, corsivo, sottolineato,
     // barrato e maiuscole del nodo; predefiniti 13 pt grassetto per la radice, 11 pt per gli
     // altri). L'outliner lo usa quando crea un titolo formattato, così la mappa lo legge uguale.
-    static QFont titleFont(const MindNode *node);
+    static QFont titleFont(const MindNode *node) { return NodeGeometry::titleFont(node); }
     // FEAT-022: peso del grassetto dato a singole parole: 700, oppure 900 se il nodo e' gia' a 700
     // o piu' (come il titolo principale, 2026-10-14). Il testo normale ha il peso del nodo.
     static int boldWeightFor(const MindNode *node);
     // FEAT-022: vero se il font e' installato (elenco letto una volta); un font assente si
     // disegna con quello di sistema ma il nome resta nel nodo.
-    static bool isFontInstalled(const QString &family);
+    static bool isFontInstalled(const QString &family) { return NodeGeometry::isFontInstalled(family); }
     // Registra i caratteri inclusi nell'app (assets/fonts) una sola volta; la chiama isFontInstalled.
-    static void loadBundledFonts();
+    static void loadBundledFonts() { NodeGeometry::loadBundledFonts(); }
     // Registers only Atkinson Hyperlegible, once: the interface font, set at startup (2026-10-28).
-    static void loadInterfaceFont();
+    static void loadInterfaceFont() { NodeGeometry::loadInterfaceFont(); }
     // Modifica del titolo direttamente nel nodo (prima: finestra di dialogo). Da F2 o
     // doppio clic seleziona tutto il testo; da un clic sul testo mette il cursore lì.
     void beginEditing();
@@ -73,26 +75,25 @@ public:
     // quando si applica una larghezza, non a ogni aggiornamento del pannello.
     qreal textBoxWidth() const { return textRect().width(); }
     // Larghezza che un'immagine puo' avere senza allargare il nodo (contenuto meno i margini).
-    qreal imageRoomWidth() const;
+    qreal imageRoomWidth() const { return m_geometry.imageRoomWidth(); }
     // FEAT-065: pixel dell'immagine, dell'adesivo o della formula come li disegna la mappa (caricati
     // se non ancora fatto); vuoto senza contenuto o con il file mancante.
     QPixmap picture();
     // FEAT-015: il nodo disegnato da solo, senza anello di selezione o di passaggio, per l'anteprima
     // del trascinamento (devicePixelRatio = scale; offset = angolo di boundingRect()).
     QPixmap dragPreview(qreal scale) const;
-    qreal minimumCustomWidth() const;
+    qreal minimumCustomWidth() const { return m_geometry.minimumCustomWidth(); }
     // FEAT-037: rettangolo dell'immagine dentro il nodo (vuoto senza immagine) e immagine scelta con
     // un clic (contorno e maniglie agli angoli).
     QRectF imageBounds() const { return imageRect(); }
     bool isImageSelected() const { return m_imageSelected; }
     // FEAT-040: sceglie il nodo e la sua immagine, come un clic sull'immagine (anche per i test).
     void selectImage();
-    // Misura d'inserimento di un'immagine: pixel reali del file (con la rotazione EXIF), ridotti in
-    // proporzione oltre kMaxImageWidthPx; 180x120 se il file non si legge (FEAT-037, FEAT-040).
-    static QSizeF insertionImageSize(const QString &path);
-    static constexpr qreal kImageGapPx = 8;          // fra immagine e testo
-    static constexpr qreal kMinImageWidthPx = 24;     // ridimensionando con le maniglie
-    static constexpr qreal kMaxImageWidthPx = 3000;   // misura iniziale e maniglie
+    // Misura d'inserimento di un'immagine (FEAT-037, FEAT-040): NodeGeometry::insertionImageSize.
+    static QSizeF insertionImageSize(const QString &path) { return NodeGeometry::insertionImageSize(path); }
+    static constexpr qreal kImageGapPx = NodeGeometry::kImageGapPx;  // fra immagine e testo
+    static constexpr qreal kMinImageWidthPx = NodeGeometry::kMinImageWidthPx;  // ridimensionando con le maniglie
+    static constexpr qreal kMaxImageWidthPx = NodeGeometry::kMaxImageWidthPx;   // misura iniziale e maniglie
     static constexpr qreal kImageHandlePx = 8;        // maniglia agli angoli
     static constexpr qreal kThumbnailPx = 512;        // miniatura incorporata nel file (AGENTS.md)
     // B7 (2026-10-13): vero se l'ultimo rilascio del mouse ha concluso un trascinamento del nodo
@@ -119,12 +120,12 @@ public:
     // FEAT-043 Justify: box width the layout gives the node (0 = none). It acts like a width set by
     // hand (the text wraps and aligns in it) and never narrows the node.
     void setJustifiedWidth(qreal width);
-    qreal justifiedWidth() const { return m_justifiedWidth; }
+    qreal justifiedWidth() const { return m_geometry.justifiedWidth(); }
     // Box width without justification; measured again only after the node changed.
     qreal naturalWidth();
     // Metà larghezza del riquadro del testo: punto in cui si agganciano i rami.
     // Per i nodi normali è 105 come prima; i nodi con formule possono essere più larghi.
-    qreal anchorHalfWidth() const;
+    qreal anchorHalfWidth() const { return m_geometry.anchorHalfWidth(); }
     // FEAT-034: lato verso cui il nodo si allarga mentre si scrive (+1 destra, -1 sinistra, 0 i due
     // lati); il lato verso il genitore resta fermo. Lo imposta la scena dopo il layout.
     void setGrowSide(int side) { m_growSide = side; }
@@ -178,11 +179,11 @@ public:
     void keepParentSide(qreal oldHalf);
     // FEAT-020 parte B: rettangolo esterno della forma (contiene il riquadro del testo) e punto
     // di attacco del ramo a destra o a sinistra, in coordinate del nodo.
-    QRectF shapeRect() const;
-    qreal cornerRadius() const;  // rounded rectangle corner, < 0 = the usual one (FEAT-052)
-    QPointF branchAnchor(bool right) const;
+    QRectF shapeRect() const { return m_geometry.shapeRect(); }
+    qreal cornerRadius() const { return m_geometry.cornerRadius(); }  // rounded rectangle corner, < 0 = the usual one (FEAT-052)
+    QPointF branchAnchor(bool right) const { return m_geometry.branchAnchor(right); }
     // Altezza occupata dal nodo, usata dal layout automatico per distanziare i nodi.
-    qreal layoutHeight() const;
+    qreal layoutHeight() const { return m_geometry.layoutHeight(); }
     // Bordo esterno dei nodi selezionati e in hover (richiesta 2026-10-13: un anello
     // con gli angoli concentrici al nodo, staccato di "gap" px. Valori da Impostazioni >
     // Selezione, salvati in QSettings; uguali per tutti i nodi.
@@ -202,11 +203,11 @@ public:
     };
     static SelectionStyle &selectionStyle();
     // FEAT-059: "Mostra tutte le note" del foglio attivo (impostato da MainWindow, poi syncFromNode).
-    static bool &showAllNotes();
+    static bool &showAllNotes() { return NodeGeometry::showAllNotes(); }
     // Riquadro della nota dentro il nodo, sotto il contenuto (vuoto se spento o senza nota).
-    QRectF notePreviewRect() const;
+    QRectF notePreviewRect() const { return m_geometry.notePreviewRect(); }
     // FEAT-060: pillole delle etichette sotto la forma (posto "fuori"), nell'ordine di node->labels.
-    QList<QRectF> labelRects() const;
+    QList<QRectF> labelRects() const { return m_geometry.labelRects(); }
     int hoveredLabel() const { return m_hoveredLabel; }  // per i test
     bool isHovered() const { return m_hovered; }
     int labelAt(const QPointF &position) const;  // -1 = nessuna
@@ -228,18 +229,18 @@ public:
     // dell'argomento, poi quello web): quadrati arrotondati chiari con l'icona al centro (richiesta
     // dell'utente 2026-10-16, foto 02). Rettangolo vuoto se il nodo non ha quel collegamento.
     enum class LinkKind { Topic, Web };
-    QRectF linkIconRect(LinkKind kind) const;
+    QRectF linkIconRect(LinkKind kind) const { return m_geometry.linkIconRect(kind == LinkKind::Topic); }
     // FEAT-048: area cliccabile della casella di spunta (22x22, posto a sinistra), vuota senza casella.
-    QRectF taskRect() const;
+    QRectF taskRect() const { return m_geometry.taskRect(); }
     // FEAT-051: marcatori nel posto a sinistra, prima della casella, nell'ordine di node->markers.
-    QList<QRectF> markerRects() const;
+    QList<QRectF> markerRects() const { return m_geometry.markerRects(); }
     int markerAt(const QPointF &position) const;  // -1 = nessuno
     int hoveredMarker() const { return m_hoveredMarker; }  // marcatore sotto il mouse (Canc lo toglie)
     // FEAT-059: bottone della nota, il primo del posto a destra (prima dei collegamenti); vuoto senza nota.
-    QRectF noteRect() const;
+    QRectF noteRect() const { return m_geometry.noteRect(); }
     // FEAT-049: graffetta dei file allegati, l'ultimo bottone a destra (dopo nota e collegamenti);
     // vuota senza file. Con due o piu' file porta il numero.
-    QRectF filesRect() const;
+    QRectF filesRect() const { return m_geometry.filesRect(); }
     // FEAT-064: formula del nodo, nel posto dell'immagine (vuoto senza formula).
     QRectF formulaRect() const;
     // Misura d'inserimento della formula del nodo (riquadro con i margini, font del nodo).
@@ -248,11 +249,11 @@ public:
     // Argomento collegato che non esiste piu' (deciso da chi conosce tutti i fogli): icona grigia.
     void setTopicLinkBroken(bool broken);
     bool isTopicLinkBroken() const { return m_topicLinkBroken; }
-    static constexpr qreal kLinkButtonPx = 22;   // bottone di un collegamento (quadrato)
+    static constexpr qreal kLinkButtonPx = NodeGeometry::kLinkButtonPx;   // bottone di un collegamento (quadrato)
     static constexpr qreal kLinkIconPx = 16;     // icona dentro il bottone
     static constexpr qreal kLinkButtonRadiusPx = 4;
-    static constexpr qreal kLinkIconGapPx = 4;   // fra i due bottoni
-    static constexpr qreal kLinkTextGapPx = 8;   // fra il testo e il primo bottone
+    static constexpr qreal kLinkIconGapPx = NodeGeometry::kLinkIconGapPx;   // fra i due bottoni
+    static constexpr qreal kLinkTextGapPx = NodeGeometry::kLinkTextGapPx;   // fra il testo e il primo bottone
 
 signals:
     void activated(NodeItem *item);
@@ -318,8 +319,8 @@ private:
     // FEAT-027: larghezza della colonna delle icone a destra del testo (0 senza collegamenti) e
     // riquadro del solo testo. La larghezza scelta a mano (customWidth, FEAT-018/021) resta quella
     // di tutto il riquadro: il testo va a capo nel resto (FEAT-037: anche senza l'immagine affiancata).
-    qreal linkZoneWidth() const;
-    qreal taskZoneWidth() const;  // FEAT-048: colonna a sinistra (0 senza casella)
+    qreal linkZoneWidth() const { return m_geometry.linkZoneWidth(); }
+    qreal taskZoneWidth() const { return m_geometry.taskZoneWidth(); }  // FEAT-048: colonna a sinistra (0 senza casella)
     bool m_pressedTask = false;
     int m_pressedMarker = -1;  // FEAT-051
     int m_hoveredMarker = -1;
@@ -332,42 +333,13 @@ private:
     bool m_hoveredFiles = false;
     int m_pressedLabel = -1;     // FEAT-060
     int m_hoveredLabel = -1;     // pillola sotto il mouse: si accende il suo bordo, non il nodo
-    struct LabelLayout {
-        QStringList labels;
-        qreal width = 0;           // larghezza a cui vanno a capo
-        QList<QRectF> pills;       // relative all'angolo in alto a sinistra del blocco
-        QSizeF size;
-        bool operator==(const LabelLayout &other) const { return labels == other.labels && width == other.width; }
-    };
-    LabelLayout m_labelLayout;
-    void updateLabelLayout();
-    qreal labelsBlockHeight() const;  // pillole e spazio sopra (0 senza etichette)
-    struct NotePreviewKey {
-        bool shown = false;
-        QString notes, notesHtml;
-        qreal width = 0;
-        QRgb color = 0;  // FEAT-064: le formule della nota prendono il colore del testo
-        bool operator==(const NotePreviewKey &) const = default;
-    };
-    NotePreviewKey m_notePreviewKey;
-    std::unique_ptr<QTextDocument> m_notePreview;
-    qreal m_notePreviewHeight = 0;
-    void updateNotePreview();
     bool m_hoveredNote = false;
-    qreal manualTextWidth() const;
-    QRectF textArea() const;
-    // FEAT-037: impaginazione del contenuto (immagine, testo, bottoni dei collegamenti) calcolata
-    // dalle misure gia' fatte: riquadro di tutto il nodo, blocco del testo con i suoi margini e
-    // immagine. Solo aritmetica, nessuna misura del testo.
-    // content = immagine e testo senza la nota (le colonne si centrano qui); note = nota mostrata
-    // dentro il nodo (FEAT-059, posto "sotto" del contratto).
-    struct ContentLayout { QRectF box, text, image, content, note; };
-    ContentLayout contentLayout(bool withNote = true) const;
-    bool hasSideImage() const;
-    // Larghezza del blocco del testo (margini compresi) per un contenuto largo "content".
-    qreal textBlockWidth(qreal content, qreal maxWidth) const;
-    // FEAT-037: zone di rilascio dell'immagine attorno al nodo (Sopra, Sotto, Sinistra, Destra).
-    QList<QRectF> imageDropZones() const;
+    qreal manualTextWidth() const { return m_geometry.manualTextWidth(); }
+    QRectF textArea() const { return m_geometry.textArea(); }
+    using ContentLayout = NodeGeometry::ContentLayout;
+    ContentLayout contentLayout(bool withNote = true) const { return m_geometry.contentLayout(withNote); }
+    bool hasSideImage() const { return m_geometry.hasSideImage(); }
+    QList<QRectF> imageDropZones() const { return m_geometry.imageDropZones(); }
     // FEAT-037: maniglia dell'immagine sotto il punto: 1 alto-sinistra, 2 alto-destra,
     // 3 basso-destra, 4 basso-sinistra, 0 nessuna.
     int imageHandleAt(const QPointF &position) const;
@@ -383,42 +355,22 @@ private:
     bool m_topicLinkBroken = false;
     std::optional<LinkKind> m_pressedLink;  // icona premuta, il clic vale al rilascio
     std::optional<LinkKind> m_hoveredLink;  // bottone sotto il mouse (fondo piu' scuro)
-    QRectF textRect() const;
-    QRectF imageRect() const;
-    QRectF normalBoundingRect() const;
+    QRectF textRect() const { return m_geometry.textRect(); }
+    QRectF imageRect() const { return m_geometry.imageRect(); }
+    QRectF normalBoundingRect() const { return m_geometry.normalBoundingRect(); }
     bool m_hovered = false;  // mouse sopra il nodo: anello di hover
-    int imageDropZoneAt(const QPointF &position) const;
+    int imageDropZoneAt(const QPointF &position) const { return m_geometry.imageDropZoneAt(position); }
     void loadImage();
-    void updateFormula();
-    // Rendering del titolo quando contiene formule LaTeX ($...$); vuoto altrimenti.
     QString m_loadedFormulaKey;  // FEAT-064: formula, sfondo e colore disegnati in m_image
-    FormulaText m_formula;  // formule $...$ nel titolo (testo con formule in riga)
-    // Documento già impaginato per i titoli con formattazione parziale; viene aggiornato
-    // solo quando cambiano i dati del nodo, non durante paint().
-    QTextDocument *m_richDocument = nullptr;
-    // Dimensione del titolo (testo semplice) misurata in updateFormula(): evita di
-    // ricalcolare le metriche del font a ogni paint().
-    QSizeF m_textSize;
-    qreal m_minContentWidth = 0;  // BUG-003: un carattere medio, vedi updateFormula()
-    // P5 (2026-10-13): titolo semplice già impaginato (a capo, centratura) in updateFormula().
-    // Prima drawText(..., Qt::TextWordWrap, ...) rifaceva l'impaginazione a ogni paint(), cioè a
-    // ogni pan, zoom o passaggio del mouse. Vuoto per formule e titoli formattati.
-    std::unique_ptr<QTextLayout> m_plainLayout;
-    QSizeF m_plainLayoutSize;
-    qreal m_plainLayoutFontHeight = 0;  // altezza del font usato, per riconoscere un dispositivo con altri DPI
-    // 2026-10-14: esito del confronto qui sopra per l'ultimo dispositivo di disegno. Prima paint()
-    // creava un QFontMetricsF a ogni ridisegno di ogni nodo; ora solo quando cambia il dispositivo
-    // (vista, stampante, immagine dell'anteprima) o l'impaginazione. Il puntatore non si dereferenzia.
+    // The plain title layout is checked once per painting device (P5, 2026-10-14) and again
+    // after a new layout. The pointer is not dereferenced.
     const void *m_metricsDevice = nullptr;
     bool m_metricsDeviceMatches = false;
-    void updatePlainLayout(const QFont &font, qreal fontHeight);
-    // (Larghezza del blocco del testo: textBlockWidth, sopra; FEAT-037 la separa dal riquadro.)
-    // Larghezza a cui va a capo il titolo semplice in un blocco largo boxWidth.
-    qreal plainWrapWidth(qreal boxWidth) const;
-    qreal maxTextNodeWidth() const;  // FEAT-072: wider for the central topic
-    // Margini interni del testo per il ruolo del nodo (NodeStyle::textPadding).
-    qreal padX() const;
-    qreal padY() const;
+    int m_metricsGeneration = -1;
+    qreal plainWrapWidth(qreal boxWidth) const { return m_geometry.plainWrapWidth(boxWidth); }
+    qreal maxTextNodeWidth() const { return m_geometry.maxTextNodeWidth(); }
+    qreal padX() const { return m_geometry.padX(); }
+    qreal padY() const { return m_geometry.padY(); }
     qreal textClipX() const;
     qreal textClipY() const;
     // Ridimensionamento dai lati (richiesta 2026-10-13): -1 lato sinistro, 1 destro, 0 nessuno.
@@ -432,48 +384,11 @@ private:
     // BUG-004: vero dal doppio clic sul bordo al rilascio del tasto. Intanto il nodo ignora i
     // movimenti del mouse, che altrimenti lo trascinerebbero di qualche pixel.
     bool m_ignoreDragUntilRelease = false;  // FEAT-033: valore da rimettere con Esc (0 = automatica)
-    static QSizeF plainTextLayout(const QString &plain, const QFont &font, qreal width, QTextLayout *layout,
-                                  Qt::Alignment alignment = Qt::AlignLeft);
-    // P2 (2026-10-13): dati da cui dipendono misura e impaginazione del nodo, com'erano all'ultimo
-    // syncFromNode(). Se non cambiano, syncFromNode() non rimisura il testo: il layout automatico
-    // chiama syncFromNode() su tutti i nodi a ogni Tab/Invio e prima rimisurava sempre tutto.
-    // I dati da cui dipende l'impaginazione del testo (updateFormula()) sono separati dagli altri,
-    // che cambiano solo il riquadro intorno al testo.
-    struct TextLayoutKey {
-        QString title, titleHtml;
-        QRgb formulaColor = 0;  // colore del testo, solo per i titoli con formule
-        bool isRoot = false;
-        qreal customWidth = 0;
-        bool strikeOut = false;   // FEAT-020: il testo formattato si reimpagina con il barrato
-        // FEAT-022: font, dimensione, peso, corsivo, sottolineato, maiuscole e allineamento.
-        QString fontFamily;
-        qreal fontSize = 0;
-        int fontWeight = 0, textCase = 0, textAlign = 0;
-        bool italic = false, underline = false;
-        int linkCount = 0;  // FEAT-027: le icone tolgono spazio al testo, che va a capo prima
-        qreal sideImageWidth = 0;  // FEAT-037: immagine a sinistra o a destra del testo
-        int task = 0;              // FEAT-048/051: casella e marcatori tolgono spazio al testo
-        bool operator==(const TextLayoutKey &) const = default;
-    };
-    struct GeometryKey {
-        TextLayoutKey text;
-        QString imagePath;
-        QSizeF imageSize;
-        int imagePlacement = 0;
-        qreal borderOutside = 1;  // FEAT-020: il bordo spesso allarga l'area dell'anello
-        int shape = 0;            // FEAT-020 parte B: la forma cambia la misura del nodo
-        qreal borderWidth = 0;    // BUG-012: con le linee sotto la seconda linea scende di uno spessore
-        // FEAT-059: nota mostrata dentro il nodo (cambia la misura).
-        bool notesShown = false;
-        QString notes, notesHtml;
-        QStringList labels;  // FEAT-060: le pillole cambiano lo spazio del nodo nel layout
-        QString formula;     // FEAT-064: con la formula il nodo ha il contenuto nel posto dell'immagine
-        bool operator==(const GeometryKey &) const = default;
-    };
-    GeometryKey geometryKey() const;
+    // P2 (2026-10-13): the measures are taken again only when their data change (NodeGeometry::GeometryKey).
+    using GeometryKey = NodeGeometry::GeometryKey;
+    GeometryKey geometryKey() const { return m_geometry.geometryKey(); }
     GeometryKey m_geometryKey;
-    qreal layoutCustomWidth() const;  // width set by hand or by Justify, the larger
-    qreal m_justifiedWidth = 0;
+    qreal layoutCustomWidth() const { return m_geometry.layoutCustomWidth(); }  // width set by hand or by Justify, the larger
     std::optional<TableCell> m_cell;  // FEAT-028
     qreal m_naturalWidth = 0;
     void rememberNaturalWidth();
@@ -517,10 +432,6 @@ private:
     qreal m_halfBeforeEditing = -1;  // FEAT-034: meta' larghezza prima del campo di modifica
     bool stickerOutline() const;
     bool m_imageLoadPending = true;
-    // B9 (2026-10-13): il nodo ha un'immagine secondo i dati (imagePath). Le misure del nodo
-    // dipendono da questo e non da m_image, che si carica solo al primo paint(): prima il
-    // riquadro cambiava durante paint() senza prepareGeometryChange().
-    bool m_hasImage = false;
     bool m_draggingImage = false;
     QPointF m_imageDragPosition;
 
@@ -532,8 +443,7 @@ private:
     QGraphicsTextItem *m_editor = nullptr;
     qreal m_stackZ = 0;
     // FEAT-024: title as drawn, with the number before it (the editor shows the title alone).
-    QString shownTitle() const;
-    void prependNumber(QTextDocument &document) const;
+    QString shownTitle() const { return m_geometry.shownTitle(); }
     QGraphicsProxyWidget *m_formatBar = nullptr;
     void placeFormatBar();  // above the topic, centred, like the topic bar
     QSizeF m_editorSize;
@@ -541,5 +451,8 @@ private:
     // al rilascio parte la modifica nel punto cliccato.
     bool m_pressOnText = false;
     QPointF m_pressScreenPos;
+    // FEAT-096: the measures (text layout, content, shape), shared with the layout. B9: the image flag
+    // comes from the data (imagePath), not from m_image, loaded at the first paint().
+    NodeGeometry m_geometry;
 };
 

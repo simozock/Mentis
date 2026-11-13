@@ -20,7 +20,7 @@
 
 #include "jkqtcommon/jkqtpdebuggingtools.h"
 #include <QDebug>
-#include <QApplication>
+#include <QGuiApplication>
 #include <QThread>
 
 namespace JKQTPAutoOutputTimer_private {

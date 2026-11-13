@@ -144,14 +144,10 @@ LabelEditor::LabelEditor(QWidget *parent) : QFrame(parent) {
 
 LabelEditor::~LabelEditor() { qApp->removeEventFilter(this); }
 
-QStringList LabelEditor::typedLabels() const {
-    return Labels::normalized(m_field->text().split(QLatin1Char(',')), false);
-}
+QStringList LabelEditor::typedLabels() const { return Labels::typed(m_field->text()); }
 
 void LabelEditor::addSuggestion(const QString &label) {
-    QStringList labels = typedLabels();
-    if (std::none_of(labels.cbegin(), labels.cend(), [&label](const QString &own) { return Labels::same(own, label); })) labels.append(label);
-    m_field->setText(labels.join(QStringLiteral(", ")) + QStringLiteral(", "));
+    m_field->setText(Labels::withAdded(m_field->text(), label));
     m_field->setFocus();
     m_field->end(false);
 }
@@ -161,16 +157,7 @@ QStringList LabelEditor::visibleSuggestions() const { return m_suggestions->labe
 // Suggerimenti: le etichette del documento non ancora nel campo; con una parola a meta' dopo
 // l'ultima virgola restano quelle che la contengono.
 void LabelEditor::refreshSuggestions() {
-    const QStringList parts = m_field->text().split(QLatin1Char(','));
-    const QString typing = parts.back().trimmed();
-    const QStringList chosen = Labels::normalized(parts.mid(0, parts.size() - 1), false);
-    QStringList shown;
-    for (const QString &label : m_allSuggestions) {
-        if (std::any_of(chosen.cbegin(), chosen.cend(), [&label](const QString &own) { return Labels::same(own, label); })) continue;
-        if (!typing.isEmpty() && !label.contains(typing, Qt::CaseInsensitive)) continue;
-        if (Labels::same(label, typing)) continue;
-        shown.append(label);
-    }
+    const QStringList shown = Labels::suggestions(m_field->text(), m_allSuggestions);
     m_suggestions->setLabels(shown);
     m_suggestionsTitle->setVisible(!shown.isEmpty());
     m_suggestions->setVisible(!shown.isEmpty());

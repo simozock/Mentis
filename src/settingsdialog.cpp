@@ -5,6 +5,7 @@
 #include "mcpclients.h"
 #include "mcpmaptools.h"
 #include "localization.h"
+#include "mapfolder.h"
 #include "modaldialog.h"
 #include "segmentedcontrol.h"
 #include "shortcuts.h"
@@ -26,6 +27,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTimer>
+#include <QFileDialog>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -532,6 +534,9 @@ QWidget *SettingsDialog::createGeneralPage() {
         emit performanceModeChanged();
     });
 
+    layout->addWidget(sectionTitle(tr("Maps")));
+    layout->addWidget(createMentisFolderCard());
+    layout->addSpacing(8);
     layout->addWidget(sectionTitle(tr("Language")));
     layout->addWidget(settingsCard({settingsRow(tr("Language"), tr("The language changes at the next start."), m_language)}));
     layout->addSpacing(8);
@@ -583,6 +588,47 @@ QFrame *SettingsDialog::createGuideCard() {
         settingsRow(tr("Show tips"), tr("The first time you open the outliner, the Gantt or Pitch, the mascot explains it in a few words."),
                     tips),
         settingsRow(tr("Guided tour"), tr("Two minutes on a practice map: topics, colours, the outliner and saving."), restart)});
+}
+
+// FEAT-105 stage 3 (decision 5): where the maps are kept. "Defaults" leaves it alone: going back to
+// the default folder would ask about moving the maps, so it is chosen here only.
+QFrame *SettingsDialog::createMentisFolderCard() {
+    auto *change = new QPushButton(tr("Change…"));
+    change->setObjectName(QStringLiteral("MentisFolderChange"));
+    connect(change, &QPushButton::clicked, this, &SettingsDialog::changeMentisFolder);
+    QWidget *row = settingsRow(tr("Mentis folder"), QDir::toNativeSeparators(MapFolder::current().path()), change);
+    m_mentisFolderPath = row->findChild<QLabel *>(QStringLiteral("settingsHint"));
+    m_mentisFolderPath->setObjectName(QStringLiteral("MentisFolderPath"));
+    return settingsCard({row});
+}
+
+void SettingsDialog::changeMentisFolder() {
+    const QString oldFolder = MapFolder::current().path();
+    const QString chosen = chooseMentisFolder ? chooseMentisFolder(oldFolder)
+                                              : QFileDialog::getExistingDirectory(this, tr("Mentis folder"), oldFolder);
+    if (chosen.isEmpty()) return;
+    const QString newFolder = MapFolder(chosen).path();  // absolute and clean, as the folder compares paths
+    if (QFileInfo(newFolder) == QFileInfo(oldFolder)) return;
+    // Checked before anything moves; no fallback, so an unusable choice is reported, not replaced.
+    const MapFolder::Ready ready = MapFolder(newFolder).ensure();
+    if (ready.path.isEmpty() || !ready.warning.isEmpty()) {
+        ModalDialog::inform(this, tr("Error"), ready.warning);
+        return;
+    }
+    int answer = 1;
+    if (!MapFolder(oldFolder).maps().isEmpty() || !MapFolder(oldFolder).folders().isEmpty()) {
+        if (askMoveMaps) {
+            answer = askMoveMaps();
+        } else {
+            const ModalDialog::Choice choice = ModalDialog::ask(this, tr("Mentis folder"), tr("Move the maps to the new folder?"),
+                                                                tr("Move"), tr("Keep where they are"));
+            answer = choice == ModalDialog::Choice::Primary ? 1 : choice == ModalDialog::Choice::Secondary ? 0 : -1;
+        }
+    }
+    if (answer < 0) return;
+    MapFolder::setConfiguredPath(newFolder);
+    m_mentisFolderPath->setText(QDir::toNativeSeparators(MapFolder::current().path()));
+    emit mentisFolderChanged(oldFolder, answer == 1);
 }
 
 // FEAT-090: the daily check at startup and a check on request. Saved at once, like the agents' card.

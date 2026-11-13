@@ -28,7 +28,7 @@
 #include <QDebug>
 #include <QFontDatabase>
 #include <QFontInfo>
-#include <QApplication>
+#include <QGuiApplication>
 #include <QFont>
 #include <QReadWriteLock>
 #include <QHashFunctions>

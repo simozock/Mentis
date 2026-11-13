@@ -32,7 +32,6 @@ constexpr int kNodeRole = Qt::UserRole + 1;
 constexpr int kRangesRole = Qt::UserRole + 2;  // QList<QPoint>: start and length to highlight
 constexpr int kRowHeightPx = 28;               // like the topic tree in the modals (AGENTS.md "Modali")
 constexpr int kSearchDelayMs = 120;            // results follow typing without rebuilding per key
-constexpr int kSnippetChars = 40;              // text shown around a match in a note, label or link
 // Found text: the text selection colours of the map and outliner (AGENTS.md "Colori").
 const QColor kHighlight("#b3d4fc");
 const QColor kHighlightText("#202630");
@@ -135,19 +134,6 @@ QList<QVariant> rangesFrom(const QList<std::pair<int, int>> &found, int offset) 
     return ranges;
 }
 
-// Words around the first occurrence, so a match in a long note is visible in one row.
-std::pair<QString, QList<QVariant>> snippet(const QString &text, const QString &query, const NodeSearch::Options &options) {
-    const QString flat = QString(text).replace(QLatin1Char('\n'), QLatin1Char(' '));
-    const auto found = NodeSearch::occurrences(flat, query, options);
-    if (found.isEmpty()) return {flat.left(kSnippetChars), {}};
-    const int start = std::max(0, found.front().first - kSnippetChars / 2);
-    const QString prefix = start > 0 ? QStringLiteral("…") : QString();
-    const QString piece = prefix + flat.mid(start, kSnippetChars + found.front().second);
-    QList<QVariant> ranges;
-    for (const auto &[at, length] : found)
-        if (at >= start && at + length <= start + kSnippetChars + found.front().second) ranges.append(QPoint(at - start + int(prefix.size()), length));
-    return {piece, ranges};
-}
 }  // namespace
 
 NavigationPanel::NavigationPanel(QWidget *parent) : QWidget(parent) {
@@ -428,19 +414,9 @@ void NavigationPanel::rebuildOutline() {
                 group->setData(0, Qt::FontRole, font);
             }
             auto *item = group ? new QTreeWidgetItem(group) : new QTreeWidgetItem(m_outline);
-            QString text = NodeSearch::shownTitle(entry).replace(QLatin1Char('\n'), QLatin1Char(' '));
-            QList<QVariant> ranges = rangesFrom(NodeSearch::occurrences(text, query, m_options), 0);
-            if (!(fields & NodeSearch::Title)) {
-                // Found elsewhere: a piece of the note, label or link after the title.
-                const QString source = (fields & NodeSearch::Note) ? entry.notes
-                                       : (fields & NodeSearch::Label) ? entry.labels.join(QStringLiteral(", ")) : entry.webLink;
-                const auto [piece, pieceRanges] = snippet(source, query, m_options);
-                const int offset = int(text.size()) + 3;
-                text += QStringLiteral(" · ") + piece;
-                for (const QVariant &range : pieceRanges) ranges.append(range.toPoint() + QPoint(offset, 0));
-            }
-            item->setText(0, text);
-            item->setData(0, kRangesRole, ranges);
+            const NodeSearch::Shown line = NodeSearch::resultLine(entry, query, m_options, fields);
+            item->setText(0, line.text);
+            item->setData(0, kRangesRole, rangesFrom(line.ranges, 0));
             item->setData(0, kSheetRole, entry.sheetId);
             item->setData(0, kNodeRole, entry.nodeId);
         }
@@ -503,13 +479,10 @@ void NavigationPanel::rebuildNotes() {
             if (!query.isEmpty() && !NodeSearch::matchingFields(entry, query, noteOptions)) continue;
             // Title, then the note (or the piece with the match) on the same row.
             const QString title = NodeSearch::shownTitle(entry).replace(QLatin1Char('\n'), QLatin1Char(' '));
-            const auto [piece, ranges] = snippet(entry.notes, query, noteOptions);
+            const NodeSearch::Shown piece = NodeSearch::snippet(entry.notes, query, noteOptions);
             auto *item = new QTreeWidgetItem(m_notes);
-            const int offset = int(title.size()) + 3;
-            item->setText(0, title + QStringLiteral(" · ") + piece);
-            QList<QVariant> shifted;
-            for (const QVariant &range : ranges) shifted.append(range.toPoint() + QPoint(offset, 0));
-            item->setData(0, kRangesRole, shifted);
+            item->setText(0, title + QStringLiteral(" · ") + piece.text);
+            item->setData(0, kRangesRole, rangesFrom(piece.ranges, int(title.size()) + 3));
             item->setData(0, kSheetRole, entry.sheetId);
             item->setData(0, kNodeRole, entry.nodeId);
         }

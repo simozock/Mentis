@@ -861,6 +861,22 @@ QStringList idsOf(const QList<MindNode *> &nodes) {
 
 }  // namespace
 
+MindNode *Document::nodeAfterRemoval(const QList<MindNode *> &nodes) {
+    const auto removed = [&nodes](const MindNode *node) {
+        for (; node; node = node->parent) if (nodes.contains(node)) return true;
+        return false;
+    };
+    for (MindNode *node : nodes) {
+        if (!node || !node->parent || node->summaryTopic || removed(node->parent)) continue;  // FEAT-052: not among the children
+        const auto &siblings = node->parent->children;
+        const auto it = std::find_if(siblings.cbegin(), siblings.cend(), [node](const auto &child) { return child.get() == node; });
+        for (auto next = it + 1; next != siblings.cend(); ++next) if (!removed(next->get())) return next->get();
+        for (auto previous = it; previous != siblings.cbegin();) { --previous; if (!removed(previous->get())) return previous->get(); }
+        return node->parent;
+    }
+    return nullptr;
+}
+
 bool Document::removeNodes(const QList<MindNode *> &nodes) {
     // FEAT-052: a summary topic is removed with its summary (bracket and topic), after the topics:
     // the scene frees the summary topic, so `nodes` is not read once it is gone.
@@ -923,7 +939,7 @@ bool Document::makeFloating(MindNode *node, const QPointF &position) {
 }
 
 bool Document::setCollapsed(MindNode *node, bool collapsed) {
-    if (!node || !node->parent || node->summaryTopic || node->collapsed == collapsed) return false;
+    if (!node || !node->parent || node->collapsed == collapsed) return false;
     node->collapsed = collapsed;
     markChanged();
     return true;
@@ -1097,6 +1113,30 @@ bool Document::setFormattedTitle(MindNode *node, const QString &title, const QSt
     node->titleHtml = RichResources::withoutExternal(html);  // BUG-044
     markChanged();
     emit nodesChanged({node});
+    return true;
+}
+
+bool Document::editTitle(MindNode *node, const QString &title, const QString &html) {
+    if (!node || (node->title == title && node->titleHtml == html)) return false;
+    node->title = title;
+    node->titleHtml = RichResources::withoutExternal(html);  // BUG-044
+    markChanged();
+    if (const QModelIndex index = m_model->indexFromNode(node); index.isValid())
+        emit m_model->dataChanged(index, index, {Qt::EditRole, Qt::DisplayRole, MindMapModel::TitleHtmlRole});
+    else
+        emit nodesChanged({node});
+    emit m_model->structureChanged();
+    return true;
+}
+
+bool Document::placeTopics(const QList<TopicPlacement> &placements) {
+    if (placements.isEmpty()) return false;
+    for (const TopicPlacement &placement : placements) {
+        if (!placement.node) continue;
+        placement.node->position = placement.position;
+        if (!placement.node->floating) placement.node->manualOffset = placement.manualOffset;
+    }
+    markChanged();
     return true;
 }
 
@@ -1527,16 +1567,27 @@ bool Document::setBarLabels(const QList<std::pair<MindNode *, std::optional<bool
 bool Document::isRelationEnd(const QString &id) const { return m_model->nodeById(id) != nullptr || boundary(id) != nullptr; }
 
 QString Document::addRelation(const QString &fromId, const QString &toId) {
-    if (fromId == toId || !isRelationEnd(fromId) || !isRelationEnd(toId)) return QString();
-    Relationship relationship;
-    relationship.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    relationship.from = fromId;
-    relationship.to = toId;
-    m_model->relations.append(relationship);
+    const QStringList created = addRelations(fromId, {toId});
+    return created.isEmpty() ? QString() : created.front();
+}
+
+QStringList Document::addRelations(const QString &fromId, const QStringList &toIds) {
+    QStringList created;
+    if (!isRelationEnd(fromId)) return created;
+    for (const QString &toId : toIds) {
+        if (toId == fromId || !isRelationEnd(toId)) continue;
+        Relationship relationship;
+        relationship.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        relationship.from = fromId;
+        relationship.to = toId;
+        m_model->relations.append(relationship);
+        created.append(relationship.id);
+    }
+    if (created.isEmpty()) return created;
     markChanged();
     flushPendingStep();
     emit annotationsChanged();
-    return relationship.id;
+    return created;
 }
 
 bool Document::updateRelations(const QList<Relationship> &relationships) {

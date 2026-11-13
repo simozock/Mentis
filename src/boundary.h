@@ -6,14 +6,17 @@
 #include "nodestyle.h"
 
 #include <QColor>
+#include <QFont>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
 #include <QPainterPath>
+#include <QPen>
 #include <QRectF>
 #include <QString>
 #include <QStringList>
 
+#include <functional>
 #include <optional>
 
 struct Boundary {
@@ -72,5 +75,23 @@ QPainterPath titlePath(const QRectF &tab);
 // Room the layout leaves above and below the covered run (margin, half the stroke; the tab).
 qreal padAbove(const Boundary &boundary);
 qreal padBelow(const Boundary &boundary);
+
+// How a boundary is drawn on a sheet: its style or the defaults, black alphas on the default
+// canvas and the same alphas of the backdrop's readable colour on a dark one (annotationColor);
+// the title in the sheet's font, as the topics. Shared by the desktop's scene and the phone.
+struct Look {
+    QPen pen;  // width, pattern (the dash measured on the reference), flat caps, mitre joins
+    QColor fill;
+    QColor titleText;
+    QFont font;
+};
+Look look(const Boundary &boundary, const NodeStyle::Backdrop &backdrop, const QString &sheetFontFamily);
+
+// A boundary inside another one (`inside(inner, outer)`: its topics in the other's branches) widens
+// the other's covered rect by its own outline, title tab included; repeated so a boundary nested
+// twice reaches the outermost one. Two boundaries over the same topics: the later one is outside.
+// A null rect (nothing visible) is left alone.
+void widenAroundNested(const QList<Boundary> &boundaries, QList<QRectF> &covers,
+                       const std::function<bool(const Boundary &inner, const Boundary &outer)> &inside);
 
 }  // namespace Boundaries

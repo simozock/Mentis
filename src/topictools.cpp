@@ -54,7 +54,20 @@ TopicTools::TopicTools(MindMapView *view, MindMapScene *scene, QObject *parent)
     QWidget *viewport = view->viewport();
     m_bar = new FloatingGroup(viewport);
     m_bar->setObjectName(QStringLiteral("TopicToolbar"));
-    addTool(QStringLiteral(":/assets/hugeicons/relation.svg"), tr("Create a relationship between two topics"), &relation);
+    m_relation = addTool(QStringLiteral(":/assets/hugeicons/relation.svg"),
+                         tr("Create a relationship between two topics (double click: keep it on)"), nullptr);
+    m_relation->setObjectName(QStringLiteral("Relationship"));
+    m_relation->setCheckable(true);  // checked while armed (FEAT-110, as the format painter)
+    connect(m_relation, &QToolButton::clicked, this, [this](bool checked) {
+        if (!checked) {
+            if (stopRelation) stopRelation();
+            return;
+        }
+        setRelationOn(false);  // MainWindow checks it once a start is armed
+        const QList<MindNode *> selected = m_scene->selectedNodes();
+        if (selected.size() == 1 && relation) relation(selected.front());
+    });
+    m_relation->installEventFilter(this);  // the double click, as for the painter
     addTool(QStringLiteral(":/assets/hugeicons/link-web.svg"), tr("Insert a web link in the topic"), &webLink);
     addTool(QStringLiteral(":/assets/hugeicons/image.svg"), tr("Insert an image in the topic"), &image);
     addTool(QStringLiteral(":/assets/hugeicons/note.svg"), tr("Add a note to the topic"), &note);
@@ -102,6 +115,12 @@ QWidget *TopicTools::bar() const { return m_bar; }
 QAbstractButton *TopicTools::childKnob() const { return m_childKnob; }
 QAbstractButton *TopicTools::siblingKnob() const { return m_siblingKnob; }
 QAbstractButton *TopicTools::formatPainterButton() const { return m_formatPainter; }
+QAbstractButton *TopicTools::relationButton() const { return m_relation; }
+
+void TopicTools::setRelationOn(bool on) {
+    const QSignalBlocker blocker(m_relation);
+    m_relation->setChecked(on);
+}
 
 void TopicTools::setFormatPainterOn(bool on) {
     const QSignalBlocker blocker(m_formatPainter);
@@ -130,6 +149,10 @@ QToolButton *TopicTools::addTool(const QString &icon, const QString &tip, std::f
 bool TopicTools::eventFilter(QObject *watched, QEvent *event) {
     if (watched == m_formatPainter && event->type() == QEvent::MouseButtonDblClick) {
         if (m_formatPainter->isChecked() && keepFormatPainter) keepFormatPainter();
+        return true;
+    }
+    if (watched == m_relation && event->type() == QEvent::MouseButtonDblClick) {
+        if (keepRelation) keepRelation();  // the first click has started the relationship
         return true;
     }
     if (event->type() == QEvent::Resize || event->type() == QEvent::MouseButtonRelease) schedule();

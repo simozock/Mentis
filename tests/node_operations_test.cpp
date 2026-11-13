@@ -16,6 +16,7 @@
 #include "performance.h"
 #include "sidepanel.h"
 #include "stylecontrols.h"
+#include "slowtests.h"
 #include "topictools.h"
 #include "tour.h"
 
@@ -23,6 +24,7 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
+#include <QElapsedTimer>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QStackedWidget>
@@ -89,6 +91,9 @@ private slots:
     void coalescedDragEndsUnderThePointer();
     void relationSnapshot();
     void escapeCancelsAPendingRelation();
+    void manyRelationsFromTheActiveTopic();     // FEAT-109
+    void relationToolKeptOnByADoubleClick();    // FEAT-109
+    void manyRelationsPerformance();            // FEAT-109, slow
     void summaryLayout();
     void summaryKeepsEverythingAcrossSaveAndUndo();
     void summaryTopicBranch();
@@ -1419,6 +1424,24 @@ void NodeOperationsTest::relationHandleLabelAndDelete() {
     QVERIFY(m_model->relations.front().toControl.has_value());
     QVERIFY(QLineF(item->handlePos(1), m_view->mapToScene(target)).length() < 2);
 
+    // The ends stay on their topics (user, 2026-11-12): a drag from the target's end onto
+    // another topic does not reconnect it.
+    MindNode *c = m_model->addChild(m_model->root(), QStringLiteral("C"));
+    m_scene->autoLayout();
+    wait();
+    m_scene->clearSelection();
+    item->setSelected(true);
+    const QPoint end = m_view->mapFromScene(item->geometry().end);
+    const QPoint onC = m_view->mapFromScene(m_scene->nodeShapeSceneRect(c).center());
+    QTest::mousePress(m_view->viewport(), Qt::LeftButton, {}, end);
+    QMouseEvent carry(QEvent::MouseMove, onC, m_view->viewport()->mapToGlobal(onC), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(m_view->viewport(), &carry);
+    QTest::mouseRelease(m_view->viewport(), Qt::LeftButton, {}, onC);
+    wait();
+    QCOMPARE(m_model->relations.front().to, b->id);
+    m_scene->clearSelection();
+    item->setSelected(true);
+
     m_window->activateWindow();
     QVERIFY(QTest::qWaitForWindowActive(m_window.get()));
     QVERIFY(item->isSelected());
@@ -1495,6 +1518,195 @@ void NodeOperationsTest::escapeCancelsAPendingRelation() {
     clickNode(b);
     wait();
     QVERIFY(m_model->relations.isEmpty());
+}
+
+// FEAT-109: several elements selected, one press = one relationship from the active one (the last
+// clicked) to each other, in one step, all selected; a boundary can be a target.
+void NodeOperationsTest::manyRelationsFromTheActiveTopic() {
+    MindNode *a = m_model->addChild(m_model->root(), QStringLiteral("A"));
+    MindNode *b = m_model->addChild(m_model->root(), QStringLiteral("B"));
+    MindNode *c = m_model->addChild(m_model->root(), QStringLiteral("C"));
+    MindNode *d = m_model->addChild(m_model->root(), QStringLiteral("D"));
+    m_scene->autoLayout();
+    wait();
+    const auto ctrlClick = [this](MindNode *node) {
+        NodeItem *item = itemFor(node);
+        const QPoint point = m_view->mapFromScene(item->mapToScene(QPointF(0, item->boundingRect().top() + 6)));
+        QTest::mouseClick(m_view->viewport(), Qt::LeftButton, Qt::ControlModifier, point);
+        QApplication::processEvents();
+    };
+    clickNode(b);
+    ctrlClick(c);
+    ctrlClick(d);
+    ctrlClick(a);
+    QCOMPARE(m_scene->selectedNodes().size(), 4);
+    action(QStringLiteral("Relationship"))->trigger();
+    wait();
+    QCOMPARE(m_model->relations.size(), 3);
+    QStringList targets;
+    for (const Relationship &relationship : std::as_const(m_model->relations)) {
+        QCOMPARE(relationship.from, a->id);
+        targets.append(relationship.to);
+    }
+    targets.sort();
+    QStringList expected{b->id, c->id, d->id};
+    expected.sort();
+    QCOMPARE(targets, expected);
+    QCOMPARE(m_scene->selectedRelationIds().size(), 3);
+    QVERIFY(m_scene->selectedNodes().isEmpty());
+    action(QStringLiteral("Undo"))->trigger();
+    wait();
+    QVERIFY(m_model->relations.isEmpty());
+
+    // A boundary among the targets.
+    m_scene->selectNode(b);
+    toolButton(QStringLiteral("Draw a dashed boundary"))->click();
+    wait();
+    QCOMPARE(m_model->boundaries.size(), 1);
+    const QString boundary = m_model->boundaries.front().id;
+    QCOMPARE(m_scene->selectedBoundaryIds(), QStringList{boundary});
+    ctrlClick(a);
+    action(QStringLiteral("Relationship"))->trigger();
+    wait();
+    QCOMPARE(m_model->relations.size(), 1);
+    QCOMPARE(m_model->relations.front().from, a->id);
+    QCOMPARE(m_model->relations.front().to, boundary);
+}
+
+// FEAT-109: a double click on the topic bar's button keeps the tool on; each click on another element
+// creates one relationship (one step), the selection unchanged; the start and an empty place, Esc and
+// the start's removal behave as the card says.
+void NodeOperationsTest::relationToolKeptOnByADoubleClick() {
+    MindNode *a = m_model->addChild(m_model->root(), QStringLiteral("A"));
+    MindNode *b = m_model->addChild(m_model->root(), QStringLiteral("B"));
+    MindNode *c = m_model->addChild(m_model->root(), QStringLiteral("C"));
+    m_scene->autoLayout();
+    wait();
+    auto *tools = m_window->findChild<TopicTools *>();
+    QAbstractButton *relation = tools->relationButton();
+    const auto keepOn = [&](MindNode *start) {
+        m_scene->selectNode(start);
+        wait();
+        QVERIFY(relation->isVisible());
+        QTest::mouseClick(relation, Qt::LeftButton);
+        QTest::mouseDClick(relation, Qt::LeftButton);
+        QVERIFY(relation->isChecked());
+    };
+    const auto clickOn = [this](MindNode *node) {
+        QTest::mouseClick(m_view->viewport(), Qt::LeftButton, {}, m_view->mapFromScene(m_scene->nodeSceneRect(node).center()));
+        wait();
+    };
+    // One click on the topic bar's button: armed (checked, FEAT-110), one relationship, then off.
+    m_scene->selectNode(a);
+    wait();
+    QTest::mouseClick(relation, Qt::LeftButton);
+    QVERIFY(relation->isChecked());
+    clickOn(b);
+    QCOMPARE(m_model->relations.size(), 1);
+    QCOMPARE(m_model->relations.front().to, b->id);
+    QVERIFY(!relation->isChecked());
+    action(QStringLiteral("Undo"))->trigger();
+    wait();
+    QVERIFY(m_model->relations.isEmpty());
+    // FEAT-110: armed, a second press turns it off; so does a click on an empty place.
+    m_scene->selectNode(a);
+    wait();
+    QTest::mouseClick(relation, Qt::LeftButton);
+    QTest::qWait(QApplication::doubleClickInterval() + 50);  // not a double click
+    QTest::mouseClick(relation, Qt::LeftButton);
+    QVERIFY(!relation->isChecked());
+    clickOn(b);
+    QVERIFY(m_model->relations.isEmpty());
+    m_scene->selectNode(a);
+    wait();
+    QTest::mouseClick(relation, Qt::LeftButton);
+    QVERIFY(relation->isChecked());
+    QTest::mouseClick(m_view->viewport(), Qt::LeftButton, {}, QPoint(4, 4));
+    wait();
+    QVERIFY(!relation->isChecked());
+    m_scene->selectNode(a);
+    wait();
+    clickOn(b);
+    QVERIFY(m_model->relations.isEmpty());
+
+    keepOn(a);
+    clickOn(b);
+    QCOMPARE(m_model->relations.size(), 1);
+    QCOMPARE(m_scene->selectedNodes(), QList<MindNode *>({a}));
+    QVERIFY(!m_scene->isEditing(b));
+    clickOn(a);  // the start: nothing
+    QCOMPARE(m_model->relations.size(), 1);
+    clickOn(c);
+    QCOMPARE(m_model->relations.size(), 2);
+    QCOMPARE(m_model->relations.back().from, a->id);
+    QCOMPARE(m_model->relations.back().to, c->id);
+    QVERIFY(relation->isChecked());
+    // An undone relationship leaves the start: the tool stays on.
+    action(QStringLiteral("Undo"))->trigger();
+    wait();
+    QCOMPARE(m_model->relations.size(), 1);
+    QVERIFY(relation->isChecked());
+    m_window->activateWindow();
+    QVERIFY(QTest::qWaitForWindowActive(m_window.get()));
+    m_view->setFocus();
+    QTest::keyClick(m_view, Qt::Key_Escape);
+    QVERIFY(!relation->isChecked());
+    clickOn(c);  // an ordinary click now
+    QCOMPARE(m_model->relations.size(), 1);
+    QCOMPARE(m_scene->selectedNodes(), QList<MindNode *>({c}));
+    action(QStringLiteral("Undo"))->trigger();
+    wait();
+    QVERIFY(m_model->relations.isEmpty());
+
+    // A click on an empty place turns it off.
+    keepOn(a);
+    const QPoint empty(4, 4);
+    QVERIFY(m_scene->elementAt(m_view->mapToScene(empty)).isEmpty());
+    QTest::mouseClick(m_view->viewport(), Qt::LeftButton, {}, empty);
+    wait();
+    QVERIFY(!relation->isChecked());
+    QVERIFY(m_model->relations.isEmpty());
+
+    // A new click on the button turns it off.
+    keepOn(a);
+    QTest::mouseClick(relation, Qt::LeftButton);
+    QVERIFY(!relation->isChecked());
+    clickOn(b);
+    QVERIFY(m_model->relations.isEmpty());
+
+    // The start removed by Undo: the tool turns off.
+    m_scene->selectNode(a);
+    tools->childKnob()->click();
+    wait();
+    QCOMPARE(a->children.size(), size_t(1));
+    MindNode *added = a->children.front().get();
+    keepOn(added);
+    action(QStringLiteral("Undo"))->trigger();
+    wait();
+    QVERIFY(a->children.empty());
+    QVERIFY(!relation->isChecked());
+    clickOn(b);
+    QVERIFY(m_model->relations.isEmpty());
+}
+
+// FEAT-109 performance: 1000 targets in one step and one scene update, within 100 ms.
+void NodeOperationsTest::manyRelationsPerformance() {
+    MENTIS_SLOW_TEST();
+    MindNode *start = m_model->addChild(m_model->root(), QStringLiteral("Start"));
+    QList<MindNode *> targets;
+    for (int i = 0; i < 1000; ++i) targets.append(m_model->addChild(m_model->root(), QStringLiteral("T%1").arg(i)));
+    m_scene->autoLayout();
+    wait();
+    m_scene->selectNode(start);
+    for (MindNode *node : std::as_const(targets)) itemFor(node)->setSelected(true);
+    QElapsedTimer timer;
+    timer.start();
+    action(QStringLiteral("Relationship"))->trigger();
+    const qint64 elapsed = timer.elapsed();
+    qInfo() << "1000 relationships:" << elapsed << "ms";
+    QCOMPARE(m_model->relations.size(), 1000);
+    QCOMPARE(m_model->relations.front().from, start->id);
+    QVERIFY(elapsed <= 100);
 }
 
 // FEAT-052 summaries: one per run of siblings, a real topic beside a bracket; Tab does nothing
@@ -1673,6 +1885,24 @@ void NodeOperationsTest::summaryTopicBranch() {
     QVERIFY(copied);
     QCOMPARE(copied->parent, copy.summaries.front().topic.get());
     QCOMPARE(copied->children.size(), size_t(1));
+    // The summary topic collapses its branch (user, 2026-11-12): the control on the branch side, the
+    // subtopics hidden, kept in the file; Undo opens it again.
+    m_scene->selectNode(topic);
+    wait();
+    QVERIFY(!itemFor(topic)->collapseRect(1).isEmpty());
+    QVERIFY(itemFor(topic)->collapseRect(-1).isEmpty());
+    emit m_scene->collapseRequested(topic);
+    wait();
+    QVERIFY(topic->collapsed);
+    for (const auto &child : topic->children) QVERIFY(!itemFor(child.get())->isVisible());
+    QVERIFY(!itemFor(topic)->collapseRect(1).isEmpty());  // with the hidden count
+    MindMapModel closed;
+    QVERIFY(closed.fromJson(m_model->toJson()));
+    QVERIFY(closed.summaries.front().topic->collapsed);
+    action(QStringLiteral("Undo"))->trigger();
+    wait();
+    QVERIFY(!topic->collapsed);
+    for (const auto &child : topic->children) QVERIFY(itemFor(child.get())->isVisible());
     // Undo takes the last subtopic away, with its item; Delete on a subtopic keeps the summary.
     action(QStringLiteral("Undo"))->trigger();
     wait();

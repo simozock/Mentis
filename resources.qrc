@@ -16,6 +16,7 @@
     <file>assets/mascot/brain-cry.png</file>
     <file>assets/menu.svg</file>
     <file>assets/home.svg</file>
+    <file>assets/folder.svg</file>
     <file>assets/sibling.svg</file>
     <file>assets/child.svg</file>
     <file>assets/relation.svg</file>
@@ -55,6 +56,9 @@
     <file>assets/hugeicons/arrow-down.svg</file>
     <file>assets/hugeicons/boundary.svg</file>
     <file>assets/hugeicons/child.svg</file>
+    <file>assets/hugeicons/undo.svg</file>
+    <file>assets/hugeicons/redo.svg</file>
+    <file>assets/hugeicons/delete.svg</file>
     <file>assets/hugeicons/fit.svg</file>
     <file>assets/hugeicons/focus.svg</file>
     <file>assets/hugeicons/help.svg</file>
@@ -75,6 +79,7 @@
     <file>assets/hugeicons/search.svg</file>
     <file>assets/hugeicons/pen.svg</file>
     <file>assets/hugeicons/editor-select.svg</file>
+    <file>assets/hugeicons/select.svg</file>
     <file>assets/hugeicons/editor-crop.svg</file>
     <file>assets/hugeicons/editor-rectangle.svg</file>
     <file>assets/hugeicons/editor-ellipse.svg</file>
@@ -172,6 +177,8 @@
     <file>assets/hugeicons/window-close-light.svg</file>
     <file>assets/hugeicons/export-download.svg</file>
     <file>assets/hugeicons/export-copy.svg</file>
+    <file>assets/hugeicons/copy.svg</file>
+    <file>assets/hugeicons/paste.svg</file>
     <file>assets/hugeicons/present.svg</file>
     <file>assets/hugeicons/window-close.svg</file>
     <file>assets/hugeicons/window-maximize-light.svg</file>
@@ -187,9 +194,11 @@
     <file>assets/hugeicons/menu-plus.svg</file>
     <file>assets/hugeicons/menu-todo.svg</file>
     <file>assets/hugeicons/menu-checkbox.svg</file>
+    <file>assets/hugeicons/formula.svg</file>
     <file>assets/hugeicons/note.svg</file>
     <file>assets/hugeicons/menu-note.svg</file>
     <file>assets/hugeicons/menu-label.svg</file>
+    <file>assets/hugeicons/label.svg</file>
     <file>assets/hugeicons/text-highlight.svg</file>
     <file>assets/hugeicons/text-code.svg</file>
     <file>assets/hugeicons/attachment.svg</file>

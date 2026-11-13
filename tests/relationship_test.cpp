@@ -142,7 +142,7 @@ void RelationshipTest::commandsAreOneUndoStepEach() {
     QSignalSpy annotations(&document, &Document::annotationsChanged);
     const QString id = document.addRelation(a->id, b->id);
     QVERIFY(!id.isEmpty());
-    // Handle moved, then end reconnected, then label: three steps.
+    // Handle moved, then an end changed (document level), then label: three steps.
     Relationship changed = *document.relation(id);
     changed.toControl = QPointF(40, 40);
     QVERIFY(document.updateRelations({changed}));

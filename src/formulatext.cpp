@@ -1,4 +1,5 @@
 #include "formulatext.h"
+#include "formularendering.h"
 #include <cmath>
 #include <QCoreApplication>
 #include <QUrl>
@@ -142,70 +143,12 @@ QString normalizeMath(const QString &math) {
     return out;
 }
 
-bool isSpace(QChar c) { return c.isSpace(); }
-
 // Dispositivo raster minimo usato solo per le misure (metriche dei font a 96 dpi
 // come lo schermo, a differenza di QPicture).
 QImage &measureDevice() {
     static QImage device(1, 1, QImage::Format_ARGB32_Premultiplied);
     return device;
 }
-}
-
-QVector<FormulaText::Segment> FormulaText::split(const QString &text) {
-    QVector<Segment> segments;
-    QString plain;
-    int plainFrom = 0;
-    int i = 0;
-    auto flushPlain = [&] { if (!plain.isEmpty()) { segments.append({plain, false, plainFrom, i}); plain.clear(); } };
-    const int n = text.size();
-    while (i < n) {
-        const QChar c = text[i];
-        if (plain.isEmpty()) plainFrom = i;
-        // \$ = dollaro letterale.
-        if (c == '\\' && i + 1 < n && text[i + 1] == '$') { plain += '$'; i += 2; continue; }
-        // \( ... \)
-        if (c == '\\' && i + 1 < n && text[i + 1] == '(') {
-            const int end = text.indexOf(QStringLiteral("\\)"), i + 2);
-            if (end > i + 2) { flushPlain(); segments.append({text.mid(i + 2, end - i - 2), true, i, end + 2}); i = end + 2; continue; }
-        }
-        if (c == '$') {
-            const bool display = i + 1 < n && text[i + 1] == '$';
-            const int open = display ? 2 : 1;
-            const int start = i + open;
-            if (start < n && !isSpace(text[start])) {
-                // Cerca il $ (o $$) di chiusura valido, saltando i \$ interni.
-                int j = start;
-                int end = -1;
-                while (j < n) {
-                    if (text[j] == '\\' && j + 1 < n) { j += 2; continue; }
-                    if (text[j] == '$') {
-                        const bool closes = display ? (j + 1 < n && text[j + 1] == '$') : true;
-                        const bool validEnd = !isSpace(text[j - 1]) &&
-                                              (display || j + 1 >= n || !text[j + 1].isDigit());
-                        if (closes && validEnd && j > start) { end = j; break; }
-                    }
-                    ++j;
-                }
-                if (end > 0) {
-                    flushPlain();
-                    segments.append({text.mid(start, end - start), true, i, end + open});
-                    i = end + open;
-                    continue;
-                }
-            }
-        }
-        plain += c;
-        ++i;
-    }
-    flushPlain();
-    return segments;
-}
-
-bool FormulaText::containsMath(const QString &text) {
-    if (!text.contains('$') && !text.contains(QStringLiteral("\\("))) return false;
-    for (const auto &segment : split(text)) if (segment.math) return true;
-    return false;
 }
 
 void FormulaText::update(const QString &text, const QFont &font, const QColor &color, qreal maxWidth) {
@@ -311,14 +254,6 @@ QSizeF FormulaText::boxSize(const QString &code, const QFont &font) {
     return formula.size() + QSizeF(2 * kBoxPaddingPx, 2 * kBoxPaddingPx);
 }
 
-QColor FormulaText::textColorOn(const QColor &background, const QColor &nodeText) {
-    if (background.alpha() < 128) return nodeText;
-    // Contrasto semplice: luminanza relativa (WCAG) sopra meta' = testo scuro.
-    const auto channel = [](qreal c) { return c <= 0.03928 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4); };
-    const qreal luminance = 0.2126 * channel(background.redF()) + 0.7152 * channel(background.greenF()) + 0.0722 * channel(background.blueF());
-    return luminance > 0.35 ? QColor("#172033") : QColor(Qt::white);
-}
-
 QImage FormulaText::boxImage(const QString &code, const QFont &font, const QColor &background, const QColor &text,
                              const QSizeF &size, qreal ratio) {
     if (size.isEmpty()) return {};
@@ -401,4 +336,36 @@ void FormulaText::draw(QPainter *painter, const QRectF &rect, Qt::Alignment alig
     painter->setRenderHint(QPainter::TextAntialiasing);
     painter->drawPicture(QPointF(x, y), m_picture);
     painter->restore();
+}
+
+namespace {
+// FEAT-096: FormulaRendering's title formula, drawn by JKQTMathText.
+class TitleFormulaText final : public FormulaRendering::TitleFormula {
+public:
+    FormulaText text;
+    QSizeF size() const override { return text.size(); }
+    void draw(QPainter *painter, const QRectF &rect, Qt::Alignment alignment) const override { text.draw(painter, rect, alignment); }
+};
+}  // namespace
+
+void FormulaText::installRendering() {
+    static const bool installed = [] {
+        FormulaRendering::Hooks &hooks = FormulaRendering::hooks();
+        hooks.layoutTitle = [](const QString &title, const QFont &font, const QColor &color, qreal maxWidth)
+            -> std::unique_ptr<FormulaRendering::TitleFormula> {
+            auto formula = std::make_unique<TitleFormulaText>();
+            formula->text.update(title, font, color, maxWidth);
+            if (formula->text.isEmpty()) return nullptr;
+            return formula;
+        };
+        hooks.renderInDocument = [](QTextDocument *document, const QFont &font, const QColor &color) {
+            renderInDocument(document, font, color);
+        };
+        hooks.boxImage = &FormulaText::boxImage;
+        // FEAT-116: the shared engine (a QObject, its fonts and resources) starts here, on the GUI
+        // thread: the phone may first draw a formula while building its scene on the render thread.
+        engine();
+        return true;
+    }();
+    Q_UNUSED(installed);
 }

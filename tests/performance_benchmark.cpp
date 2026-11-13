@@ -1,7 +1,9 @@
 #include "bmapstorage.h"
 #include "mindmapmodel.h"
+#include "mindmapscene.h"
 
-#include <QCoreApplication>
+#include <QApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -10,6 +12,7 @@
 #include <QTemporaryDir>
 #include <cstdio>
 #include <functional>
+#include <memory>
 
 namespace {
 qint64 elapsedMs(const std::function<void()> &operation) {
@@ -44,11 +47,32 @@ QJsonObject runScenario(int nodeCount, const QString &directoryPath) {
     bool loaded = false;
     const qint64 loadMs = elapsedMs([&] { loaded = BmapStorage::load(path, restored, &error, false); });
 
+    // FEAT-096: node measuring and layout. First display (items created, every topic measured, map laid
+    // out), a second layout with the measures kept, and every title changed then measured again.
+    qint64 sceneMs = 0, layoutMs = 0, remeasureMs = 0;
+    {
+        std::unique_ptr<MindMapScene> scene;
+        sceneMs = elapsedMs([&] { scene = std::make_unique<MindMapScene>(&model); scene->autoLayout(); });
+        layoutMs = elapsedMs([&] { scene->autoLayout(); });
+        remeasureMs = elapsedMs([&] {
+            const std::function<void(MindNode *)> retitle = [&](MindNode *node) {
+                node->title += QStringLiteral(" x");
+                for (const auto &child : node->children) retitle(child.get());
+            };
+            retitle(model.root());
+            scene->rebuild();
+            scene->autoLayout();
+        });
+    }
+
     return {{QStringLiteral("nodes"), nodeCount},
             {QStringLiteral("build_ms"), buildMs},
             {QStringLiteral("snapshot_ms"), snapshotMs},
             {QStringLiteral("save_ms"), saveMs},
             {QStringLiteral("load_ms"), loadMs},
+            {QStringLiteral("scene_ms"), sceneMs},
+            {QStringLiteral("layout_ms"), layoutMs},
+            {QStringLiteral("remeasure_ms"), remeasureMs},
             {QStringLiteral("file_bytes"), QFileInfo(path).size()},
             {QStringLiteral("snapshot_entries"), snapshot.size()},
             {QStringLiteral("ok"), saved && loaded},
@@ -57,16 +81,18 @@ QJsonObject runScenario(int nodeCount, const QString &directoryPath) {
 }
 
 int main(int argc, char **argv) {
-    QCoreApplication app(argc, argv);
-    QTemporaryDir directory;
-    if (!directory.isValid()) return 1;
-
+    QApplication app(argc, argv);  // the scene's items need it (offscreen platform is enough)
     QList<int> sizes;
     QString outputPath;
+    QString mapsPath;  // FEAT-097: --maps <folder> keeps the maps written (benchmark-<n>.mentis)
     for (int i = 1; i < argc; ++i) {
         const QString argument = QString::fromLocal8Bit(argv[i]);
         if (argument == QStringLiteral("--output") && i + 1 < argc) {
             outputPath = QString::fromLocal8Bit(argv[++i]);
+            continue;
+        }
+        if (argument == QStringLiteral("--maps") && i + 1 < argc) {
+            mapsPath = QString::fromLocal8Bit(argv[++i]);
             continue;
         }
         bool ok = false;
@@ -74,11 +100,15 @@ int main(int argc, char **argv) {
         if (ok && size > 0) sizes.append(size);
     }
     if (sizes.isEmpty()) sizes = {1000, 10000};
+    QTemporaryDir directory;
+    if (mapsPath.isEmpty() && !directory.isValid()) return 1;
+    if (!mapsPath.isEmpty() && !QDir().mkpath(mapsPath)) return 1;
+    const QString folder = mapsPath.isEmpty() ? directory.path() : mapsPath;
 
     bool success = true;
     QByteArray report;
     for (const int size : sizes) {
-        const QJsonObject result = runScenario(size, directory.path());
+        const QJsonObject result = runScenario(size, folder);
         const QByteArray line = QJsonDocument(result).toJson(QJsonDocument::Compact);
         report += line + '\n';
         std::printf("%s\n", line.constData());

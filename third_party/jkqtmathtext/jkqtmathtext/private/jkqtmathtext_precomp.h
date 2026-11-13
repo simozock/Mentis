@@ -34,7 +34,7 @@
 #include "jkqtmathtext/jkqtmathtexttools.h"
 #include "jkqtmathtext/nodes/jkqtmathtextnode.h"
 #include "jkqtmathtext/nodes/jkqtmathtextnodetools.h"
-#include <QApplication>
+#include <QGuiApplication>
 #include <QGuiApplication>
 #include <QColor>
 #include <QDebug>

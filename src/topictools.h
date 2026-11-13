@@ -4,7 +4,8 @@
 // - A small floating bar 8 px above the topic, centred on it: Relationship, Web link, Image, Note,
 //   Checkbox, Sticker (opens the Markers and stickers panel), Format painter (FEAT-085: click = copy
 //   the topic's style and paste it on the next topic clicked, double click = keep it on; the reference also
-//   has "Develop ideas" and AI: not here).
+//   has "Develop ideas" and AI: not here). Relationship, like the painter, stays on after a double click
+//   (FEAT-109): one relationship from the topic to each element clicked.
 // - Blue "+" buttons (18 px, the selection colour): beside the topic on its branch side, 15 px from
 //   the edge = add a child; under it, 17 px from the edge = add a sibling (not on the central topic,
 //   a floating topic nor a summary topic, FEAT-052). In org and tree charts the child "+" is under the topic and the sibling
@@ -44,6 +45,10 @@ public:
     std::function<void(MindNode *)> formatPainter;
     std::function<void()> keepFormatPainter, stopFormatPainter;
     void setFormatPainterOn(bool on);  // the button's checked state, without its callbacks
+    // FEAT-109/110: relationship tool armed by a click (checked), kept on by a double click, turned
+    // off by a new click.
+    std::function<void()> keepRelation, stopRelation;
+    void setRelationOn(bool on);  // the button's checked state, without its callbacks
 
     void schedule();  // repositions on the next turn of the event loop (changes come in bursts)
 
@@ -52,6 +57,7 @@ public:
     QAbstractButton *childKnob() const;
     QAbstractButton *siblingKnob() const;
     QAbstractButton *formatPainterButton() const;
+    QAbstractButton *relationButton() const;
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -66,5 +72,6 @@ private:
     QAbstractButton *m_childKnob = nullptr;
     QAbstractButton *m_siblingKnob = nullptr;
     QToolButton *m_formatPainter = nullptr;
+    QToolButton *m_relation = nullptr;
     QTimer *m_timer = nullptr;
 };

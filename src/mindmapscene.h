@@ -4,7 +4,9 @@
 #include <QByteArray>
 #include <QJsonObject>
 #include "boundaryitem.h"
+#include "maplayout.h"
 #include "nodeitem.h"
+#include "reordertarget.h"
 #include "selectioncommands.h"
 #include "relationshipitem.h"
 #include "summary.h"
@@ -18,6 +20,7 @@ class QKeyEvent;
 #include <QSet>
 #include <QModelIndex>
 
+class Document;
 class MindMapModel;
 class NodeItem;
 class QGraphicsPathItem;
@@ -38,6 +41,10 @@ public:
     static QByteArray homePreviewJpeg(const QHash<QString, QJsonObject> &sheet);
     static QByteArray previewJpeg(const QImage &preview);  // the Home's JPEG quality
     MindMapModel *model() const { return m_model; }
+    // FEAT-096 stage 3: the document that owns the model. The title typed on a topic and the topics
+    // dragged go through it (one history step each, as from any front end); a scene without one
+    // (export, read-only uses) does not keep them.
+    void setDocument(Document *document) { m_document = document; }
     MindNode *selectedNode() const;
     QList<MindNode *> selectedNodes() const;
     void rebuild();
@@ -101,7 +108,7 @@ public:
     // FEAT-072: shape actually drawn towards the children of parent. The one chosen on it, else the
     // map's default: from the central topic curves (fans) in the logic chart and rule A7 in
     // the mind map (Auto), the rounded bracket below it; Auto for variants with another line.
-    BranchShape effectiveBranchShape(const MindNode *parent) const;
+    BranchShape effectiveBranchShape(const MindNode *parent) const { return m_layout.effectiveBranchShape(parent); }
     // FEAT-054: a scene drawn for export: the text at every scale (no low-zoom shortcut) and images and
     // formulas decoded at `scale` times their shown size instead of the performance profile's factor.
     // Set before the first drawing (images load then); 0 = the map on screen.
@@ -131,7 +138,7 @@ public:
     QString labelHighlight() const { return m_labelHighlight; }
     // FEAT-021: larghezza attuale del riquadro del testo del nodo (0 se il nodo non e' nella scena).
     qreal nodeWidth(const MindNode *node) const;
-    int sideOf(const MindNode *node) const { return m_sides.value(node, 1); }  // FEAT-012: +1 destra, -1 sinistra, 0 centrale
+    int sideOf(const MindNode *node) const { return m_layout.sideOf(node); }  // FEAT-012: +1 destra, -1 sinistra, 0 centrale
     qreal imageRoomWidth(const MindNode *node) const;  // NodeItem::imageRoomWidth
     QPixmap nodePicture(const MindNode *node) const;  // FEAT-065: NodeItem::picture
     // FEAT-021: larghezza manuale da dare al nodo per una richiesta di requestedPx: intera, fra il
@@ -148,22 +155,9 @@ public:
     MindNode *neighbour(MindNode *node, Qt::Key key) const;
     // Percorso del ramo entrante del nodo (vuoto per il centrale, i mobili e i nascosti), per le prove.
     QPainterPath edgePath(const MindNode *child) const;
-    // FEAT-015: destinazione di un nodo trascinato sul punto della scena (foto
-    // dell'utente 2026-10-21): sopra un nodo = suo figlio, in fondo (Child); oltre il suo lato
-    // esterno (fino ai suoi figli, o 200 px se non ne ha) = suo figlio fra i fratelli all'altezza
-    // del mouse (Insert); il centrale vale dai due lati. side: per un ramo principale il lato da
-    // scegliere (+1 destra, -1 sinistra) se cambia, 0 = resta com'e'. Kind::None = rilascio senza
-    // effetto (sfondo, il nodo stesso o un suo discendente, stesso posto). slot: dove comparira' il
-    // nodo (il segnaposto azzurro), from: punto del genitore da cui parte il suo ramo.
-    struct ReorderTarget {
-        enum class Kind { None, Child, Insert, Float };  // Float: sullo sfondo, argomento mobile
-        Kind kind = Kind::None;
-        MindNode *parent = nullptr;
-        int row = -1;
-        int side = 0;
-        QRectF slot;
-        QPointF from;
-    };
+    // FEAT-015: destinazione di un nodo trascinato sul punto della scena (regole in reordertarget.h,
+    // condivise con l'app mobile).
+    using ReorderTarget = ::ReorderTarget;
     ReorderTarget reorderTargetAt(const MindNode *dragged, const QPointF &scenePos) const;
 
 signals:
@@ -231,63 +225,21 @@ private:
     };
     QHash<QString, SummaryItems> m_summaryItems;
     void syncSummaryItems();
-    // The branch of a summary topic standing at its node position, laid out as a logic chart away
-    // from the bracket (sign +1 right, -1 left) into m_autoPositions. Returns the shapes' bounds with
-    // the topic's, in scene px.
-    QRectF layoutSummaryBranch(MindNode *topic, int sign);
-    // Bounds of each summary topic with its branch, relative to the topic's position (collectBoundaryRuns).
-    QHash<const MindNode *, QRectF> m_summaryBranchBounds;
     void onSummaryBranchAboutToChange(MindNode *topic);
     void onSummaryBranchChanged(MindNode *topic);
     Summaries::Side summarySide(const Summary &summary, const QRectF &covered, const QPointF &parentCentre) const;
-    // Room for the summaries over node's children in a block layout: `placed` are the children's
-    // branches and `centres` their centres, in the frame where node sits at nodeAt.
-    QRectF summaryRoom(const MindNode *node, const QList<MindNode *> &children, const QList<QRectF> &placed,
-                       const QList<QPointF> &centres, const QPointF &nodeAt, bool row = false) const;
-    // FEAT-052: room a block layout keeps around children[index] for the boundaries on runs of these
-    // children, like the mind map's: across the run on every topic, along it before the first and
-    // after the last. alongX: the children follow each other left to right (a row) or top to bottom;
-    // ascending: the list runs towards larger coordinates.
-    QMarginsF boundaryPad(const QList<MindNode *> &children, int index, bool alongX, bool ascending) const;
     QHash<QString, BoundaryItem *> m_boundaryItems;
-    // Layout room for boundaries: the cursor moves by `above` before the first topic of a
-    // run is laid out and by `below` after the last one, whatever the order of the side.
-    struct BoundaryRun { qreal above = 0; qreal below = 0; int size = 0; int visited = 0; };
-    QList<BoundaryRun> m_boundaryRuns;
-    QHash<const MindNode *, QList<int>> m_boundaryRunsOf;
-    void collectBoundaryRuns();  // at the start of autoLayout
-    // sign: +1 ramo a destra del genitore, -1 a sinistra (FEAT-012).
-    qreal layoutSubtree(MindNode *node, int depth, qreal &cursor, int sign = 1);
-    void shiftSubtree(MindNode *node, qreal dy);
     // FEAT-016: nodi nascosti dalla chiusura dei rami, controlli di chiusura e rami nascosti.
     void applyCollapse();
     void collapseBranch(MindNode *node, bool hidden);  // applyCollapse on one branch
-    // FEAT-026 fase C: organigramma e grafico ad albero (anche dentro un ramo). Dispone i figli di
-    // node in posizioni relative al genitore (rel) e restituisce l'ingombro del ramo rispetto al
-    // centro di node; inheritedSide = lato del ramo per i tipi senza direzione propria.
-    struct Placement { QPointF offset; int growSide = 0; };
-    QRectF layoutBlock(MindNode *node, int inheritedSide, QHash<MindNode *, Placement> &rel);
-    QRectF layoutTimeline(MindNode *node, const QRectF &self, const QList<MindNode *> &mains, QHash<MindNode *, Placement> &rel);
-    QRectF layoutFishbone(MindNode *node, const QRectF &self, const QList<MindNode *> &mains, QHash<MindNode *, Placement> &rel);
-    // FEAT-028: the table set by owner (the header) and its cells, by node id. rect in the node's
-    // coordinates; levelOne = the main row the cell belongs to (empty for the header).
-    QRectF layoutTable(MindNode *owner, QHash<MindNode *, Placement> &rel);
-    struct TablePlace { QRectF rect; QString owner; QString levelOne; bool holdsBranch = false; };
-    QHash<QString, TablePlace> m_tableCells;
-    QHash<QString, TablePlace> m_tableFrames;  // stage 2: the outer cell of a table in a cell
+    using TablePlace = MapLayout::TablePlace;
     bool isTableCell(const MindNode *node) const;  // in a table, not its header
     void applyTableCells();
     bool tablePlaceStale(const MindNode *node) const;  // its cell no longer matches the types
-    // FEAT-026 phase E: how far each fishbone's spine runs from its head's centre (towards the tail), from the layout.
-    QHash<const MindNode *, qreal> m_fishboneReach;
-    void placeBlock(MindNode *node, const QHash<MindNode *, Placement> &rel);
-    static bool childrenHidden(const MindNode *node);  // nodo non centrale chiuso
-    // FEAT-012: lato di ogni nodo disposto (+1 destra, -1 sinistra, 0 centrale), dal layout.
-    QHash<const MindNode *, int> m_sides;
-    // B7 (2026-10-13): posizioni calcolate dal layout automatico, senza spostamenti manuali.
+    static bool childrenHidden(const MindNode *node) { return MapLayout::childrenHidden(node); }  // nodo non centrale chiuso
+    // B7 (2026-10-13): posizioni calcolate dal layout automatico (MapLayout), poi i lati di crescita.
     void computeAutoPositions();
     void justifyLevels();  // FEAT-043
-    QHash<MindNode *, QPointF> m_autoPositions;
     // BUG-013: posizione = automatica + spostamenti a mano del nodo e di tutti gli antenati.
     void placeBranch(MindNode *node, QPointF inheritedOffset);
     static QPointF inheritedOffset(const MindNode *node);
@@ -323,6 +275,7 @@ private:
     void setStackZBelow(MindNode *node, qreal z);
     void updateSceneRect();
     MindMapModel *m_model;
+    Document *m_document = nullptr;
     QHash<MindNode *, NodeItem *> m_items;
     QString m_labelHighlight;  // FEAT-060
     qreal m_exportImageScale = 0;  // FEAT-054
@@ -343,20 +296,9 @@ private:
     QSizeF m_editingLayoutSize;
     bool m_editingLayoutQueued = false;
     bool m_editingLaidOut = false;
-    // Y dell'ultima foglia posizionata da layoutSubtree (per centrare il genitore).
-    qreal m_lastLeafY = 0;
-    // Meta' altezza dell'ultima foglia, -1 se non ce n'è ancora una, e Y di tutte le foglie in
-    // ordine: servono a distanziare foglie di altezza diversa (2026-10-13).
-    qreal m_lastLeafStride = -1;
-    QList<qreal> m_leafYs;
     // FEAT-072: branch shapes at the last layout, to relayout when one changes.
     QHash<const MindNode *, BranchShape> m_laidOutShapes;
-    // La prossima foglia apre un nuovo ramo principale: dalla precedente dista kBranchGapPx invece
-    // di kSiblingGapPx (distanze di riferimento, 2026-10-21).
-    bool m_startsBranch = true;
-    // Distanze del layout (mindmapscene.cpp, kNormalSpacing e kCompactSpacing): "Mappa compatta" del
-    // foglio le riduce (FEAT-043). Scelte all'inizio di computeAutoPositions.
-    struct Spacing { qreal rootLevel, level, branch, sibling, block; };
-    Spacing m_spacing{54, 28, 35, 6, 1};
+    // FEAT-096 stage 2: the automatic layout, run by autoLayout and applied here.
+    MapLayout m_layout;
 };
 

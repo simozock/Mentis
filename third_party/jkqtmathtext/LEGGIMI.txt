@@ -6,7 +6,10 @@ Autore:   Jan W. Krieger
 Licenza:  GNU LGPL 2.1 o successiva (LICENSE-LGPL-2.1.txt)
 Font:     Fira Math (SIL Open Font License 1.1, jkqtmathtext/resources/firaMath/LICENSE)
 
-I sorgenti non sono stati modificati. Sono stati tolti solo i file di build originali
-(sostituiti da CMakeLists.txt) e i font XITS (11 MB, non usati).
+Sono stati tolti i file di build originali (sostituiti da CMakeLists.txt) e i font XITS
+(11 MB, non usati). Unica modifica ai sorgenti (FEAT-116, 2026-11-12), per compilare senza
+Qt Widgets (anche per Android): #include <QApplication> diventa #include <QGuiApplication>
+e jkqtmathtexttools.h non include piu' <QWidget> e <QLabel>. Non si compilano
+jkqttools.cpp, jkqtpicons.cpp e jkqtmathtextlabel.cpp, che usano i widget.
 Viene compilata come libreria condivisa separata (MentisMathText), in modo da
 rispettare la LGPL anche in caso di distribuzione commerciale.

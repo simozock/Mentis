@@ -2,7 +2,8 @@
 
 #include "formulatext.h"
 #include "mindmapmodel.h"
-#include "nodeitem.h"
+#include "formularendering.h"
+#include "nodegeometry.h"
 #include "numbering.h"
 #include "ooxml.h"
 #include "stickers.h"
@@ -78,7 +79,7 @@ Picture pictureOf(const MindNode *node, const ImageSource &imageSource, bool *mi
     const QSizeF upright = rotation % 180 ? node->imageSize.transposed() : node->imageSize;
     QImage image;
     if (!node->formula.isEmpty()) {
-        image = FormulaText::boxImage(node->formula, NodeItem::titleFont(node), node->formulaBackground,
+        image = FormulaRendering::boxImage(node->formula, NodeGeometry::titleFont(node), node->formulaBackground,
                                       FormulaText::textColorOn(node->formulaBackground, node->text), upright, kPictureScale);
     } else if (!node->imagePath.isEmpty() || !node->imageAssetId.isEmpty()) {
         QString path = imageSource ? imageSource(node) : QString();
