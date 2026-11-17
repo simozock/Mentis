@@ -53,8 +53,19 @@ clearer explanations, screenshots and short GIFs are welcome.
    any change that affects performance.
 7. Open the pull request against `main`, describing what changes and how you tested it.
 
-By contributing you agree that your contribution is released under the project's license,
-[GNU AGPL-3.0](LICENSE).
+## Sign the Contributor License Agreement
+
+Before your first contribution can be merged, you sign the
+[Contributor License Agreement](CLA.md) (CLA). You keep the copyright in your work and grant the
+project the right to distribute it, so Mentis stays [GNU AGPL-3.0](LICENSE) and can also be used as
+a library and shipped through app stores. To sign, add this comment to your pull request, copied
+exactly:
+
+> I have read the Mentis Contributor License Agreement version 1.0 and I agree to it for this and
+> all my future contributions.
+
+Contributions without a signed CLA are not merged. This applies to every kind of contribution that
+goes into the repository, translations and documentation included.
 
 ## Use of AI
 

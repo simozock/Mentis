@@ -197,6 +197,11 @@ Every help is welcome: bug reports, ideas, [translations](translations/README.md
 and code. Start from **[CONTRIBUTING.md](CONTRIBUTING.md)** and please follow the
 [Code of Conduct](CODE_OF_CONDUCT.md).
 
+Before your first contribution can be merged, you sign the
+[Contributor License Agreement](CLA.md): you keep the copyright in your work and grant the project
+the right to distribute it, so Mentis stays AGPL-3.0 and can also be used as a library and
+distributed through the app stores.
+
 ## 🎯 Goals and support
 
 Mentis is free and will stay free. Before building the other programs of the study suite (mind
