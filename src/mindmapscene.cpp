@@ -106,6 +106,13 @@ MindMapScene::MindMapScene(MindMapModel *model, QObject *parent) : QGraphicsScen
     };
     m_layout.branchesCovered = [this](const QStringList &topics) { return branchesCovered(topics); };
     setBackgroundBrush(QColor("#f6f7fb"));
+    // Before a reset frees the nodes: rebuild()'s clear() otherwise deselected the old items with
+    // their nodes already gone, and the selectionChanged handlers (the side panel's ids) read freed
+    // memory. Seen on the Linux and macOS CI with several topics selected (2026-11-25).
+    connect(model, &QAbstractItemModel::modelAboutToBeReset, this, [this] {
+        setFocusItem(nullptr);
+        clearSelection();
+    });
     connect(model, &MindMapModel::modelReset, this, &MindMapScene::rebuild);
     // Si aggiungono/rimuovono solo gli item dei nodi coinvolti (prima ogni inserimento o
     // rimozione ricostruiva tutta la scena).
