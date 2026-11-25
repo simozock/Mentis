@@ -3,15 +3,21 @@
 #include "branchpath.h"
 #include "formularendering.h"
 #include "formulatext.h"
+#include "imageframe.h"
 #include "mapsnapshot.h"
+#include "maplayout.h"
+#include "mapstructure.h"
 #include "markers.h"
 #include "nodegeometry.h"
 #include "mindmapmodel.h"
 #include "nodeshape.h"
+#include "nodesketch.h"
+#include "numbering.h"
 #include "nodestyle.h"
 #include "performance.h"
 #include "stickers.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QCache>
 #include <QFileInfo>
 #include <QFontMetricsF>
@@ -49,8 +55,14 @@ constexpr qreal kMiterLimit = 2;    // times the half width, as QPen's default m
 // export), drawn at `scale` and rotated, in the same cache.
 constexpr qreal kMaxFormulaSidePx = 2048;
 
-QImage pictureOf(const MindNode *node, qreal scale) {
+// The decoded and the framed pictures (FEAT-129) share one budget.
+QCache<QString, QImage> &pictureCache() {
     static QCache<QString, QImage> cache(Performance::pixmapCacheKb());
+    return cache;
+}
+
+QImage pictureOf(const MindNode *node, qreal scale) {
+    QCache<QString, QImage> &cache = pictureCache();
     const int rotation = node->imageStyle.rotation;
     const QSizeF upright = rotation % 180 ? node->imageSize.transposed() : node->imageSize;
     const QSize target = (upright * scale).toSize().expandedTo(QSize(1, 1));
@@ -61,11 +73,12 @@ QImage pictureOf(const MindNode *node, qreal scale) {
         const QFont font = NodeGeometry::titleFont(node);
         const QString key = QStringLiteral("formula:%1:%2:%3:%4:%5x%6:%7:%8").arg(node->formula, font.key(),
             node->formulaBackground.name(QColor::HexArgb), node->text.name(QColor::HexArgb)).arg(upright.width()).arg(upright.height())
-            .arg(scale).arg(rotation);
+            .arg(scale).arg(rotation) + QLatin1Char(':') + ImageFrame::effectKey(node->imageStyle.effect);
         if (const QImage *cached = cache.object(key)) return *cached;
         QImage image = FormulaRendering::boxImage(node->formula, font, node->formulaBackground,
                                                   FormulaText::textColorOn(node->formulaBackground, node->text), upright, scale);
         if (image.isNull()) return image;
+        image = ImageFrame::withEffect(image, node->imageStyle.effect);  // FEAT-131
         if (rotation) image = image.transformed(QTransform().rotate(rotation), Qt::SmoothTransformation);
         cache.insert(key, new QImage(image), std::max<qsizetype>(1, image.sizeInBytes() / 1024));
         return image;
@@ -73,7 +86,8 @@ QImage pictureOf(const MindNode *node, qreal scale) {
     const bool outline = node->imageSticker && node->imageStyle.outline;
     const QFileInfo info(node->imagePath);
     const QString key = QStringLiteral("%1:%2x%3:%4:%5:%6").arg(info.absoluteFilePath()).arg(target.width()).arg(target.height())
-                            .arg(info.lastModified().toMSecsSinceEpoch()).arg(outline).arg(rotation);
+                            .arg(info.lastModified().toMSecsSinceEpoch()).arg(outline).arg(rotation)
+                            + QLatin1Char(':') + ImageFrame::effectKey(node->imageStyle.effect);
     if (const QImage *cached = cache.object(key)) return *cached;
     QImageReader reader(node->imagePath);
     reader.setAutoTransform(true);
@@ -81,15 +95,40 @@ QImage pictureOf(const MindNode *node, qreal scale) {
     if (source.isValid() && (source.width() > target.width() || source.height() > target.height())) reader.setScaledSize(target);
     QImage image = reader.read();
     if (image.isNull()) return image;
+    image = ImageFrame::withEffect(image, node->imageStyle.effect);  // FEAT-131, before the outline
     if (outline) image = Stickers::outlined(image);
     if (rotation) image = image.transformed(QTransform().rotate(rotation), Qt::SmoothTransformation);
     cache.insert(key, new QImage(image), std::max<qsizetype>(1, image.sizeInBytes() / 1024));
     return image;
 }
 
+// FEAT-129: as NodeItem, a transparent picture still shows its shadow and border.
+bool shown(const ImageStyle &style) { return style.opacity > 0 || style.shadow || style.border != ImageStyle::Border::None; }
+
+// FEAT-129: a picture with a shape, border or shadow, composed once at `scale` as NodeItem draws it
+// (ImageFrame), with ImageFrame::reach around the box; the builds of the sheet share it.
+QImage framedPictureOf(const QImage &picture, const QSizeF &box, const ImageStyle &style, qreal scale) {
+    QCache<QString, QImage> &cache = pictureCache();
+    const qreal reach = ImageFrame::reach(style);
+    const QString key = QStringLiteral("%1:%2x%3:%4:%5:%6:%7:%8:%9").arg(picture.cacheKey()).arg(box.width()).arg(box.height())
+                            .arg(scale).arg(int(style.shape)).arg(int(style.border)).arg(style.borderWidth)
+                            .arg(style.borderColor.name(QColor::HexArgb)).arg(QStringLiteral("%1:%2").arg(style.shadow).arg(style.opacity));
+    if (const QImage *cached = cache.object(key)) return *cached;
+    QImage image(((box + QSizeF(2 * reach, 2 * reach)) * scale).toSize().expandedTo(QSize(1, 1)), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    {
+        QPainter painter(&image);
+        painter.setRenderHints(QPainter::Antialiasing | QPainter::SmoothPixmapTransform);
+        painter.scale(scale, scale);
+        ImageFrame::paint(&painter, QRectF(QPointF(reach, reach), box), picture, style);
+    }
+    cache.insert(key, new QImage(image), std::max<qsizetype>(1, image.sizeInBytes() / 1024));
+    return image;
+}
+
 // FEAT-051 on the phone: a marker drawn by Markers::paint into an image `pixels` wide, once per
 // marker and size; the builds of the sheet share them. QImage, not QPixmap: this runs on the
-// render thread.
+// render thread (and on the GUI thread for the outliner, see topicPicture in mapscene.h).
 QImage markerImage(const QString &marker, int pixels) {
     static QCache<QString, QImage> cache(1024);  // KB: a 108 px marker is 46 KB
     const QString key = marker + QLatin1Char('@') + QString::number(pixels);
@@ -101,6 +140,42 @@ QImage markerImage(const QString &marker, int pixels) {
         Markers::paint(&painter, QRectF(0, 0, pixels, pixels), marker);
     }
     cache.insert(key, new QImage(image), std::max<qsizetype>(1, image.sizeInBytes() / 1024));
+    return image;
+}
+
+// FEAT-059 Show all notes: NodeItem::paint's note in the topic, drawn into an image at `scale`: a
+// box a little lighter or darker than the topic, the note in the topic's text colour, clipped, "…"
+// when cut.
+QImage notePreviewImage(const MapSnapshot::Topic &topic, qreal scale) {
+    const QRectF note = topic.geometry->notePreviewRect();
+    QTextDocument *document = topic.geometry->notePreview();
+    const QSize pixels(int(std::ceil(note.width() * scale)), int(std::ceil(note.height() * scale)));
+    QImage image(pixels, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    if (!document || pixels.isEmpty()) return image;
+    QPainter painter(&image);
+    painter.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
+    painter.scale(scale, scale);
+    const QRectF box(QPointF(0, 0), note.size());
+    const QColor text = topic.node->text;
+    const bool lightText = NodeStyle::readableTextOn(text) != QColor(Qt::white);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(lightText ? QColor(255, 255, 255, 46) : QColor(15, 23, 42, 13));
+    painter.drawRoundedRect(box, 6, 6);
+    const qreal padding = NodeGeometry::kNotePreviewPaddingPx;
+    const QRectF area = box.adjusted(padding, padding, -padding, -padding);
+    painter.save();
+    painter.translate(area.topLeft());
+    painter.setClipRect(QRectF(QPointF(0, 0), area.size()));
+    QAbstractTextDocumentLayout::PaintContext context;
+    context.palette.setColor(QPalette::Text, text);
+    context.clip = QRectF(QPointF(0, 0), area.size());
+    document->documentLayout()->draw(&painter, context);
+    painter.restore();
+    if (document->size().height() > area.height() + 1) {
+        painter.setPen(text);
+        painter.drawText(QRectF(box.right() - 24, box.bottom() - 18, 18, 14), Qt::AlignRight | Qt::AlignBottom, QStringLiteral("…"));
+    }
     return image;
 }
 
@@ -192,7 +267,7 @@ constexpr qreal kTitleFormulaMarginPx = 2;
 QImage titleFormulaImage(const MindNode *node, const FormulaRendering::TitleFormula &formula, qreal wrapWidth, qreal scale) {
     static QCache<QString, QImage> cache(4 * 1024);  // KB
     const QSizeF size = formula.size();
-    const QString key = QStringLiteral("%1:%2:%3:%4x%5:%6:%7").arg(node->title, NodeGeometry::titleFont(node).key(),
+    const QString key = QStringLiteral("%1:%2:%3:%4x%5:%6:%7").arg(Numbering::withNumber(node->number, node->title), NodeGeometry::titleFont(node).key(),
         node->text.name(QColor::HexArgb)).arg(size.width()).arg(size.height()).arg(wrapWidth).arg(scale);
     if (const QImage *cached = cache.object(key)) return *cached;
     const QSizeF framed = size + 2 * QSizeF(kTitleFormulaMarginPx, kTitleFormulaMarginPx);
@@ -434,6 +509,121 @@ QList<QPolygonF> dashes(const QPolygonF &polyline, const QPen &pen) {
     return out;
 }
 
+namespace {
+
+// QPen's square cap: an open line reaches half its width past each end.
+QPolygonF squareCapped(QPolygonF line, qreal half) {
+    const QList<QPointF> points = distinctPoints(line);
+    if (points.size() < 2) return line;
+    line = QPolygonF(points);
+    line.first() -= normalized(points.at(1) - points.at(0)) * half;
+    line.last() += normalized(points.last() - points.at(points.size() - 2)) * half;
+    return line;
+}
+
+void appendCapped(Vertices &out, const QPolygonF &polyline, const QPen &pen, const QColor &color) {
+    const qreal width = pen.widthF();
+    switch (pen.capStyle()) {
+    case Qt::RoundCap: appendStroke(out, polyline, width, false, true, color); break;
+    case Qt::SquareCap: appendStroke(out, squareCapped(polyline, width / 2), width, false, false, color); break;
+    default: appendStroke(out, polyline, width, false, false, color); break;
+    }
+}
+
+QColor withOpacity(QColor color, qreal opacity) {
+    if (opacity < 1) color.setAlphaF(color.alphaF() * opacity);
+    return color;
+}
+
+void appendFilled(Vertices &out, const QPainterPath &path, const QColor &color) {
+    for (const QPolygonF &polygon : fillPolygons(path)) appendFill(out, polygon, color);
+}
+
+// FEAT-028, NodeItem::paint's drawShape on a cell: the outer table's cell first (a table in a cell),
+// then the cell, filled, its border on its edges (shared with the neighbours), square corners.
+void appendCell(Vertices &out, const MapLayout::TableLook &cell, qreal opacity) {
+    const auto rectangle = [&](const QRectF &rect, const QColor &fill, const QColor &border) {
+        const QPolygonF corners{rect.topLeft(), rect.topRight(), rect.bottomRight(), rect.bottomLeft()};
+        appendFill(out, corners, withOpacity(fill, opacity));
+        appendStroke(out, corners, NodeGeometry::kTableBorderPx, true, false, withOpacity(border, opacity));
+    };
+    if (!cell.frame.isNull()) rectangle(cell.frame, cell.frameFill, cell.frameBorder);
+    rectangle(cell.rect, cell.fill, cell.border);
+}
+
+}  // namespace
+
+void appendPen(Vertices &out, const QPainterPath &path, const QPen &pen, const QColor &color) {
+    if (pen.style() == Qt::NoPen || pen.widthF() <= 0 || path.isEmpty()) return;
+    for (const QPolygonF &polyline : strokePolylines(path)) {
+        if (pen.style() != Qt::SolidLine) {
+            for (const QPolygonF &dash : dashes(polyline, pen)) appendCapped(out, dash, pen, color);
+        } else if (polyline.isClosed()) {
+            appendStroke(out, polyline, pen.widthF(), true, false, color);
+        } else {
+            appendCapped(out, polyline, pen, color);
+        }
+    }
+}
+
+void appendShape(Vertices &out, const MindNode *node, const QRectF &shape, qreal cornerRadius, const QColor &background, qreal opacity) {
+    // NodeItem::paint's drawShape: the plain outline, or the freehand and pattern parts of
+    // NodeSketch::drawing, with the same pens.
+    QPen pen(node->border, node->borderWidth, NodeStyle::borderPenStyle(node->borderStyle));
+    if (node->border.alpha() == 0) pen = Qt::NoPen;
+    const bool penShown = pen.style() != Qt::NoPen && node->borderWidth > 0;
+    const bool filled = node->fill.alpha() > 0;
+    const QColor fill = withOpacity(node->fill, opacity);
+    const QColor border = withOpacity(node->border, opacity);
+    const bool underline = NodeShapes::isUnderline(node->shape);
+    const bool open = NodeShapes::hasOpenBorder(node->shape);
+    const bool freehandBorder = penShown && NodeSketch::isFreehand(node->borderStyle);
+    const bool sketchedFill = filled && !underline
+                              && (node->fillStyle == NodeFillStyle::PienoManoLibera || NodeStyle::isPatternFill(node->fillStyle));
+    const QPainterPath filledMarks = penShown ? NodeShapes::filledMarks(node->shape, shape) : QPainterPath();
+    NodeSketch::Drawing sketch;
+    if (freehandBorder || sketchedFill)
+        sketch = NodeSketch::drawing(node->shape, node->fillStyle, node->borderStyle, node->borderWidth, shape, cornerRadius,
+                                     NodeSketch::seedFor(node->id));
+    if (sketchedFill) {
+        if (node->fillStyle == NodeFillStyle::PienoManoLibera) {
+            appendFilled(out, sketch.area, fill);
+        } else {
+            const QColor color = withOpacity(NodeSketch::opaqueOver(node->fill, background), opacity);  // FEAT-036
+            for (const QLineF &line : std::as_const(sketch.pattern.lines))
+                appendStroke(out, QPolygonF{line.p1(), line.p2()}, sketch.pattern.penWidth, false, false, color);
+        }
+    }
+    if (freehandBorder) {
+        if (!sketchedFill && !underline && filled) appendFilled(out, open ? NodeShapes::outline(node->shape, shape) : sketch.borderArea, fill);
+        // The desktop fills the stroke's outline: round caps and joins, the border's dashes.
+        appendPen(out, sketch.borderLine, QPen(QBrush(border), node->borderWidth, pen.style(), Qt::RoundCap, Qt::RoundJoin), border);
+        appendFilled(out, filledMarks, border);
+        return;
+    }
+    const QPainterPath outline = NodeShapes::outline(node->shape, shape, cornerRadius);
+    if (filled && !sketchedFill && !underline) appendFilled(out, outline, fill);
+    if (!penShown) return;
+    if (!open) appendPen(out, outline, pen, border);
+    for (const QLineF &line : NodeShapes::borderLines(node->shape, shape, node->borderWidth)) {
+        QPainterPath path(line.p1());
+        path.lineTo(line.p2());
+        appendPen(out, path, pen, border);
+    }
+    for (const QPainterPath &line : NodeShapes::innerLines(node->shape, shape, cornerRadius)) appendPen(out, line, pen, border);
+    for (const QPainterPath &mark : NodeShapes::marks(node->shape, shape)) appendPen(out, mark, pen, border);
+    appendFilled(out, filledMarks, border);
+}
+
+void appendBranch(Vertices &out, const MapSnapshot::Branch &branch, qreal opacity) {
+    // EdgeItem::paint: the line (or the tapered area), then the marks filled, or stroked solid and round.
+    if (branch.brush.style() != Qt::NoBrush) appendFilled(out, branch.path, withOpacity(branch.brush.color(), opacity));
+    appendPen(out, branch.path, branch.pen, withOpacity(branch.pen.color(), opacity));
+    const QColor mark = withOpacity(branch.markColor, opacity);
+    appendFilled(out, branch.filledMarks, mark);
+    appendPen(out, branch.strokedMarks, QPen(QBrush(mark), branch.markWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin), mark);
+}
+
 void appendRelation(Vertices &out, const MapSnapshot::Relation &relation, bool withLabel, qreal opacity) {
     Relationships::Look look = relation.look;
     if (opacity < 1) {  // FEAT-114: faded by a tag's highlight
@@ -464,15 +654,21 @@ void appendRelation(Vertices &out, const MapSnapshot::Relation &relation, bool w
     }
 }
 
-void appendBoundary(Vertices &out, const MapSnapshot::BoundaryShape &shape, bool withTab, qreal opacity) {
+void appendBoundary(Vertices &out, const MapSnapshot::BoundaryShape &shape, bool withTab, qreal opacity, const QColor &background) {
     const auto faded = [opacity](QColor color) {
         color.setAlphaF(color.alphaF() * opacity);
         return color;
     };
-    const QPainterPath body = Boundaries::outline(shape.boundary.shape, shape.stroke);
-    for (const QPolygonF &polygon : fillPolygons(body)) appendFill(out, polygon, faded(shape.look.fill));
+    for (const QPolygonF &polygon : fillPolygons(shape.fill.area)) appendFill(out, polygon, faded(shape.look.fill));
+    // FEAT-134: a pattern's strokes as the topics' (appendShape).
+    const QColor patternColor = faded(NodeSketch::opaqueOver(shape.look.fill, background));
+    for (const QLineF &line : std::as_const(shape.fill.pattern.lines))
+        appendStroke(out, QPolygonF{line.p1(), line.p2()}, shape.fill.pattern.penWidth, false, false, patternColor);
     const QColor line = faded(shape.look.pen.color());
-    for (const QPolygonF &polyline : strokePolylines(body)) {
+    const QList<QPolygonF> border = shape.look.pen.style() == Qt::NoPen
+                                        ? QList<QPolygonF>()
+                                        : strokePolylines(Boundaries::border(shape.boundary.shape, shape.stroke));
+    for (const QPolygonF &polyline : border) {
         if (shape.look.pen.style() == Qt::SolidLine) {
             appendStroke(out, polyline, shape.look.pen.widthF(), polyline.isClosed(), false, line);
             continue;
@@ -561,7 +757,7 @@ Nodes build(const MapSnapshot &snapshot, QQuickWindow *window, const MindNode *w
     Vertices boundaries;
     if (!onlyTopic)
         for (const MapSnapshot::BoundaryShape &shape : snapshot.boundaries())
-            appendBoundary(boundaries, shape, shape.boundary.id != withoutLabel, highlighting ? kFadedOpacity : 1);
+            appendBoundary(boundaries, shape, shape.boundary.id != withoutLabel, highlighting ? kFadedOpacity : 1, snapshot.background());
     Vertices lines;
     // FEAT-115 step 2: the summaries' brackets above the boundaries and under the topics (z -2),
     // flat ends and mitred corners as the desktop's pen.
@@ -569,30 +765,23 @@ Nodes build(const MapSnapshot &snapshot, QQuickWindow *window, const MindNode *w
         for (const MapSnapshot::SummaryShape &summary : snapshot.summaries())
             for (const QPolygonF &polyline : strokePolylines(summary.bracket))
                 appendStroke(lines, polyline, Summaries::kLineWidth, polyline.isClosed(), false, fade(summary.color, highlighting));
+    // FEAT-028: a cell holding its topic's branch goes under the lines (NodeItem::kHoldingCellDepth).
+    for (const MapSnapshot::Topic &topic : snapshot.topics())
+        if (!skipped(topic) && topic.cell && topic.cell->holdsBranch) appendCell(lines, *topic.cell, faded(topic) ? kFadedOpacity : 1);
     if (!onlyTopic)
-        for (const MapSnapshot::Branch &branch : snapshot.branches())
-            for (const QPolygonF &polyline : strokePolylines(branch.path))
-                appendStroke(lines, polyline, branch.width, polyline.isClosed(), true, fade(branch.color, highlighting));
+        for (const MapSnapshot::Branch &branch : snapshot.branches()) appendBranch(lines, branch, highlighting ? kFadedOpacity : 1);
 
-    // MapSnapshot's former QPainter drawing (NodeItem::paint with a plain fill): the outline filled
-    // and stroked, or the lines of an open shape.
+    // NodeItem::paint's shape (FEAT-119 stage 0: patterns, freehand and dashed borders, inner lines, marks).
     Vertices shapes;
     for (const MapSnapshot::Topic &topic : snapshot.topics()) {
         if (skipped(topic)) continue;
-        const MindNode *node = topic.node;
+        if (topic.cell) {  // FEAT-028: the cell instead of the shape
+            if (!topic.cell->holdsBranch) appendCell(shapes, *topic.cell, faded(topic) ? kFadedOpacity : 1);
+            continue;
+        }
         const QRectF shape = topic.geometry->shapeRect().translated(topic.position);
         if (shape.isEmpty()) continue;
-        const bool dim = faded(topic);
-        const QPainterPath outline = NodeShapes::outline(node->shape, shape, topic.geometry->cornerRadius());
-        if (node->fill.alpha() > 0 && !NodeShapes::isUnderline(node->shape))
-            for (const QPolygonF &polygon : fillPolygons(outline)) appendFill(shapes, polygon, fade(node->fill, dim));
-        if (node->border.alpha() == 0 || node->borderWidth <= 0) continue;
-        const QColor border = fade(node->border, dim);
-        if (!NodeShapes::hasOpenBorder(node->shape))
-            for (const QPolygonF &polyline : strokePolylines(outline))
-                appendStroke(shapes, polyline, node->borderWidth, polyline.isClosed(), false, border);
-        for (const QLineF &line : NodeShapes::borderLines(node->shape, shape, node->borderWidth))
-            appendStroke(shapes, QPolygonF{line.p1(), line.p2()}, node->borderWidth, false, false, border);
+        appendShape(shapes, topic.node, shape, topic.geometry->cornerRadius(), snapshot.background(), faded(topic) ? kFadedOpacity : 1);
     }
     // FEAT-114: the tag pills under the shapes (NodeItem::paint): height 20, radius 10, 1 px border.
     const PillLook pills = pillLook(snapshot.background());
@@ -617,27 +806,39 @@ Nodes build(const MapSnapshot &snapshot, QQuickWindow *window, const MindNode *w
 
     // The pictures (images and stickers) in the topic's image place, as NodeItem::paint. Sharp at
     // 100% on the phone's screen: at least its pixel ratio, as the desktop's imageScaleFactor.
-    // Not drawn yet: the picture's border and shadow (FEAT-097 stage B5). FEAT-116: a formula is
-    // drawn, as NodeItem, from its vector drawing at twice that scale (sharp when zoomed in).
+    // FEAT-116: a formula is drawn, as NodeItem, from its vector drawing at twice that scale (sharp
+    // when zoomed in). FEAT-129: a shape, border or shadow is composed into the texture with the
+    // opacity (framedPictureOf), the texture then covering ImageFrame::reach around the box.
     const qreal pictureScale = std::max<qreal>(Performance::imageScaleFactor(), window->effectiveDevicePixelRatio());
     for (const MapSnapshot::Topic &topic : snapshot.topics()) {
         if (skipped(topic)) continue;
         const MindNode *node = topic.node;
-        if ((node->imagePath.isEmpty() && node->formula.isEmpty()) || node->imageSize.isEmpty() || node->imageStyle.opacity <= 0) continue;
-        const QImage image = pictureOf(node, node->formula.isEmpty() ? pictureScale : 2 * pictureScale);
+        const ImageStyle &style = node->imageStyle;
+        if ((node->imagePath.isEmpty() && node->formula.isEmpty()) || node->imageSize.isEmpty() || !shown(style)) continue;
+        const qreal scale = node->formula.isEmpty() ? pictureScale : 2 * pictureScale;
+        QImage image = pictureOf(node, scale);
         if (image.isNull()) continue;
+        QRectF rect = topic.geometry->imageRect().translated(topic.position);
+        const bool framed = !ImageFrame::isPlain(style);
+        if (framed) {
+            // A formula's picture may be decoded below `scale` (kMaxFormulaSidePx): composed at its own.
+            const qreal used = node->formula.isEmpty() ? scale : image.width() / std::max<qreal>(1, rect.width());
+            image = framedPictureOf(image, rect.size(), style, used);
+            const qreal reach = ImageFrame::reach(style);
+            rect.adjust(-reach, -reach, reach, reach);
+        }
         QSGImageNode *picture = window->createImageNode();
         picture->setTexture(window->createTextureFromImage(image, QQuickWindow::TextureHasMipmaps));
         picture->setOwnsTexture(true);
         picture->setFiltering(QSGTexture::Linear);
         picture->setMipmapFiltering(QSGTexture::Linear);  // smooth below 100% too
-        picture->setRect(topic.geometry->imageRect().translated(topic.position));
-        if (node->imageStyle.opacity >= ImageStyle::kMaxOpacity) {
+        picture->setRect(rect);
+        if (framed || style.opacity >= ImageStyle::kMaxOpacity) {
             imageParent(topic)->appendChildNode(picture);
             continue;
         }
         auto *opacity = new QSGOpacityNode;
-        opacity->setOpacity(node->imageStyle.opacity / qreal(ImageStyle::kMaxOpacity));
+        opacity->setOpacity(style.opacity / qreal(ImageStyle::kMaxOpacity));
         opacity->appendChildNode(picture);
         imageParent(topic)->appendChildNode(opacity);
     }
@@ -677,6 +878,8 @@ Nodes build(const MapSnapshot &snapshot, QQuickWindow *window, const MindNode *w
     for (const MapSnapshot::Topic &topic : snapshot.topics()) {
         if (skipped(topic)) continue;
         buttonsOf = &topic;
+        if (const QRectF place = topic.geometry->notePreviewRect(); !place.isEmpty() && topic.geometry->notePreview())
+            appendImage(notePreviewImage(topic, window->effectiveDevicePixelRatio() * kMarkerSharpZoom), place.translated(topic.position));
         if (const QRectF place = topic.geometry->noteRect(); !place.isEmpty())
             appendImage(buttonImage(QStringLiteral(":/assets/hugeicons/note.svg"), buttonPixels), place.translated(topic.position));
         if (const QRectF place = topic.geometry->linkIconRect(true); !place.isEmpty())  // FEAT-114, grey when broken
@@ -706,7 +909,7 @@ Nodes build(const MapSnapshot &snapshot, QQuickWindow *window, const MindNode *w
 
     // The titles, placed as NodeItem::paint places them: the formatted document centred in the text
     // area inside the padding, or the plain layout's lines centred and aligned as the topic says.
-    nodes.text = new QSGOpacityNode;
+    nodes.text = new QSGNode;
     nodes.content->appendChildNode(nodes.text);
     QSGOpacityNode *fadedTexts = nullptr;
     const auto appendText = [&](QSGNode *text, bool dim) {
@@ -794,6 +997,275 @@ Nodes build(const MapSnapshot &snapshot, QQuickWindow *window, const MindNode *w
                 if (QSGTextNode *label = labelNode(window, relation.look.font, relation.relationship.label, relation.look.textColor, relation.labelRect))
                     appendText(label, highlighting);
     return nodes;
+}
+
+void paint(QPainter *painter, const MapSnapshot &snapshot, qreal imageScale) {
+    QPainter &p = *painter;
+    p.save();
+    p.setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing | QPainter::SmoothPixmapTransform);
+    const qreal scale = std::max<qreal>(1, imageScale);
+    const auto image = [&](const QImage &picture, const QRectF &rect) {
+        if (!picture.isNull()) p.drawImage(rect, picture);
+    };
+    // BoundaryItem::paint: the body filled and stroked, the tab in the border's colour.
+    for (const MapSnapshot::BoundaryShape &shape : snapshot.boundaries()) {
+        p.fillPath(shape.fill.area, shape.look.fill);
+        if (!shape.fill.pattern.lines.isEmpty()) {
+            p.setPen(QPen(NodeSketch::opaqueOver(shape.look.fill, snapshot.background()), shape.fill.pattern.penWidth, Qt::SolidLine, Qt::FlatCap));
+            p.drawLines(shape.fill.pattern.lines);
+        }
+        if (shape.look.pen.style() != Qt::NoPen) p.strokePath(Boundaries::border(shape.boundary.shape, shape.stroke), shape.look.pen);
+        if (!shape.titleRect.isEmpty()) p.fillPath(Boundaries::titlePath(shape.titleRect), shape.look.pen.color());
+    }
+    // The summaries' brackets (MindMapScene's pen).
+    for (const MapSnapshot::SummaryShape &summary : snapshot.summaries())
+        p.strokePath(summary.bracket, QPen(summary.color, Summaries::kLineWidth, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
+    // FEAT-028: NodeItem::paint's cells, the outer table's cell first; square corners.
+    const auto cell = [&](const MapLayout::TableLook &look) {
+        const auto rectangle = [&](const QRectF &rect, const QColor &fill, const QColor &border) {
+            p.setPen(QPen(border, NodeGeometry::kTableBorderPx, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+            p.setBrush(fill);
+            p.drawRect(rect);
+        };
+        if (!look.frame.isNull()) rectangle(look.frame, look.frameFill, look.frameBorder);
+        rectangle(look.rect, look.fill, look.border);
+    };
+    for (const MapSnapshot::Topic &topic : snapshot.topics())
+        if (topic.cell && topic.cell->holdsBranch) cell(*topic.cell);
+    // EdgeItem::paint: the line (or the tapered area), then the marks.
+    for (const MapSnapshot::Branch &branch : snapshot.branches()) {
+        if (branch.brush.style() != Qt::NoBrush) p.fillPath(branch.path, branch.brush.color());
+        if (branch.pen.style() != Qt::NoPen && branch.pen.widthF() > 0) p.strokePath(branch.path, branch.pen);
+        p.fillPath(branch.filledMarks, branch.markColor);
+        if (!branch.strokedMarks.isEmpty())
+            p.strokePath(branch.strokedMarks, QPen(branch.markColor, branch.markWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    }
+    // NodeItem::paint's drawShape.
+    for (const MapSnapshot::Topic &topic : snapshot.topics()) {
+        if (topic.cell) {
+            if (!topic.cell->holdsBranch) cell(*topic.cell);
+            continue;
+        }
+        const QRectF shape = topic.geometry->shapeRect().translated(topic.position);
+        if (shape.isEmpty()) continue;
+        const MindNode *node = topic.node;
+        const qreal radius = topic.geometry->cornerRadius();
+        QPen pen(node->border, node->borderWidth, NodeStyle::borderPenStyle(node->borderStyle));
+        if (node->border.alpha() == 0 || node->borderWidth <= 0) pen = Qt::NoPen;
+        const QBrush brush = node->fill.alpha() == 0 ? QBrush(Qt::NoBrush) : QBrush(node->fill);
+        const bool underline = NodeShapes::isUnderline(node->shape);
+        const bool open = NodeShapes::hasOpenBorder(node->shape);
+        const bool freehandBorder = pen.style() != Qt::NoPen && NodeSketch::isFreehand(node->borderStyle);
+        const bool sketchedFill = brush.style() != Qt::NoBrush && !underline
+                                  && (node->fillStyle == NodeFillStyle::PienoManoLibera || NodeStyle::isPatternFill(node->fillStyle));
+        const QPainterPath filledMarks = pen.style() == Qt::NoPen ? QPainterPath() : NodeShapes::filledMarks(node->shape, shape);
+        NodeSketch::Drawing sketch;
+        if (freehandBorder || sketchedFill)
+            sketch = NodeSketch::drawing(node->shape, node->fillStyle, node->borderStyle, node->borderWidth, shape, radius, NodeSketch::seedFor(node->id));
+        if (sketchedFill) {
+            if (node->fillStyle == NodeFillStyle::PienoManoLibera) {
+                p.fillPath(sketch.area, brush);
+            } else {
+                p.setPen(QPen(NodeSketch::opaqueOver(node->fill, snapshot.background()), sketch.pattern.penWidth, Qt::SolidLine, Qt::FlatCap));
+                p.drawLines(sketch.pattern.lines);
+            }
+        }
+        if (freehandBorder) {
+            if (!sketchedFill && !underline && brush.style() != Qt::NoBrush)
+                p.fillPath(open ? NodeShapes::outline(node->shape, shape) : sketch.borderArea, brush);
+            p.strokePath(sketch.borderLine, QPen(node->border, node->borderWidth, pen.style(), Qt::RoundCap, Qt::RoundJoin));
+            p.fillPath(filledMarks, node->border);
+            continue;
+        }
+        p.setPen(open ? QPen(Qt::NoPen) : pen);
+        p.setBrush(sketchedFill ? QBrush(Qt::NoBrush) : brush);
+        p.drawPath(NodeShapes::outline(node->shape, shape, radius));
+        if (pen.style() == Qt::NoPen) continue;
+        p.setPen(pen);
+        for (const QLineF &line : NodeShapes::borderLines(node->shape, shape, node->borderWidth)) p.drawLine(line);
+        p.setBrush(Qt::NoBrush);
+        for (const QPainterPath &line : NodeShapes::innerLines(node->shape, shape, radius)) p.drawPath(line);
+        for (const QPainterPath &mark : NodeShapes::marks(node->shape, shape)) p.drawPath(mark);
+        p.fillPath(filledMarks, node->border);
+    }
+    // FEAT-114: the tag pills.
+    const PillLook pills = pillLook(snapshot.background());
+    for (const MapSnapshot::Topic &topic : snapshot.topics())
+        for (const QRectF &place : topic.geometry->labelRects()) {
+            p.setPen(QPen(pills.border, 1));
+            p.setBrush(pills.fill);
+            const qreal radius = NodeGeometry::kLabelHeightPx / 2;
+            p.drawRoundedRect(place.translated(topic.position).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
+        }
+    // The pictures, markers and buttons in their places, as build().
+    for (const MapSnapshot::Topic &topic : snapshot.topics()) {
+        const MindNode *node = topic.node;
+        if ((node->imagePath.isEmpty() && node->formula.isEmpty()) || node->imageSize.isEmpty() || !shown(node->imageStyle)) continue;
+        const QImage picture = pictureOf(node, node->formula.isEmpty() ? scale : 2 * scale);
+        if (!picture.isNull()) ImageFrame::paint(&p, topic.geometry->imageRect().translated(topic.position), picture, node->imageStyle);
+    }
+    const int buttonPixels = int(std::ceil(NodeGeometry::kLinkButtonPx * scale * kMarkerSharpZoom));
+    for (const MapSnapshot::Topic &topic : snapshot.topics()) {
+        const QList<QRectF> places = topic.geometry->markerRects();
+        const qreal inset = (NodeGeometry::kLinkButtonPx - kMarkerDrawPx) / 2;
+        for (qsizetype i = 0; i < places.size() && i < topic.node->markers.size(); ++i)
+            Markers::paint(&p, places.at(i).translated(topic.position).adjusted(inset, inset, -inset, -inset), topic.node->markers.at(i));
+        if (const QRectF place = topic.geometry->notePreviewRect(); !place.isEmpty() && topic.geometry->notePreview())
+            image(notePreviewImage(topic, scale * kMarkerSharpZoom), place.translated(topic.position));
+        if (const QRectF place = topic.geometry->noteRect(); !place.isEmpty())
+            image(buttonImage(QStringLiteral(":/assets/hugeicons/note.svg"), buttonPixels), place.translated(topic.position));
+        if (const QRectF place = topic.geometry->linkIconRect(true); !place.isEmpty())
+            image(buttonImage(QStringLiteral(":/assets/hugeicons/link.svg"), buttonPixels,
+                              snapshot.linkBroken(topic.node) ? QColor(0x6b, 0x72, 0x80) : QColor(0x27, 0x30, 0x3b)),
+                  place.translated(topic.position));
+        if (const QRectF place = topic.geometry->linkIconRect(false); !place.isEmpty())
+            image(buttonImage(QStringLiteral(":/assets/hugeicons/link-web.svg"), buttonPixels), place.translated(topic.position));
+        if (const QRectF place = topic.geometry->taskRect(); !place.isEmpty())
+            image(checkboxImage(topic.node, buttonPixels), place.translated(topic.position));
+        if (const QRectF place = topic.geometry->filesRect(); !place.isEmpty())
+            image(filesImage(int(topic.node->files.size()), buttonPixels),
+                  place.translated(topic.position).adjusted(0, 0, kFilesBadgeOverflowPx, kFilesBadgeOverflowPx));
+    }
+    // RelationshipItem::paint: the line, the end marks solid, the label on its backdrop.
+    for (const MapSnapshot::Relation &relation : snapshot.relations()) {
+        const Relationships::Look &look = relation.look;
+        if (look.linePattern != Qt::NoPen) {
+            p.strokePath(relation.geometry.path,
+                         QPen(look.lineColor, look.lineWidth, static_cast<Qt::PenStyle>(look.linePattern), Qt::FlatCap, Qt::RoundJoin));
+            const auto mark = [&](BranchEnd kind, const QPointF &tip, const QPointF &outward) {
+                if (kind == BranchEnd::None) return;
+                const bool stroke = BranchPath::endIsStroke(kind);
+                p.setPen(stroke ? QPen(look.lineColor, look.lineWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin) : QPen(Qt::NoPen));
+                p.setBrush(stroke ? QBrush() : QBrush(look.lineColor));
+                p.drawPath(BranchPath::endMark(kind, tip, outward, look.lineWidth));
+            };
+            mark(look.startMark, relation.geometry.start, relation.geometry.startDirection);
+            mark(look.endMark, relation.geometry.end, relation.geometry.endDirection);
+        }
+        if (!relation.labelRect.isEmpty()) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(look.backdrop);
+            p.drawRoundedRect(relation.labelRect, Relationships::kLabelRadiusPx, Relationships::kLabelRadiusPx);
+        }
+    }
+    // NodeItem::paintCollapseControls on a closed branch (FEAT-016): the count of its hidden topics
+    // in a pill on the children's side, tied to the topic by a short line, on the sheet's backdrop;
+    // its place as MapCanvas::controls works it out (org charts and tree trunks above or below).
+    if (const MapLayout *layout = snapshot.layout()) {
+        QFont countFont = p.font();
+        countFont.setPixelSize(12);
+        for (const MapSnapshot::Topic &topic : snapshot.topics()) {
+            const MindNode *node = topic.node;
+            const auto firstChild = std::find_if(node->children.cbegin(), node->children.cend(), [](const auto &child) { return !child->floating; });
+            if (!node->collapsed || !node->parent || firstChild == node->children.cend()) continue;
+            const std::function<int(const MindNode *)> descendants = [&descendants](const MindNode *n) {
+                int count = 0;
+                for (const auto &child : n->children) if (!child->floating) count += 1 + descendants(child.get());
+                return count;
+            };
+            const QString count = QString::number(descendants(node));
+            const MapStructure::Type type = MapStructure::typeOf(node);
+            const bool vertical = type == MapStructure::Type::OrgChart
+                               || (type == MapStructure::Type::TreeChart && MapStructure::typeFromKey(node->structure) == MapStructure::Type::TreeChart)
+                               || MapLayoutRules::setsTimeline(node->parent);
+            const MapSnapshot::Topic *firstTopic = snapshot.topicOf(firstChild->get());
+            const QPointF firstPosition = firstTopic ? firstTopic->position : (*firstChild)->position;
+            const int side = vertical ? (firstPosition.y() >= topic.position.y() ? 1 : -1) : ((node->floating || layout->sideOf(node) > 0) ? 1 : -1);
+            const QRectF shape = topic.cell && !topic.cell->holdsBranch ? topic.cell->rect : topic.geometry->shapeRect().translated(topic.position);
+            const qreal width = std::max<qreal>(18, QFontMetricsF(countFont).horizontalAdvance(count) + 8);
+            QRectF rect;
+            QLineF tie;
+            if (vertical) {
+                const qreal y = side > 0 ? shape.bottom() + 4 : shape.top() - 4 - 18;
+                rect = QRectF(shape.center().x() - width / 2, y, width, 18);
+                tie = QLineF(QPointF(rect.center().x(), side > 0 ? shape.bottom() : shape.top()), QPointF(rect.center().x(), side > 0 ? rect.top() : rect.bottom()));
+            } else {
+                const qreal x = side > 0 ? shape.right() + 4 : shape.left() - 4 - width;
+                rect = QRectF(x, shape.center().y() - 9, width, 18);
+                tie = QLineF(QPointF(side > 0 ? shape.right() : shape.left(), rect.center().y()), QPointF(side > 0 ? rect.left() : rect.right(), rect.center().y()));
+            }
+            p.setPen(QPen(node->lineColor, 1.5));
+            p.setBrush(snapshot.background());
+            p.drawLine(tie);
+            p.drawRoundedRect(rect.adjusted(0.75, 0.75, -0.75, -0.75), rect.height() / 2 - 0.75, rect.height() / 2 - 0.75);
+            p.setFont(countFont);
+            p.drawText(rect, Qt::AlignCenter, count);
+        }
+    }
+    // The titles, placed as build() places them.
+    for (const MapSnapshot::Topic &topic : snapshot.topics()) {
+        const MindNode *node = topic.node;
+        const NodeGeometry &geometry = *topic.geometry;
+        const QRectF textBox = geometry.textArea().translated(topic.position);
+        if (textBox.isEmpty()) continue;
+        p.setPen(node->text);
+        p.setFont(NodeGeometry::titleFont(node));
+        if (const FormulaRendering::TitleFormula *formula = geometry.formula()) {
+            const QSizeF size = formula->size();
+            const qreal inset = std::min(geometry.padX(), (textBox.width() - size.width()) / 2);
+            Qt::Alignment horizontal = NodeGeometry::textAlignment(node) & Qt::AlignHorizontal_Mask;
+            if (horizontal == Qt::AlignJustify) horizontal = Qt::AlignLeft;
+            formula->draw(&p, textBox.adjusted(inset, 6, horizontal == Qt::AlignLeft ? -11 : -inset, -6), horizontal | Qt::AlignVCenter);
+        } else if (QTextDocument *rich = geometry.richDocument()) {
+            const QRectF target = textBox.adjusted(geometry.padX(), geometry.padY(), -geometry.padX(), -geometry.padY());
+            p.save();
+            p.translate(target.left(), target.center().y() - rich->size().height() / 2);
+            QAbstractTextDocumentLayout::PaintContext context;
+            context.palette.setColor(QPalette::Text, node->text);
+            context.clip = QRectF(QPointF(), rich->size());
+            rich->documentLayout()->draw(&p, context);
+            p.restore();
+        } else if (const QTextLayout *layout = geometry.plainLayout(); layout && layout->lineCount() > 0) {
+            qreal height = 0, width = 0;
+            for (int i = 0; i < layout->lineCount(); ++i) {
+                const QTextLine line = layout->lineAt(i);
+                height = line.y() + line.ascent() + line.descent();
+                width = std::max(width, line.naturalTextWidth());
+            }
+            const qreal left = textBox.center().x() - width / 2;
+            const qreal top = textBox.center().y() - height / 2;
+            const qreal factor = node->textAlign == TextAlign::Centro ? 0.5 : node->textAlign == TextAlign::Destra ? 1.0 : 0.0;
+            for (int i = 0; i < layout->lineCount(); ++i) {
+                const QTextLine line = layout->lineAt(i);
+                line.draw(&p, QPointF(left + (width - line.naturalTextWidth()) * factor, top));
+            }
+        }
+    }
+    // The tags' texts (drawLabelText: elided, centred on the capitals' height), the boundaries'
+    // titles and the relationships' labels (drawText centred).
+    const QFont labelFont = NodeGeometry::labelFont();
+    const QFontMetricsF labelMetrics(labelFont);
+    p.setFont(labelFont);
+    p.setPen(pills.text);
+    for (const MapSnapshot::Topic &topic : snapshot.topics()) {
+        const QList<QRectF> places = topic.geometry->labelRects();
+        for (qsizetype i = 0; i < places.size() && i < topic.node->labels.size(); ++i) {
+            const QRectF pill = places.at(i).translated(topic.position);
+            const QString text = labelMetrics.elidedText(topic.node->labels.at(i), Qt::ElideRight, pill.width() - 2 * NodeGeometry::kLabelPaddingPx);
+            p.drawText(QPointF(pill.center().x() - labelMetrics.horizontalAdvance(text) / 2, pill.center().y() + labelMetrics.capHeight() / 2), text);
+        }
+    }
+    for (const MapSnapshot::BoundaryShape &shape : snapshot.boundaries())
+        if (!shape.titleRect.isEmpty()) {
+            p.setFont(shape.look.font);
+            p.setPen(shape.look.titleText);
+            p.drawText(shape.titleRect, Qt::AlignCenter, shape.boundary.title);
+        }
+    for (const MapSnapshot::Relation &relation : snapshot.relations())
+        if (!relation.labelRect.isEmpty()) {
+            p.setFont(relation.look.font);
+            p.setPen(relation.look.textColor);
+            p.drawText(relation.labelRect, Qt::AlignCenter, relation.relationship.label);
+        }
+    p.restore();
+}
+
+QImage topicPicture(const MindNode *node, qreal scale) {
+    return pictureOf(node, scale);
+}
+
+QImage markerPicture(const QString &marker, int pixels) {
+    return markerImage(marker, pixels);
 }
 
 }  // namespace MapScene

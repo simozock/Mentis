@@ -38,8 +38,14 @@ struct GanttTask {
     QString shape;
     QString fill;
     QString border;
+    // FEAT-080: own border colour (user, 2026-11-22), opaque; invalid = the sheet's for its kind.
+    QColor borderColor;
     bool milestone = false;  // a point on its start day: no length, no weight in the progress
     int length() const { return milestone ? 0 : duration; }  // working days it takes in the schedule
+    // The name as the Gantt shows it: without its $...$ formulas (user, 2026-11-16: the chart draws
+    // no formula, and the code was read as text), spaces simplified. The topic's title keeps them.
+    static QString shown(const QString &name);
+    QString shownName() const { return shown(name); }
     bool operator==(const GanttTask &) const = default;
 };
 
@@ -67,6 +73,9 @@ struct GanttCalendar {
     int minutesPerDay = kDefaultMinutesPerDay;
     bool operator==(const GanttCalendar &) const = default;
     bool isWorkingDay(const QDate &date) const;
+    // FEAT-079: the Resources modal's working week: Saturday and Sunday on or off (the other days
+    // kept), the day's length clamped to a quarter hour .. 24 h.
+    GanttCalendar withWorkingWeek(bool saturday, bool sunday, int minutes) const;
 };
 
 struct GanttScheduledTask {
@@ -156,6 +165,8 @@ public:
     BranchEnd linkEnd() const { return m_linkEnd; }
     LinkWidth linkWidth() const { return m_linkWidth; }
     LinkEndSize linkEndSize() const { return m_linkEndSize; }
+    // FEAT-080: the colour of every dependency arrow (user, 2026-11-22); invalid = the view's grey.
+    QColor linkColor() const { return m_linkColor; }
     MilestoneShape milestoneShape() const { return m_milestoneShape; }
     BorderStyle borderStyle(BarKind kind) const { return m_borderStyles[int(kind)]; }
     // FEAT-080: the fill of each kind of bar, the map topics' fill styles (solid, hand-drawn, strokes...).
@@ -163,6 +174,9 @@ public:
     // FEAT-080: the sheet's colour of a kind of bar (invalid = the view's default: peach or
     // lilac, the milestones' slate). A branch colour chosen by hand on a topic still colours that bar alone.
     QColor defaultColor(BarKind kind) const { return m_defaultColors[int(kind)]; }
+    // FEAT-080: the sheet's border colour of a kind of bar (user, 2026-11-22); invalid = the bar's
+    // colour made vivid (GanttCanvas::outlineColor).
+    QColor defaultBorderColor(BarKind kind) const { return m_defaultBorderColors[int(kind)]; }
     BarKind barKind(const QString &id) const;  // Task for an unknown id
     const GanttTask *task(const QString &id) const;
     bool hasChildren(const QString &id) const;
@@ -205,6 +219,8 @@ public:
     MilestoneShape milestoneShape(const GanttTask &task) const;
     NodeFillStyle fillStyle(const GanttTask &task, BarKind kind) const;
     BorderStyle borderStyle(const GanttTask &task, BarKind kind) const;
+    QColor borderColor(const GanttTask &task, BarKind kind) const;  // own, else the sheet's; invalid = automatic
+    bool setBorderColor(const QString &id, const QColor &color);  // opaque; invalid = the sheet's
     bool setOwnStyle(const QString &id, OwnStyle part, const QString &key);  // empty = the sheet's; unknown keys refused
     static bool validStyleKey(OwnStyle part, const QString &key);
     static QString styleKey(BarShape shape);
@@ -219,10 +235,12 @@ public:
     bool setLinkEnd(BranchEnd end);
     bool setLinkWidth(LinkWidth width);
     bool setLinkEndSize(LinkEndSize size);
+    bool setLinkColor(const QColor &color);  // opaque; invalid = back to the view's grey
     bool setMilestoneShape(MilestoneShape shape);
     bool setBorderStyle(BarKind kind, BorderStyle style);
     bool setFillStyle(BarKind kind, NodeFillStyle style);
     bool setDefaultColor(BarKind kind, const QColor &color);  // opaque; invalid = back to the view's default
+    bool setDefaultBorderColor(BarKind kind, const QColor &color);  // opaque; invalid = automatic
 
     // FEAT-082: the sheet's baselines, oldest first. addBaseline takes the current schedule under
     // the name (spaces simplified, cut to GanttBaseline::kMaxName) and returns its id; empty for an
@@ -261,8 +279,10 @@ private:
     BranchEnd m_linkEnd = BranchEnd::FilledArrow;
     LinkWidth m_linkWidth = LinkWidth::Thin;
     LinkEndSize m_linkEndSize = LinkEndSize::Small;
+    QColor m_linkColor;
     MilestoneShape m_milestoneShape = MilestoneShape::Diamond;
     std::array<QColor, kBarKinds> m_defaultColors;  // by BarKind
+    std::array<QColor, kBarKinds> m_defaultBorderColors;  // by BarKind
     std::array<BorderStyle, kBarKinds> m_borderStyles{};  // by BarKind
     std::array<NodeFillStyle, kBarKinds> m_fillStyles{};  // by BarKind; Pieno (solid) by default
     QVector<GanttBaseline> m_baselines;  // FEAT-082

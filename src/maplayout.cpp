@@ -7,6 +7,7 @@
 #include <cmath>
 #include <functional>
 #include <optional>
+#include <tuple>
 #include <utility>
 
 using namespace MapLayoutRules;
@@ -36,21 +37,27 @@ QMarginsF MapLayout::boundaryPad(const QList<MindNode *> &children, int index, b
         if (run.size() != boundary.topics.size()) continue;  // topics under other parents: just surrounded
         const int low = ascending ? run.front() : run.back();  // the smallest coordinate
         const int high = ascending ? run.back() : run.front();
-        const qreal side = Boundaries::padBelow(boundary);  // margin and half the stroke
-        const qreal above = Boundaries::padAbove(boundary);  // with the title tab
+        const QMarginsF room = boundaryRoom(boundary);  // margin, half the stroke, the shape; the tab above
         if (alongX) {
-            pad.setTop(std::max(pad.top(), above));
-            pad.setBottom(std::max(pad.bottom(), side));
-            if (index == low) pad.setLeft(std::max(pad.left(), side));
-            if (index == high) pad.setRight(std::max(pad.right(), side));
+            pad.setTop(std::max(pad.top(), room.top()));
+            pad.setBottom(std::max(pad.bottom(), room.bottom()));
+            if (index == low) pad.setLeft(std::max(pad.left(), room.left()));
+            if (index == high) pad.setRight(std::max(pad.right(), room.right()));
         } else {
-            pad.setLeft(std::max(pad.left(), side));
-            pad.setRight(std::max(pad.right(), side));
-            if (index == low) pad.setTop(std::max(pad.top(), above));
-            if (index == high) pad.setBottom(std::max(pad.bottom(), side));
+            pad.setLeft(std::max(pad.left(), room.left()));
+            pad.setRight(std::max(pad.right(), room.right()));
+            if (index == low) pad.setTop(std::max(pad.top(), room.top()));
+            if (index == high) pad.setBottom(std::max(pad.bottom(), room.bottom()));
         }
     }
     return pad;
+}
+
+QMarginsF MapLayout::boundaryRoom(const Boundary &boundary) const {
+    // FEAT-130: only the ellipse grows with its run, measured from the last layout (as the summaries).
+    QSizeF covered;
+    if (boundary.shape == Boundary::Shape::Ellipse && branchesCovered) covered = branchesCovered(boundary.topics).size();
+    return Boundaries::room(boundary, covered);
 }
 
 QRectF MapLayout::summaryRoom(const MindNode *node, const QList<MindNode *> &children, const QList<QRectF> &placed,
@@ -94,8 +101,10 @@ void MapLayout::collectBoundaryRuns() {
         m_boundaryRuns.append({above, below, int(topics.size()), 0});
         for (const MindNode *topic : std::as_const(topics)) m_boundaryRunsOf[topic].append(index);
     };
-    for (const Boundary &boundary : std::as_const(m_model->boundaries))
-        addRun(boundary.topics, Boundaries::padAbove(boundary), Boundaries::padBelow(boundary));
+    for (const Boundary &boundary : std::as_const(m_model->boundaries)) {
+        const QMarginsF room = boundaryRoom(boundary);
+        addRun(boundary.topics, room.top(), room.bottom());
+    }
     // FEAT-052: a summary topic taller than its run moves the siblings apart (the run's height from the
     // last layout: the room lies outside it, so the result does not change it).
     for (const Summary &summary : std::as_const(m_model->summaries)) {
@@ -831,4 +840,44 @@ void MapLayout::computeAutoPositions() {
         const qreal middle = (m_leafYs.value(0, m_lastLeafY) + m_lastLeafY) / 2;
         for (MindNode *node : std::as_const(laid)) shiftSubtree(node, floatingTopic->position.y() - middle);
     }
+}
+
+namespace {
+// FEAT-028 (reference live 2026-10-25): below a main topic every cell takes its colour mixed 80% with
+// white (#FF6B6B -> #FFE1E1).
+constexpr qreal kTableTintWhite = 0.8;
+QColor solidFill(const MindNode *node) { return node->fill.alpha() > 0 ? node->fill : node->branchColor; }
+}
+
+std::optional<MapLayout::TableLook> MapLayout::tableLook(const MindNode *node, const std::function<const MindNode *(const QString &)> &nodeOf) const {
+    const auto place = m_tableCells.constFind(node->id);
+    if (place == m_tableCells.cend()) return std::nullopt;
+    const auto colours = [&](const TablePlace &at) {
+        const MindNode *owner = nodeOf(at.owner);
+        const MindNode *levelOne = nodeOf(at.levelOne);
+        QColor fill = solidFill(node);
+        if (levelOne && levelOne != node && !node->style.fill) {
+            const QColor main = solidFill(levelOne);
+            const auto tint = [](qreal channel) { return channel + (1 - channel) * kTableTintWhite; };
+            fill = QColor::fromRgbF(tint(main.redF()), tint(main.greenF()), tint(main.blueF()));
+        }
+        // A table in a cell keeps the outer table's borders: its own colour is the cell's, so its
+        // borders would not show.
+        QString outer = at.owner;
+        for (auto frame = m_tableFrames.constFind(outer); frame != m_tableFrames.cend(); frame = m_tableFrames.constFind(outer))
+            outer = frame->owner;
+        const MindNode *outerNode = nodeOf(outer);
+        const MindNode *borderFrom = outerNode ? outerNode : owner ? owner : node;
+        return std::pair{fill, solidFill(borderFrom)};
+    };
+    TableLook look;
+    look.rect = place->rect;
+    std::tie(look.fill, look.border) = colours(*place);
+    look.holdsBranch = place->holdsBranch;
+    if (const auto frame = m_tableFrames.constFind(node->id); frame != m_tableFrames.cend()) {
+        std::tie(look.frameFill, look.frameBorder) = colours(*frame);
+        look.frame = frame->rect;
+        look.holdsBranch = true;
+    }
+    return look;
 }

@@ -1,3 +1,4 @@
+#include "clickawaycommit.h"
 #include "formulatext.h"
 #include "iconlibrary.h"
 #include "localization.h"
@@ -54,6 +55,7 @@ int main(int argc, char *argv[]) {
     // English).
     if (mcpRequested) return McpStdio::run();
     WheelGuard::install();  // the wheel over a closed select does not change it
+    ClickAwayCommit::install();  // a click where no focus goes confirms the field being edited
 
     // FEAT-046 / ADR-003: testi del codice in inglese; traduzione della lingua scelta nelle
     // Impostazioni o, se "Automatica", della lingua del sistema (oggi l'italiano), con quelle di Qt.

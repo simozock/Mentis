@@ -1,4 +1,5 @@
 #include "nodeitem.h"
+#include "imageframe.h"
 #include "numbering.h"
 #include "summary.h"
 #include "uitheme.h"
@@ -13,8 +14,10 @@
 #include "stylecontrols.h"
 #include "spellchecker.h"
 #include "texteditmenu.h"
+#include "formulafielddocument.h"
 
 #include <QApplication>
+#include <QClipboard>
 #include <QAbstractItemView>
 #include <QDateTime>
 #include <QFileInfo>
@@ -22,12 +25,16 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSceneHoverEvent>
 #include <QGraphicsTextItem>
+#include "bracecompletion.h"
 #include "markdownshortcuts.h"
 #include "markers.h"
+#include "outlineformats.h"
 #include <QGraphicsSceneContextMenuEvent>
 #include <QAbstractTextDocumentLayout>
 #include <QKeyEvent>
+#include <QTextBlock>
 #include <QTextCursor>
+#include <QTextLayout>
 #include <QTextDocument>
 #include <QTextOption>
 #include <QTimer>
@@ -92,7 +99,8 @@ namespace {
 //   un leggero ammorbidimento, compromesso scelto a favore della memoria.
 // - QPixmapCache condivide la stessa immagine tra più nodi e tra ricostruzioni
 //   della scena, evitando di rileggere il file dal disco.
-QPixmap loadScaledPixmap(const QString &path, const QSizeF &displaySize, qreal factor, bool outline = false) {
+QPixmap loadScaledPixmap(const QString &path, const QSizeF &displaySize, qreal factor, bool outline = false,
+                         ImageEffect effect = ImageEffect::None) {
     const QFileInfo info(path);
     // 2026-10-14: fattore 2 con il profilo Standard, 1 con quello Leggero (metà dei pixel per lato,
     // un quarto della memoria): Performance::imageScaleFactor. FEAT-054: the export scale on an export scene.
@@ -100,7 +108,8 @@ QPixmap loadScaledPixmap(const QString &path, const QSizeF &displaySize, qreal f
     const QString key = QStringLiteral("bc-image:%1:%2x%3:%4").arg(info.absoluteFilePath())
                             .arg(target.width()).arg(target.height())
                             .arg(info.lastModified().toMSecsSinceEpoch())
-                        + (outline ? QStringLiteral(":outline") : QString());  // FEAT-051
+                        + (outline ? QStringLiteral(":outline") : QString())  // FEAT-051
+                        + (effect == ImageEffect::None ? QString() : QLatin1Char(':') + ImageFrame::effectKey(effect));  // FEAT-131
     QPixmap pixmap;
     if (QPixmapCache::find(key, &pixmap)) return pixmap;
     QImageReader reader(path);
@@ -110,6 +119,7 @@ QPixmap loadScaledPixmap(const QString &path, const QSizeF &displaySize, qreal f
     if (source.isValid() && (source.width() > target.width() || source.height() > target.height()))
         reader.setScaledSize(target);
     QImage image = reader.read();
+    image = ImageFrame::withEffect(image, effect);  // before the outline: it stays white and dark
     if (outline) image = Stickers::outlined(image);
     pixmap = QPixmap::fromImage(image);
     if (!pixmap.isNull()) QPixmapCache::insert(key, pixmap);
@@ -155,6 +165,7 @@ void NodeItem::loadImage() {
     // Rotazione (richiesta dell'utente 2026-10-20): i pixel si leggono diritti, alla misura non
     // ruotata, poi si girano; imageSize e' gia' quella ruotata.
     m_loadedRotation = m_node->imageStyle.rotation;
+    m_loadedEffect = m_node->imageStyle.effect;
     const QSizeF upright = m_loadedRotation % 180 ? m_node->imageSize.transposed() : m_node->imageSize;
     const auto rotated = [this](const QPixmap &pixmap) {
         return m_loadedRotation == 0 || pixmap.isNull() ? pixmap : pixmap.transformed(QTransform().rotate(m_loadedRotation), Qt::SmoothTransformation);
@@ -163,8 +174,8 @@ void NodeItem::loadImage() {
     const qreal factor = mapScene && mapScene->exportImageScale() > 0 ? mapScene->exportImageScale() : Performance::imageScaleFactor();
     if (!m_node->formula.isEmpty()) {
         const QColor text = FormulaText::textColorOn(m_node->formulaBackground, m_node->text);
-        m_image = rotated(QPixmap::fromImage(FormulaText::boxImage(m_node->formula, titleFont(m_node), m_node->formulaBackground, text,
-                                                                   upright, 2.0 * factor)));
+        m_image = rotated(QPixmap::fromImage(ImageFrame::withEffect(
+            FormulaText::boxImage(m_node->formula, titleFont(m_node), m_node->formulaBackground, text, upright, 2.0 * factor), m_loadedEffect)));
         m_imageLoadPending = false;
         return;
     }
@@ -177,7 +188,7 @@ void NodeItem::loadImage() {
         if (mapScene && mapScene->originalImagePath)
             if (const QString original = mapScene->originalImagePath(m_node); !original.isEmpty()) path = original;
     m_loadedOutline = stickerOutline();
-    m_image = path.isEmpty() ? QPixmap() : rotated(loadScaledPixmap(path, upright, factor, m_loadedOutline));
+    m_image = path.isEmpty() ? QPixmap() : rotated(loadScaledPixmap(path, upright, factor, m_loadedOutline, m_loadedEffect));
     m_imageLoadPending = false;
 }
 
@@ -218,7 +229,8 @@ void NodeItem::syncFromNode() {
     const QString formulaKey = m_node->formula.isEmpty() ? QString()
         : m_node->formula + QChar(0x1f) + m_node->formulaBackground.name(QColor::HexArgb) + QChar(0x1f) + m_node->text.name();
     if (m_loadedImagePath != m_node->imagePath || m_loadedImageSize != m_node->imageSize || m_loadedFormulaKey != formulaKey
-        || m_loadedOutline != stickerOutline() || m_loadedRotation != m_node->imageStyle.rotation) {
+        || m_loadedOutline != stickerOutline() || m_loadedRotation != m_node->imageStyle.rotation
+        || m_loadedEffect != m_node->imageStyle.effect) {
         m_loadedImagePath = m_node->imagePath;
         m_loadedImageSize = m_node->imageSize;
         m_image = QPixmap();
@@ -797,9 +809,22 @@ public:
     std::function<bool()> keepEditing;
     bool formattingChanged = false;
     int boldWeight = QFont::Bold;  // FEAT-068: peso del grassetto di "**testo**"
-    int pendingTask = 0;           // FEAT-068: "- [ ] " a inizio titolo, casella alla conferma
     std::function<void(RichTitle::CharStyle)> toggleStyle;  // FEAT-095: on the selection
     RichTitle::PlainFirstTyping plainTyping;  // FEAT-095
+    // FEAT-116: the title's formulas as pictures, the one the cursor touches as code.
+    FormulaFieldDocument formulas;
+
+    // FEAT-116: the formulas laid out again for the cursor; not while text is selected or a word
+    // is composed by an input method (their positions hold).
+    void refreshFormulas() {
+        if (std::exchange(m_formulasAfterUndo, false)) return;  // kept until the next move or key
+        QTextCursor cursor = textCursor();
+        if (cursor.hasSelection() || (cursor.block().layout() && !cursor.block().layout()->preeditAreaText().isEmpty())) return;
+        if (const int moved = formulas.refresh(cursor.position()); moved >= 0) {
+            cursor.setPosition(moved);
+            setTextCursor(cursor);
+        }
+    }
 
     // Disegno del testo senza il riquadro tratteggiato di "focus" di QGraphicsTextItem e con
     // la selezione azzurra chiara dell'outliner (#b3d4fc) al posto del blu di sistema.
@@ -862,6 +887,30 @@ protected:
         }
         if (key == Qt::Key_Escape) { if (finished) finished(false); return; }
         if (key == Qt::Key_Tab || key == Qt::Key_Backtab) { if (finished) finished(true); return; }
+        // FEAT-116: Undo and Redo pass over the steps that only turned formulas into pictures or code.
+        if (event->matches(QKeySequence::Undo) || event->matches(QKeySequence::Redo)) {
+            if (const int at = formulas.undo(event->matches(QKeySequence::Redo)); at >= 0) {
+                QTextCursor cursor(document());
+                cursor.setPosition(at);
+                setTextCursor(cursor);
+            }
+            m_formulasAfterUndo = true;
+            restartBlink();
+            if (selectionChanged) selectionChanged();
+            return;
+        }
+        // FEAT-116: a selection with formula pictures is copied as its LaTeX source.
+        if ((event->matches(QKeySequence::Copy) || event->matches(QKeySequence::Cut)) && textCursor().hasSelection()
+            && textCursor().selectedText().contains(QChar::ObjectReplacementCharacter)) {
+            QTextCursor cursor = textCursor();
+            QGuiApplication::clipboard()->setText(FormulaFieldDocument::sourceBetween(document(), cursor.selectionStart(), cursor.selectionEnd()));
+            if (event->matches(QKeySequence::Cut)) {
+                cursor.removeSelectedText();
+                setTextCursor(cursor);
+            }
+            if (selectionChanged) selectionChanged();
+            return;
+        }
         if (event->matches(QKeySequence::Paste)) {  // FEAT-094: also the text menu's Paste
             auto *map = qobject_cast<MindMapScene *>(scene());
             auto *owner = static_cast<NodeItem *>(parentItem());
@@ -874,8 +923,12 @@ protected:
                 return;
             }
         }
-        if (QTextCursor cursor = textCursor(); plainTyping.type(event, cursor)) setTextCursor(cursor);
+        // FEAT-133: the braces of a formula closed while typing.
+        BraceCompletion::KeyTyping braces;
+        if (QTextCursor cursor = textCursor(); braces.before(cursor, event, BraceCompletion::Scope::Text)) setTextCursor(cursor);
+        else if (QTextCursor cursor = textCursor(); plainTyping.type(event, cursor)) setTextCursor(cursor);
         else QGraphicsTextItem::keyPressEvent(event);
+        if (QTextCursor cursor = textCursor(); braces.after(cursor, event)) setTextCursor(cursor);
         // FEAT-068: scorciatoie Markdown sul carattere appena scritto.
         if (event->text().size() == 1 && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
             QTextCursor cursor = textCursor();
@@ -884,8 +937,7 @@ protected:
             const MarkdownShortcuts::Result result = MarkdownShortcuts::afterTyping(cursor, event->text().front(), options);
             if (result.changed) {
                 setTextCursor(cursor);
-                if (result.task) pendingTask = result.task;
-                else formattingChanged = true;
+                formattingChanged = true;
             }
         }
         restartBlink();
@@ -894,6 +946,7 @@ protected:
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override { plainTyping.active = false; QGraphicsTextItem::mousePressEvent(event); restartBlink(); if (selectionChanged) selectionChanged(); }
     void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override { QGraphicsTextItem::mouseMoveEvent(event); update(); if (selectionChanged) selectionChanged(); }
     void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override { QGraphicsTextItem::mouseReleaseEvent(event); if (selectionChanged) selectionChanged(); }
+    void inputMethodEvent(QInputMethodEvent *event) override { QGraphicsTextItem::inputMethodEvent(event); if (selectionChanged) selectionChanged(); }
     void focusOutEvent(QFocusEvent *event) override {
         QGraphicsTextItem::focusOutEvent(event);
         if (event->reason() == Qt::PopupFocusReason) return;  // a menu (FEAT-042) does not end the editing
@@ -916,6 +969,7 @@ private:
     }
     QTimer m_blink;
     bool m_caretOn = true;
+    bool m_formulasAfterUndo = false;
 };
 }
 
@@ -997,50 +1051,9 @@ const NodeItem::Sketch &NodeItem::sketchFor(const QRectF &shapeBox) {
                         static_cast<int>(m_node->borderStyle), m_node->borderWidth};
     if (m_sketch.valid && m_sketch.key == key) return m_sketch;
     // Seme dall'id del nodo: lo stesso tratto a ogni ridisegno e dopo la riapertura del file.
-    const quint64 seed = NodeSketch::seedFor(m_node->id);
-    const QPainterPath outline = NodeShapes::outline(m_node->shape, shapeBox, cornerRadius());
-    m_sketch = {key, true, {}, {}, {}, {}};
-    // Il bordo si tiene gia' tracciato (contorno del tratto): paint() lo riempie soltanto, invece di
-    // ricalcolare il tratto a ogni ridisegno.
-    auto stroked = [](const QPainterPath &path, qreal width, Qt::PenStyle style) {
-        QPainterPathStroker stroker;
-        stroker.setWidth(width);
-        stroker.setCapStyle(Qt::RoundCap);
-        stroker.setJoinStyle(Qt::RoundJoin);
-        stroker.setDashPattern(style);
-        // Curve gia' spezzate in segmenti: il rasterizzatore non deve farlo a ogni ridisegno.
-        QPainterPath flat;
-        flat.setFillRule(Qt::WindingFill);
-        for (const QPolygonF &polygon : stroker.createStroke(path).toSubpathPolygons()) flat.addPolygon(polygon);
-        return flat;
-    };
-    if (m_node->fillStyle == NodeFillStyle::PienoManoLibera) m_sketch.area = NodeSketch::roughArea(outline, seed);
-    else if (NodeStyle::isPatternFill(m_node->fillStyle))
-        m_sketch.pattern = NodeSketch::pattern(m_node->fillStyle, outline, seed);
-    if (NodeSketch::isFreehand(m_node->borderStyle)) {
-        QPainterPath line;
-        if (NodeShapes::hasOpenBorder(m_node->shape)) {
-            quint64 lineSeed = seed;
-            for (const QLineF &underline : NodeShapes::borderLines(m_node->shape, shapeBox, m_node->borderWidth))
-                line.addPath(NodeSketch::roughLine(underline, lineSeed++));
-            for (const QPainterPath &mark : NodeShapes::marks(m_node->shape, shapeBox))  // FEAT-030 stage B
-                line.addPath(NodeSketch::roughPath(mark, lineSeed++));
-        } else {
-            line = NodeSketch::roughOutline(outline, seed);
-            // Il riempimento pieno segue la stessa linea del bordo, cosi' gli angoli della forma
-            // regolare non escono dal tratto irregolare.
-            m_sketch.borderArea = line;
-            m_sketch.borderArea.closeSubpath();
-            // FEAT-030: the lines inside the shape are freehand too.
-            quint64 innerSeed = seed + 1;
-            for (const QPainterPath &inner : NodeShapes::innerLines(m_node->shape, shapeBox, cornerRadius())) {
-                // Closed lines (a fold, a card, a circle) go round; open ones (bars, an arc) do not.
-                const bool closed = inner.elementCount() > 2 && QPointF(inner.elementAt(0)) == QPointF(inner.elementAt(inner.elementCount() - 1));
-                line.addPath(closed ? NodeSketch::roughOutline(inner, innerSeed++) : NodeSketch::roughPath(inner, innerSeed++));
-            }
-        }
-        m_sketch.border = stroked(line, m_node->borderWidth, NodeStyle::borderPenStyle(m_node->borderStyle));
-    }
+    NodeSketch::Drawing drawing = NodeSketch::drawing(m_node->shape, m_node->fillStyle, m_node->borderStyle, m_node->borderWidth,
+                                                      shapeBox, cornerRadius(), NodeSketch::seedFor(m_node->id));
+    m_sketch = {key, true, std::move(drawing.area), std::move(drawing.pattern), std::move(drawing.border), std::move(drawing.borderArea)};
     return m_sketch;
 }
 
@@ -1232,16 +1245,6 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
             else p->drawPath(NodeShapes::outline(m_node->shape, shapeBox.adjusted(-inset, -inset, inset, inset), cornerRadius()));
             p->restore();
         }
-    }
-    // P6 (2026-10-13): con lo zoom basso solo riquadro, bordo e immagine, senza testo e formule
-    // (tecnica dell'esempio "40000 Chips" di Qt, QStyleOptionGraphicsItem::levelOfDetailFromTransform).
-    // FEAT-054: an export (and its small preview) always draws the text.
-    const auto *mapScene = qobject_cast<const MindMapScene *>(scene());
-    if (QStyleOptionGraphicsItem::levelOfDetailFromTransform(p->worldTransform()) < Performance::detailZoomThreshold()
-        && !(mapScene && mapScene->exportImageScale() > 0) && !m_editor && !m_draggingImage) {
-        drawShape();
-        if (!m_image.isNull() && m_geometry.hasImage()) p->drawPixmap(imageRect(), m_image, m_image.rect());
-        return;
     }
     if (!shapeBox.isEmpty()) {
         drawShape();
@@ -1479,33 +1482,8 @@ void NodeItem::paint(QPainter *p, const QStyleOptionGraphicsItem *option, QWidge
         p->restore();
     }
     if (!m_image.isNull() && !m_draggingImage) {
-        // FEAT-040: ombra leggera come quella dei modali (4 rettangoli, alfa 10/8/6/4, 2 px in basso),
-        // poi l'immagine con la sua opacita' e il bordo dentro il suo rettangolo (la misura non cambia).
-        const QRectF image = imageRect();
-        const ImageStyle &look = m_node->imageStyle;
-        if (look.shadow) {
-            p->save();
-            p->setPen(Qt::NoPen);
-            const int alphas[] = {10, 8, 6, 4};
-            for (int i = 0; i < 4; ++i) {
-                const qreal grow = i + 1;
-                p->setBrush(QColor(15, 23, 42, alphas[i]));
-                p->drawRoundedRect(image.adjusted(-grow, -grow + 2, grow, grow + 2), grow, grow);
-            }
-            p->restore();
-        }
-        const qreal opacity = p->opacity();
-        p->setOpacity(opacity * look.opacity / 100.0);
-        p->drawPixmap(image, m_image, m_image.rect());
-        p->setOpacity(opacity);
-        if (look.border != ImageStyle::Border::None) {
-            const Qt::PenStyle style = look.border == ImageStyle::Border::Dashed ? Qt::DashLine
-                                       : look.border == ImageStyle::Border::Dotted ? Qt::DotLine : Qt::SolidLine;
-            const qreal half = look.borderWidth / 2;
-            p->setPen(QPen(look.borderColor, look.borderWidth, style, Qt::FlatCap, Qt::MiterJoin));
-            p->setBrush(Qt::NoBrush);
-            p->drawRect(image.adjusted(half, half, -half, -half));
-        }
+        // FEAT-040, FEAT-129: shadow, picture cut to its shape with its opacity, border along the shape.
+        ImageFrame::paint(p, imageRect(), m_image, m_node->imageStyle);
     }
     // FEAT-037: immagine scelta con un clic: contorno e maniglie agli angoli nel colore della
     // selezione (Impostazioni > Selezione), fondo bianco come i controlli chiari.
@@ -2174,6 +2152,12 @@ void NodeItem::startInlineEditor() {
     if (!m_node->titleHtml.isEmpty() && !FormulaText::containsMath(m_node->title))
         editor->setHtml(RichTitle::withoutDocumentFont(m_node->titleHtml));  // FEAT-022: vale il font del nodo
     else editor->setPlainText(m_node->title);
+    // FEAT-116 (user's request 2026-11-13): the formulas as pictures, in the title's font and colour,
+    // sharp up to twice the zoom; the one the cursor touches becomes its code (selectionChanged).
+    editor->formulas.setDocument(editor->document());
+    editor->formulas.setLook(nodeFont(m_node), m_node->text, 2 * qApp->devicePixelRatio());
+    editor->formulas.refresh(-1);
+    editor->document()->clearUndoRedoStacks();  // the title as opened is the first state (finishEditing)
     editor->plainTyping.active = !m_node->titleHtml.isEmpty();  // FEAT-095
     SpellCheck::attach(editor->document());  // FEAT-044: only while the title is edited
     editor->setTextInteractionFlags(Qt::TextEditorInteraction);
@@ -2242,6 +2226,7 @@ void NodeItem::startInlineEditor() {
         editor->setFocus(Qt::OtherFocusReason);
     };
     editor->selectionChanged = [this, editor, formatBar, formatProxy] {
+        editor->refreshFormulas();
         const QTextCursor cursor = editor->textCursor();
         formatProxy->setVisible(cursor.hasSelection());
         if (!cursor.hasSelection()) return;
@@ -2312,10 +2297,13 @@ void NodeItem::finishEditing(bool commit) {
     editor->finished = nullptr;  // nascondere il campo toglie il focus: niente seconda chiamata
     editor->selectionChanged = nullptr;
     editor->keepEditing = nullptr;
-    const QString text = editor->toPlainText().trimmed();
-    const QString html = editor->toHtml();
+    // FEAT-116: each formula picture read as its source; a title with formulas keeps no HTML.
+    const auto stateOf = [](const QTextDocument *document) {
+        const QString text = FormulaFieldDocument::sourceOf(document).trimmed();
+        return std::pair{text, FormulaText::containsMath(text) ? QString() : document->toHtml()};
+    };
+    const auto [text, html] = stateOf(editor->document());
     const bool formattingChanged = editor->formattingChanged;
-    const int pendingTask = commit ? editor->pendingTask : 0;  // FEAT-068
     const bool editorHadFocus = editor->hasFocus();
     const qreal halfWhileEditing = anchorHalfWidth();
     prepareGeometryChange();
@@ -2354,7 +2342,8 @@ void NodeItem::finishEditing(bool commit) {
         QTextDocument *document = editor->document();
         while (document->isUndoAvailable()) {
             document->undo();
-            steps.prepend({document->toPlainText().trimmed(), document->toHtml()});
+            const auto [stepText, stepHtml] = stateOf(document);
+            steps.prepend({stepText, stepHtml});
         }
         // steps[0] è il titolo all'apertura del campo: non è una modifica.
         Step previous = steps.value(0);
@@ -2372,7 +2361,6 @@ void NodeItem::finishEditing(bool commit) {
             previous = step;
         }
     }
-    if (pendingTask) emit taskTyped(this, pendingTask);  // FEAT-068: "- [ ] " a inizio titolo
 }
 
-int NodeItem::boldWeightFor(const MindNode *node) { return node->fontWeight >= QFont::Bold ? QFont::Black : QFont::Bold; }
+int NodeItem::boldWeightFor(const MindNode *node) { return OutlineFormats::storedBoldWeights(node).bold; }

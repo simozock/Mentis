@@ -27,7 +27,6 @@ struct Options {
 
 struct Result {
     bool changed = false;
-    int task = 0;  // titolo: 1 = "- [ ] " (casella vuota), 2 = "- [x] " (spuntata)
 };
 
 // Da chiamare subito dopo che l'utente ha scritto il carattere typed con il cursore cursor

@@ -22,7 +22,7 @@ With **Fit width**, Mentis may pick a larger time unit to keep text legible, or 
 
 ## Include the costs
 
-**Costs** adds a table per task (**Task**, **People**, **Hours**, **Cost**) and per person (**Person**, **Role**, **Hourly cost**, **Hours**, **Cost**), with their **Total**. In Excel, a **Per week** sheet gives each person's hours week by week.
+**Costs** adds a table per task (**Task**, **People**, **Hours**, **Cost**) and per person (**Person**, **Role**, **Hourly cost**, **Hours**, **Cost**), with their **Total**. In Excel, a **Per week** sheet gives each person's hours week by week. With people paid in several currencies, Excel has a cost column per currency (**Cost EUR**, **Cost USD**).
 
 > [!NOTE]
 > A very large plan may not fit in an image: export it as a PDF.

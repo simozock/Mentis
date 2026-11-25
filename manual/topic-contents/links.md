@@ -6,19 +6,16 @@ A link takes you from a topic to a web page or to another topic, also on another
 
 ![A topic with a web link, and one with an attached file](../images/topic-contents/links-and-files.png)
 
-## Link to a web page
+## Insert a link
 
 1. Select a topic.
-2. Click **Insert a web link in the topic** in the topic bar, or press <kbd>Ctrl</kbd>+<kbd>K</kbd>.
-3. Paste the address (`http`, `https` or `mailto`; `https://` is added when missing) and click **Insert**.
+2. Click **Insert a link in the topic** in the topic bar, press <kbd>Ctrl</kbd>+<kbd>K</kbd>, or choose **Insert content** › **Link…**.
+3. Choose a tab:
+   - **Web page**: paste the address (`http`, `https` or `mailto`; `https://` is added when missing).
+   - **Topic**: find the topic (type in **Search** to filter) and select it. **Also add the link to the chosen topic** links both ways.
+4. Click **Insert**.
 
-Or: **Insert content** › **Link** › **Web page…**.
-
-## Link to a topic
-
-1. Select a topic.
-2. Choose **Insert content** › **Link** › **Topic…**.
-3. Find the topic (type in **Search** to filter) and click **Insert**. **Also add the link to the chosen topic** links both ways.
+The dialog opens on **Topic** when the topic has only a topic link, otherwise on **Web page**. **Insert** adds the link of the tab you see and leaves the other one as it is.
 
 ## Follow a link
 

@@ -556,6 +556,64 @@ MapFolder::Move MapFolder::moveMap(const QString &mapPath, const QString &target
     return move;
 }
 
+bool MapFolder::removeMap(const QString &mapPath, QString *error) const {
+    const QFileInfo map(mapPath);
+    if (!map.isFile() || !map.fileName().endsWith(kExtension) || !contains(map.absoluteFilePath())) {
+        if (error) *error = tr("The map %1 is not there any more.").arg(map.fileName());
+        return false;
+    }
+    if (isOpen(map.absoluteFilePath())) {
+        if (error) *error = tr("The map %1 is open and cannot be deleted.").arg(map.fileName());
+        return false;
+    }
+    if (!QFile::remove(map.absoluteFilePath())) {
+        if (error) *error = tr("The map %1 cannot be deleted.").arg(map.fileName());
+        return false;
+    }
+    // Leftovers of the deleted map: a journal kept would be played back into a new map of that name.
+    for (const QString &suffix : {QStringLiteral("-journal"), QStringLiteral("-wal"), QStringLiteral("-shm"), QStringLiteral(".lock")})
+        QFile::remove(map.absoluteFilePath() + suffix);
+    forgetCopy(map.absoluteFilePath());
+    return true;
+}
+
+QString MapFolder::renameMapFile(const QString &mapPath, const QString &name, QString *error) const {
+    const QFileInfo map(mapPath);
+    if (!map.isFile() || !map.fileName().endsWith(kExtension) || !contains(map.absoluteFilePath())) {
+        if (error) *error = tr("The map %1 is not there any more.").arg(map.fileName());
+        return {};
+    }
+    const QString cleaned = cleanName(name);
+    if (cleaned.isEmpty()) { if (error) *error = tr("The map needs a name."); return {}; }
+    const QString from = QDir::cleanPath(map.absoluteFilePath());
+    if (cleaned == map.completeBaseName()) return from;
+    if (isOpen(from)) {
+        if (error) *error = tr("The map %1 is open and cannot be renamed.").arg(map.fileName());
+        return {};
+    }
+    const QString directory = map.absolutePath();
+    const bool caseOnly = cleaned.compare(map.completeBaseName(), Qt::CaseInsensitive) == 0;
+    const QString chosen = caseOnly ? cleaned + kExtension : freeName(directory, cleaned + kExtension);
+    const QString to = QDir::cleanPath(QDir(directory).filePath(chosen));
+    bool renamed = false;
+    if (caseOnly) {
+        const QString step = QDir(directory).filePath(freeName(directory, cleaned + QStringLiteral(".renaming") + kExtension));
+        renamed = renameMap(from, step);
+        if (renamed && !renameMap(step, to)) {
+            renameMap(step, from);  // back to the old name
+            renamed = false;
+        }
+    } else {
+        renamed = renameMap(from, to);
+    }
+    if (!renamed) {
+        if (error) *error = tr("The map %1 cannot be renamed.").arg(map.fileName());
+        return {};
+    }
+    followMove(from, to);
+    return to;
+}
+
 QList<QPair<QString, QString>> MapFolder::runPendingMoves() {
     QSettings settings;
     QVariantMap pending = settings.value(kPendingMovesKey).toMap();

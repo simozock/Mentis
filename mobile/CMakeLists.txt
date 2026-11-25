@@ -18,26 +18,68 @@ qt_add_library(MentisMobileUi STATIC
     maplibrary.cpp
     mobilemap.h
     mobilemap.cpp
+    mobilestyle.h
+    mobilestyle.cpp
+    mobilesheetstyle.cpp
+    mobilepitch.h
+    mobilepitch.cpp
+    mobileoutline.h
+    mobileoutline.cpp
+    mobilegantt.h
+    mobilegantt.cpp
+    mobilegantttask.h
+    mobilegantttask.cpp
+    mobileresources.h
+    mobileresources.cpp
+    mobileganttstyle.h
+    mobileganttstyle.cpp
+    outlineimage.h
+    outlineimage.cpp
+    mapexport.h
+    mapexport.cpp
+    mobileshare.h
+    variantsample.h
+    variantsample.cpp
     mapscene.h
     mapscene.cpp
     mapcanvas.h
     mapcanvas.cpp
     mobileapp.h
     mobileapp.cpp
+    penasmouse.h
+    penasmouse.cpp
+    hardwarekeyboard.h
+    hardwarekeyboard.cpp
+    controlkey.h
+    controlkey.cpp
     stickerlibrary.h
     stickerlibrary.cpp
+    mobilestickereditor.h
+    mobilestickereditor.cpp
+    stickercanvasview.h
+    stickercanvasview.cpp
     imagepicker.h
     imagepicker.cpp
     markericon.h
     markericon.cpp
     formulapreview.h
     formulapreview.cpp
+    formulafield.h
+    formulafield.cpp
+    latexlist.h
+    latexlist.cpp
+    markdowntyping.h
+    markdowntyping.cpp
+    bracetyping.h
+    bracetyping.cpp
     keycommands.h
     keycommands.cpp
     incomingmaps.h
     incomingmaps.cpp
     storageaccess.h
     storageaccess.cpp
+    panelsize.h
+    panelsize.cpp
 )
 set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 qt_add_qml_module(MentisMobileUi
@@ -51,12 +93,16 @@ qt_add_qml_module(MentisMobileUi
         qml/Theme.qml
         qml/FloatingGroup.qml
         qml/GroupButton.qml
+        qml/NameTip.qml
+        qml/TipLabel.qml
+        qml/TipArea.qml
         qml/SheetSelect.qml
         qml/ModalDialog.qml
         qml/DarkButton.qml
         qml/StickerPicker.qml
+        qml/StickerEditorDialog.qml
         qml/NoteDialog.qml
-        qml/WebLinkDialog.qml
+        qml/LinkDialog.qml
         qml/LabelsDialog.qml
         qml/FilesMenu.qml
         qml/DarkSwitch.qml
@@ -66,11 +112,48 @@ qt_add_qml_module(MentisMobileUi
         qml/SearchPanel.qml
         qml/FolderIcon.qml
         qml/FormulaDialog.qml
+        qml/LatexListDialog.qml
+        qml/AddMenu.qml
+        qml/DarkSegments.qml
+        qml/SidePanel.qml
+        qml/StylePanelPage.qml
+        qml/MapPanelPage.qml
+        qml/PitchPanelPage.qml
+        qml/PitchThemeSheet.qml
+        qml/PitchTemplateFields.qml
+        qml/MapExportSheet.qml
+        qml/ExportOptionsSheet.qml
+        qml/PresentationView.qml
+        qml/NumberingFields.qml
+        qml/PaletteSheet.qml
+        qml/MapTypeSheet.qml
+        qml/NewPaletteSheet.qml
+        qml/StyleSection.qml
+        qml/StyleSelectRow.qml
+        qml/StyleChoiceMenu.qml
+        qml/StyleStepper.qml
+        qml/ColorSheet.qml
+        qml/OutlinerView.qml
+        qml/BaselinesDialog.qml
+        qml/ColumnsDialog.qml
+        qml/GanttChartView.qml
+        qml/GanttTaskPage.qml
+        qml/ResourcesDialog.qml
+        qml/GanttStylePage.qml
+        qml/GanttColorRow.qml
+        qml/DatePickerSheet.qml
+        qml/SettingsPage.qml
 )
 target_include_directories(MentisMobileUi PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 # FEAT-116: MentisFormula draws the formulas (JKQTMathText, a shared library as on the desktop).
 target_link_libraries(MentisMobileUi PUBLIC MentisDomain MentisFormula Qt6::Quick Qt6::QuickControls2)
 mentis_warnings(MentisMobileUi)
+# PenAsMouse hands a pen's events to QGuiApplication as a platform's mouse
+# (QWindowSystemInterface, Qt's QPA API, private: https://doc.qt.io/qt-6/qpa.html).
+if(Qt6_VERSION VERSION_GREATER_EQUAL 6.9)
+    find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
+endif()
+target_link_libraries(MentisMobileUi PRIVATE Qt6::GuiPrivate)
 if(ANDROID)
     # ImagePicker starts the system picker for a result (QtAndroidPrivate::startActivity, private
     # Qt Core API since Qt 6.2). From Qt 6.9 private modules are packages of their own.
@@ -119,13 +202,24 @@ if(ANDROID)
     if(mentis_legacy_at EQUAL -1)
         string(REPLACE "android:hardwareAccelerated=\"true\"" "android:hardwareAccelerated=\"true\"\n        android:requestLegacyExternalStorage=\"true\"" mentis_manifest "${mentis_manifest}")
     endif()
+    # The name under the launcher icon: Qt writes the target's (MentisMobile) here, and
+    # QT_ANDROID_APP_NAME exists only from Qt 6.9.
+    string(REPLACE "-- %%INSERT_APP_NAME%% --" "Mentis" mentis_manifest "${mentis_manifest}")
     file(WRITE "${mentis_android_package}/AndroidManifest.xml.new" "${mentis_manifest}")
     file(COPY_FILE "${mentis_android_package}/AndroidManifest.xml.new" "${mentis_android_package}/AndroidManifest.xml" ONLY_IF_DIFFERENT)
     file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/android/res" DESTINATION "${mentis_android_package}")
     file(GLOB_RECURSE mentis_android_res CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/android/res/*")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${mentis_qt_manifest}" "${mentis_intent_filters}" ${mentis_android_res})
     qt_policy(SET QTP0002 NEW)  # the paths below are plain strings
+    # Release 1.1.0 (first APK on GitHub): the package name is the app's identity on the phone and
+    # in the stores, never changed after a release; the version comes from project(Mentis VERSION),
+    # the code grows with it (1.1.0 -> 10100) so a new APK installs over the old one.
+    math(EXPR mentis_android_version_code
+        "${PROJECT_VERSION_MAJOR} * 10000 + ${PROJECT_VERSION_MINOR} * 100 + ${PROJECT_VERSION_PATCH}")
     set_target_properties(MentisMobile PROPERTIES
+        QT_ANDROID_PACKAGE_NAME "io.github.simozock.mentis"
+        QT_ANDROID_VERSION_NAME "${PROJECT_VERSION}"
+        QT_ANDROID_VERSION_CODE "${mentis_android_version_code}"
         QT_ANDROID_PACKAGE_SOURCE_DIR "${mentis_android_package}"
         QT_ANDROID_APP_ICON "@mipmap/ic_launcher")
 endif()

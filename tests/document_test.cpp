@@ -57,6 +57,7 @@ private slots:
     void contentOperationsNotifyTheNodes();
     void typedTitlesAndDraggedTopicsAreSteps();
     void annotationsAreUndoableSteps();
+    void boundariesKeepOneRunOfSiblings();
     void pastedMarkdownBecomesBranchesOrTheWholeMap();
     void exportAndCopiedBranch();
     void exportFolderWithAssets();
@@ -874,6 +875,122 @@ void DocumentTest::annotationsAreUndoableSteps() {
     QVERIFY(document.removeNodes({document.model()->root()->children.front().get()}));
     QVERIFY(document.model()->relations.isEmpty());
     QVERIFY(document.model()->summaries.isEmpty());
+}
+
+// FEAT-052 point 8: a boundary covers unbroken runs of siblings only; a topic leaving for a place of
+// its own takes a copy of the boundary, a broken run gives each piece one.
+void DocumentTest::boundariesKeepOneRunOfSiblings() {
+    Document document;
+    document.startUntitled();
+    MindMapModel *model = document.model();
+    MindNode *p = document.addChild(nullptr, QStringLiteral("P"));
+    MindNode *q = document.addChild(nullptr, QStringLiteral("Q"));
+    MindNode *a = document.addChild(p, QStringLiteral("A"));
+    MindNode *b = document.addChild(p, QStringLiteral("B"));
+    MindNode *c = document.addChild(p, QStringLiteral("C"));
+    MindNode *d = document.addChild(p, QStringLiteral("D"));
+    const auto topics = [model] { return model->boundaries.isEmpty() ? QStringList() : model->boundaries.front().topics; };
+    const auto allTopics = [model] {
+        QList<QStringList> all;
+        for (const Boundary &boundary : std::as_const(model->boundaries)) all.append(boundary.topics);
+        return all;
+    };
+    const auto restart = [&](const QList<MindNode *> &covered) {
+        model->boundaries.clear();
+        QCOMPARE(document.addBoundaries(covered).size(), 1);
+        document.flushPendingStep();
+    };
+
+    // Moved under another parent out of the middle: A and C close up and keep the boundary, B takes
+    // its own with the boundary's title; a relationship stays on the remaining piece.
+    restart({a, b, c});
+    model->boundaries.front().title = QStringLiteral("Part");
+    const QString boundaryId = model->boundaries.front().id;
+    model->relations.append(Relationship{QStringLiteral("r"), boundaryId, d->id});
+    QVERIFY(document.moveNode(b, q, 0, 0));
+    QCOMPARE(allTopics(), (QList<QStringList>{{a->id, c->id}, {b->id}}));
+    QCOMPARE(model->boundaries.front().id, boundaryId);
+    for (const Boundary &boundary : std::as_const(model->boundaries)) QCOMPARE(boundary.title, QStringLiteral("Part"));
+    QCOMPARE(model->relations.size(), 1);
+    QCOMPARE(model->relations.front().from, boundaryId);
+    model->relations.clear();
+    document.flushPendingStep();
+    QCOMPARE(document.undo().outcome, Document::StepOutcome::Applied);  // the same step
+    QCOMPARE(model->boundaries.front().topics, (QStringList{a->id, b->id, c->id}));
+    QCOMPARE(model->boundaries.size(), 1);
+    model->relations.clear();
+    a = model->nodeById(a->id); b = model->nodeById(b->id); c = model->nodeById(c->id);
+    d = model->nodeById(d->id); p = model->nodeById(p->id); q = model->nodeById(q->id);
+
+    // Moved past an uncovered sibling: it leaves. Reordered inside the run: it stays.
+    restart({a, b});
+    QVERIFY(document.moveNode(a, p, 3, 0));  // B C A D
+    QCOMPARE(topics(), QStringList{b->id});
+    restart({a, b, c});  // B C A D: B and C are covered with A
+    QVERIFY(document.moveNode(a, p, 0, 0));  // A B C D
+    QCOMPARE(topics(), (QStringList{a->id, b->id, c->id}));
+    QVERIFY(document.moveNode(c, p, 0, 0));  // C A B D
+    QCOMPARE(topics(), (QStringList{c->id, a->id, b->id}));
+    QVERIFY(document.moveNode(c, p, 3, 0));  // A B C D
+
+    // A topic landing between two covered siblings joins; one added after the last does not.
+    restart({a, b});
+    MindNode *between = document.addSibling(a);
+    QCOMPARE(topics(), (QStringList{a->id, between->id, b->id}));
+    document.addSibling(b);
+    QCOMPARE(topics(), (QStringList{a->id, between->id, b->id}));
+    QVERIFY(document.removeNodes({between, p->children[3].get()}));
+
+    // Indented under its covered neighbour: it leaves the run and stays inside A's branch.
+    restart({a, b, c});
+    QVERIFY(document.indentNode(b));
+    QCOMPARE(topics(), (QStringList{a->id, c->id}));
+    QVERIFY(document.outdentNode(b));  // lands between A and C again: it joins
+    QCOMPARE(topics(), (QStringList{a->id, b->id, c->id}));
+
+    // The new parent takes the node's place.
+    restart({a, b});
+    MindNode *parentOfB = document.insertParent(b);
+    QCOMPARE(topics(), (QStringList{a->id, parentOfB->id}));
+    QVERIFY(document.outdentNode(b));
+    QVERIFY(document.removeNodes({parentOfB}));
+    QCOMPARE(p->children.size(), size_t(4));
+
+    // Placed by hand in the middle: the longer piece keeps the boundary, A and B get their own.
+    restart({a, b, c, d});
+    QVERIFY(document.placeTopics({{b, b->position, QPointF(40, 0)}}));
+    QVERIFY(document.refitBoundaries({b}));
+    QCOMPARE(allTopics(), (QList<QStringList>{{c->id, d->id}, {a->id}, {b->id}}));
+    model->boundaries.removeIf([&](const Boundary &boundary) { return boundary.topics != QStringList{c->id, d->id}; });
+    // All of a boundary's topics placed together: the boundary follows them.
+    QVERIFY(document.placeTopics({{c, c->position, QPointF(40, 0)}, {d, d->position, QPointF(40, 0)}}));
+    QVERIFY(!document.refitBoundaries({c, d}));
+    QCOMPARE(topics(), (QStringList{c->id, d->id}));
+    // A boundary on a single topic moved elsewhere follows it.
+    restart({a});
+    QVERIFY(document.moveNode(a, q, 0, 0));
+    QCOMPARE(topics(), QStringList{a->id});
+
+    // A covered main topic made floating leaves, without a boundary of its own.
+    restart({p, q});
+    QVERIFY(document.makeFloating(q, QPointF(500, 500)));
+    QCOMPARE(allTopics(), QList<QStringList>{{p->id}});
+
+    // Two main topics one under the other, the second taken to the other side: each its own.
+    MindNode *root = model->root();
+    q->floating = false;  // back in the tree
+    MindNode *r = document.addChild(nullptr, QStringLiteral("R"));  // P Q R
+    restart({p, q});
+    QVERIFY(document.moveNode(q, root, 1, -1, 1));  // the same row, now on the left
+    QCOMPARE(allTopics(), (QList<QStringList>{{p->id}, {q->id}}));
+    // The same side again: it stays.
+    restart({p, q});
+    QVERIFY(document.moveNode(q, root, 3, 1, 1));  // P R Q: past an uncovered sibling, only leaves
+    QCOMPARE(allTopics(), QList<QStringList>{{p->id}});
+    QVERIFY(document.moveNode(q, root, 1, 1, 1));  // P Q R
+    restart({p, q});
+    QVERIFY(document.moveNode(r, root, 0, 1, 1));  // R P Q: the boundary is untouched
+    QCOMPARE(allTopics(), (QList<QStringList>{{p->id, q->id}}));
 }
 
 // FEAT-066 tappa 4: Markdown incollato (rami o mappa intera), esportazione e ramo copiato.

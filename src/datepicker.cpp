@@ -1,5 +1,5 @@
 #include "datepicker.h"
-#include "localization.h"
+#include "calendarmonth.h"
 #include "uitheme.h"
 
 #include <QGuiApplication>
@@ -16,14 +16,12 @@
 
 namespace {
 
-constexpr int kColumns = 7;
-constexpr int kRows = 6;              // every month fits in six weeks
+constexpr int kColumns = CalendarMonth::kColumns;
+constexpr int kRows = CalendarMonth::kRows;
 constexpr int kRadius = 8;            // surfaces (ui-foundations.md)
 constexpr int kControlRadius = 4;     // highlights
 constexpr int kGap = 8;               // between header, weekdays, grid and footer
 constexpr int kChevronPx = 16;
-
-QString capitalized(const QString &text) { return text.isEmpty() ? text : text.left(1).toUpper() + text.mid(1); }
 
 // The Hugeicons arrow of the fields, tinted and turned (0 = down, 90 = left, -90 = right).
 QPixmap arrow(const QColor &color, int degrees) {
@@ -37,7 +35,7 @@ QPixmap arrow(const QColor &color, int degrees) {
 
 }  // namespace
 
-QLocale DatePicker::namesLocale() { return QLocale(Localization::effectiveLanguage(Localization::preference())); }
+QLocale DatePicker::namesLocale() { return CalendarMonth::namesLocale(); }
 
 DatePicker::DatePicker(QWidget *parent, const Colors &colors)
     : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint), m_colors(colors) {
@@ -62,11 +60,9 @@ void DatePicker::setDate(const QDate &date) {
     showMonth(m_focus);
 }
 
-QString DatePicker::monthTitle() const {
-    return capitalized(m_names.standaloneMonthName(m_month.month())) + u' ' + QString::number(m_month.year());
-}
+QString DatePicker::monthTitle() const { return CalendarMonth::title(m_month, m_names); }
 
-QString DatePicker::weekdayName(int day) const { return capitalized(m_names.standaloneDayName(day, QLocale::ShortFormat).left(2)); }
+QString DatePicker::weekdayName(int day) const { return CalendarMonth::weekdayName(day, m_names); }
 
 void DatePicker::showMonth(const QDate &anyDay) {
     m_month = QDate(anyDay.year(), anyDay.month(), 1);
@@ -101,11 +97,7 @@ QRect DatePicker::todayRect() const {
     return {card.left() + kPadding - kGap, card.bottom() + 1 - kPadding - kFooterHeight, width, kFooterHeight};
 }
 
-QDate DatePicker::firstShown() const {
-    // The week starts on the locale's first day (Monday in Italy, Sunday in the US).
-    const int offset = (m_month.dayOfWeek() - int(QLocale().firstDayOfWeek()) + kColumns) % kColumns;
-    return m_month.addDays(-offset);
-}
+QDate DatePicker::firstShown() const { return CalendarMonth::firstShown(m_month); }
 
 QRect DatePicker::dayRect(const QDate &date) const {
     const qint64 index = firstShown().daysTo(date);

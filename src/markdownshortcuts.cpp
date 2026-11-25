@@ -142,18 +142,8 @@ Result applyBlockStart(QTextCursor &cursor, const Options &options) {
         cursor.setPosition(block.position() + length, QTextCursor::KeepAnchor);
         cursor.removeSelectedText();
     };
-    if (options.context == Context::Title) {
-        // Solo all'inizio del titolo (primo paragrafo): "- [ ] ", "[ ] ", "- [x] ", "[x] ".
-        static const QRegularExpression box(QStringLiteral(R"(^(?:- )?\[([ xX])\] $)"));
-        const QRegularExpressionMatch match = box.match(before);
-        if (!match.hasMatch() || block.blockNumber() != 0) return result;
-        cursor.beginEditBlock();
-        removePrefix(int(before.size()));
-        cursor.endEditBlock();
-        result.changed = true;
-        result.task = match.captured(1).trimmed().isEmpty() ? 1 : 2;
-        return result;
-    }
+    // FEAT-124 (user, 2026-11-17): "- [ ] " in a title stays text; it was the topic's checkbox.
+    if (options.context == Context::Title) return result;
     if (cursor.currentList()) return result;
     if (before == QLatin1String("- ") || before == QLatin1String("* ") || before == QLatin1String("1. ")) {
         cursor.beginEditBlock();

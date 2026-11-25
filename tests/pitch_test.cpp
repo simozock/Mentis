@@ -1,6 +1,7 @@
 // FEAT-063 stage A: slides made from the map, their settings saved and undone, the drawing, the
 // full-screen presentation and the Pitch tab in the real window (offscreen platform).
 #include "document.h"
+#include "formulatext.h"
 #include "mainwindow.h"
 #include "modaldialog.h"
 #include "pagedialog.h"
@@ -81,6 +82,7 @@ private slots:
     void themesKeepTheContrast();
     void motifsStayOffTheText();
     void longTitleWordShrinks();
+    void formulasAreRendered();
     void exportWritesPptxAndPdf();
     void pdfDialogOffersPitch();
 
@@ -756,6 +758,46 @@ void PitchTest::longTitleWordShrinks() {
             }
         }
     }
+}
+
+// FEAT-064 on the slides: $...$ in a title or an item is drawn as a formula, as on the map, not as its
+// LaTeX code; the PowerPoint export keeps it in the picture (no text run with the code).
+void PitchTest::formulasAreRendered() {
+    FormulaText::installRendering();
+    QFont font(QStringLiteral("Arial"));
+    font.setPixelSize(40);
+    const QString fraction = QStringLiteral("$\\frac{a}{b}$ ratio");
+    const QRectF box(0, 0, 800, 400);
+    const Pitch::EntryLayout entry = Pitch::layoutEntry(box, Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap, font, fraction, {}, box.size());
+    QVERIFY(entry.formulaWidth >= 0);
+    QVERIFY(entry.text.height() > QFontMetricsF(font).height());                     // the fraction's two levels
+    QVERIFY(entry.text.width() < QFontMetricsF(font).horizontalAdvance(fraction));  // not the code's width
+    QCOMPARE(Pitch::layoutEntry(box, Qt::AlignLeft, font, QStringLiteral("Plain"), {}, box.size()).formulaWidth, qreal(-1));
+
+    MindMapModel model;
+    model.root()->title = QStringLiteral("Area $\\pi r^2$");
+    for (const char *title : {"$\\sqrt{x}$ root", "Plain"}) model.addChild(model.root(), QString::fromLatin1(title));
+    const Pitch::Slide slide = Pitch::previewSlide(model, model.root());
+    QCOMPARE(slide.kind, Pitch::Slide::Kind::List);
+    const Pitch::Look look = Pitch::look(model, Pitch::Theme::Dark);
+    QImage image(1280, 720, QImage::Format_RGB32);
+    QPainter painter(&image);
+    QList<Pitch::TextRun> texts;
+    Pitch::paint(&painter, QRectF(image.rect()), slide, look, -1, 1, &texts);
+    painter.end();
+    QStringList runs;
+    for (const Pitch::TextRun &run : std::as_const(texts)) runs.append(run.text);
+    QCOMPARE(runs, QStringList{QStringLiteral("Plain")});
+
+    Pitch::Slide empty = slide;
+    empty.title.clear();
+    empty.items[0].clear();
+    QImage without(image.size(), QImage::Format_RGB32);
+    QPainter other(&without);
+    QList<Pitch::TextRun> unused;
+    Pitch::paint(&other, QRectF(without.rect()), empty, look, -1, 1, &unused);
+    other.end();
+    QVERIFY(image != without);  // the formulas are in the picture
 }
 
 void PitchTest::exportWritesPptxAndPdf() {

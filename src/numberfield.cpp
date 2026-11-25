@@ -62,9 +62,40 @@ void NumberField::clearValue() {
     showValue();
 }
 
-QString NumberField::format(double value) const { return QString::number(rounded(value)); }
+void NumberField::setClockFormat(bool clock) {
+    m_clock = clock;
+    updateValidator();
+    showValue();
+}
+
+QString NumberField::format(double value) const {
+    if (!m_clock) return QString::number(rounded(value));
+    const qint64 minutes = qint64(rounded(value));
+    return QStringLiteral("%1.%2").arg(minutes / 60).arg(minutes % 60, 2, 10, QLatin1Char('0'));
+}
+
+bool NumberField::parse(const QString &text, double *number) const {
+    QString typed = text.trimmed().replace(QLatin1Char(','), QLatin1Char('.'));
+    if (!m_clock) {
+        bool ok = false;
+        *number = typed.toDouble(&ok);
+        return ok;
+    }
+    // "8" = 8 h, "8.3" = 8 h 30 (a digit after the point is tens of minutes), ".45" = 45 min.
+    const qsizetype point = typed.indexOf(QLatin1Char('.'));
+    const QString hoursText = point < 0 ? typed : typed.left(point);
+    QString minutesText = point < 0 ? QString() : typed.mid(point + 1);
+    if (hoursText.isEmpty() && minutesText.isEmpty()) return false;
+    if (minutesText.size() == 1) minutesText += QLatin1Char('0');
+    const int hours = hoursText.isEmpty() ? 0 : hoursText.toInt();
+    const int minutes = minutesText.isEmpty() ? 0 : minutesText.toInt();
+    if (minutes >= 60) return false;
+    *number = hours * 60 + minutes;
+    return true;
+}
 
 double NumberField::rounded(double value) const {
+    if (m_clock && m_step > 0) return std::round(value / m_step) * m_step;
     const double scale = std::pow(10.0, m_decimals);
     return std::round(value * scale) / scale;
 }
@@ -72,6 +103,13 @@ double NumberField::rounded(double value) const {
 void NumberField::updateValidator() {
     // Digits only (as many as the limits have), a minus with a negative minimum, a comma or point
     // with decimals. Every partial number is accepted, so Enter and leaving always confirm.
+    if (m_clock) {
+        const int hourDigits = int(QString::number(qint64(m_maximum) / 60).size());
+        delete validator();
+        setValidator(new QRegularExpressionValidator(
+            QRegularExpression(QStringLiteral("\\s*\\d{0,%1}([.,]\\d{0,2})?\\s*").arg(hourDigits)), this));
+        return;
+    }
     const int digits = int(std::max(QString::number(qint64(std::abs(m_minimum))).size(), QString::number(qint64(std::abs(m_maximum))).size()));
     QString pattern = QStringLiteral("\\s*%1\\d{0,%2}").arg(m_minimum < 0 ? QStringLiteral("-?") : QString()).arg(digits);
     if (m_decimals > 0) pattern += QStringLiteral("([.,]\\d{0,%1})?").arg(m_decimals);
@@ -89,9 +127,8 @@ void NumberField::showValue() {
 void NumberField::confirmText() {
     const QString typed = text().trimmed();
     if (typed == (m_hasValue ? format(m_value) : QString())) return;  // nothing typed: no choice
-    bool ok = false;
-    const double number = QString(typed).replace(QLatin1Char(','), QLatin1Char('.')).toDouble(&ok);
-    if (!ok) {  // empty or a lone sign: the value of before
+    double number = 0;
+    if (!parse(typed, &number)) {  // empty or a lone sign: the value of before
         showValue();
         return;
     }
@@ -108,8 +145,8 @@ void NumberField::step(double steps) {
         return;
     }
     // From a number typed and not confirmed yet, else from the value shown (none: the minimum).
-    bool typed = false;
-    const double number = text().trimmed().replace(QLatin1Char(','), QLatin1Char('.')).toDouble(&typed);
+    double number = 0;
+    const bool typed = parse(text(), &number);
     const double base = typed ? number : m_hasValue ? m_value : m_minimum;
     const double value = std::clamp(rounded(base + steps * m_step), m_minimum, m_maximum);
     const bool changed = !m_hasValue || value != m_value;

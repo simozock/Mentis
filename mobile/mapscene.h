@@ -3,6 +3,7 @@
 #include "mapsnapshot.h"
 
 #include <QColor>
+#include <QImage>
 #include <QString>
 #include <QList>
 #include <QPainterPath>
@@ -36,8 +37,8 @@ class QSGOpacityNode;
 // pattern, title tab), their titles with the topics' titles. Step 2: the summaries' brackets with
 // the branch lines; their topics are topics.
 //
-// Prototype limits as before: plain fills, solid borders (no dash), titles, one curve per line; no
-// picture borders and shadows, patterns, inner lines or marks. FEAT-116: formulas are drawn, a title's
+// FEAT-119 stage 0: shapes and lines as the desktop draws them (NodeItem::paint, EdgeItem::paint).
+// Not drawn yet: picture borders and shadows. FEAT-116: formulas are drawn, a title's
 // as an image with the titles, a formula content as a picture.
 // FEAT-110: relationships are drawn as on the desktop (RelationshipItem::paint): the line with its
 // pattern, its end marks, the label on its backdrop; above the topics' shapes and pictures, under
@@ -91,8 +92,18 @@ void appendStroke(Vertices &out, const QPolygonF &polyline, qreal width, bool cl
 QList<QPolygonF> dashes(const QPolygonF &polyline, int penStyle, qreal width);
 // FEAT-115: the same for a pen with its own dash pattern (QPen::dashPattern, in units of its width).
 QList<QPolygonF> dashes(const QPolygonF &polyline, const QPen &pen);
+// FEAT-119 stage 0: a path stroked as QPainter strokes it with `pen` (its dashes; round, square or
+// flat caps; closed subpaths round without caps), in `color`.
+void appendPen(Vertices &out, const QPainterPath &path, const QPen &pen, const QColor &color);
+// A topic's shape as NodeItem::paint draws it: fill or pattern, border with its pattern (freehand too),
+// underlines, inner lines and marks; `background` is the sheet's, under a pattern's strokes.
+void appendShape(Vertices &out, const MindNode *node, const QRectF &shape, qreal cornerRadius, const QColor &background,
+                 qreal opacity = 1);
+// A branch line as EdgeItem::paint draws it: the line or the tapered area, and its marks.
+void appendBranch(Vertices &out, const MapSnapshot::Branch &branch, qreal opacity = 1);
 // FEAT-115: a boundary's fill, border and (withTab) title tab, at `opacity` (a tag's highlight).
-void appendBoundary(Vertices &out, const MapSnapshot::BoundaryShape &shape, bool withTab = true, qreal opacity = 1);
+void appendBoundary(Vertices &out, const MapSnapshot::BoundaryShape &shape, bool withTab = true, qreal opacity = 1,
+                    const QColor &background = NodeStyle::kMapBackground);  // FEAT-134: under a pattern
 // FEAT-110: a relationship's line, end marks and (withLabel) label backdrop, at `opacity` (FEAT-114); and a label's text
 // node (owned by the caller), `text` drawn in `color` at the middle of `box`.
 void appendRelation(Vertices &out, const MapSnapshot::Relation &relation, bool withLabel = true, qreal opacity = 1);
@@ -100,7 +111,7 @@ QSGTextNode *labelNode(QQuickWindow *window, const QFont &font, const QString &t
 
 struct Nodes {
     QSGNode *content = nullptr;      // lines, shapes, pictures, then titles; owned by the caller
-    QSGOpacityNode *text = nullptr;  // the titles, inside content: hidden below the detail zoom
+    QSGNode *text = nullptr;         // the titles, inside content, drawn at every zoom
     int vertexCount = 0;
 };
 // The whole sheet in map px. The title of `withoutTitle` is left out: the page's field draws it
@@ -113,5 +124,18 @@ struct Nodes {
 Nodes build(const MapSnapshot &snapshot, QQuickWindow *window, const MindNode *withoutTitle = nullptr,
             const MindNode *onlyTopic = nullptr, const QString &withoutLabel = QString(),
             const QString &withoutRelation = QString(), const QString &highlight = QString());
+
+// FEAT-120 stage C2: the same sheet drawn with QPainter in map px, for the exports (PNG, SVG, PDF):
+// what build() draws, in its order, with the desktop's pens (NodeItem, EdgeItem, RelationshipItem,
+// BoundaryItem::paint): lines, shapes, dashes and texts stay vector; pictures, markers' and
+// buttons' images are drawn at imageScale times their shown size.
+void paint(QPainter *painter, const MapSnapshot &snapshot, qreal imageScale);
+
+// FEAT-121 A3: a topic's picture (image, sticker or formula) at `scale` times its imageSize, and a
+// marker `pixels` wide, from the caches the sheet's builds use (the outliner's rows share them).
+// The caches are not locked: these run on the GUI thread (OutlineImage::updatePolish) and build() on
+// the render thread while the GUI thread waits for the sync, so the two never overlap within a window.
+QImage topicPicture(const MindNode *node, qreal scale);
+QImage markerPicture(const QString &marker, int pixels);
 
 }  // namespace MapScene

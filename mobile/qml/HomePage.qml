@@ -9,11 +9,14 @@ import Mentis.Mobile
 // picker, a content:// URI on Android). FEAT-107: one folder level at a time as the desktop's Home
 // (FEAT-105 decision 6), coloured folders first; Back (the button, Android's Back, the ".." row) goes
 // up. The row's ⋮ opens its menu; a long press lifts the row at once and a drag moves the map or the
-// folder onto a folder, onto ".." or onto Back.
+// folder onto a folder, onto ".." or onto Back. FEAT-123: the header's "+" opens New map and New
+// folder; New map asks the type and the name and creates the map in the folder shown.
 Page {
     id: page
     required property MapLibrary library
     signal openRequested(url url)
+    signal createRequested(string folder, string name, string variant)
+    signal settingsRequested()  // FEAT-125
 
     function showError(message) {
         errorText.text = message
@@ -29,7 +32,8 @@ Page {
                                        .concat(page.library.folders.map(folder => Object.assign({ kind: "folder" }, folder)))
                                        .concat(page.library.maps.map(map => Object.assign({ kind: "map" }, map)))
     property bool holding: false  // a row is held (long press): the list does not scroll
-    readonly property bool covered: entryMenu.visible || nameDialog.visible || colorDialog.visible || moveDialog.visible
+    readonly property bool covered: entryMenu.visible || exportSheet.visible || nameDialog.visible || colorDialog.visible || moveDialog.visible
+                                  || typeSheet.visible || deleteMapDialog.visible
 
     // The result of an action on the library: its error, or none.
     function done(ok) { showError(ok ? "" : library.lastError) }
@@ -87,19 +91,46 @@ Page {
                 elide: Text.ElideRight
                 Layout.fillWidth: true
             }
+            // FEAT-125: the Settings page (the shortcuts of a hardware keyboard).
             AbstractButton {
-                id: newFolderButton
-                objectName: "newFolderButton"
+                id: settingsButton
+                objectName: "settingsButton"
                 implicitWidth: Theme.touchTarget
                 implicitHeight: Theme.touchTarget
-                Accessible.name: qsTr("New folder")
-                onClicked: nameDialog.ask("", "")
+                focusPolicy: Qt.NoFocus
+                Accessible.name: qsTranslate("SettingsDialog", "Settings")
+                onClicked: page.settingsRequested()
+                background: Rectangle {
+                    anchors.centerIn: parent
+                    width: Theme.groupButtonSize
+                    height: Theme.groupButtonSize
+                    radius: Theme.groupButtonRadius
+                    color: settingsButton.down ? Theme.darkDivider : "transparent"
+                }
+                contentItem: Item {
+                    IconImage {
+                        anchors.centerIn: parent
+                        width: Theme.iconSize
+                        height: Theme.iconSize
+                        source: "qrc:/assets/hugeicons/settings-general.svg"
+                        sourceSize: Qt.size(Theme.iconSize * Screen.devicePixelRatio, Theme.iconSize * Screen.devicePixelRatio)
+                        color: Theme.darkText
+                    }
+                }
+            }
+            AbstractButton {
+                id: newButton
+                objectName: "newButton"
+                implicitWidth: Theme.touchTarget
+                implicitHeight: Theme.touchTarget
+                Accessible.name: qsTr("New")
+                onClicked: entryMenu.openFor({ kind: "new" }, newButton)
                 background: Rectangle {
                     anchors.centerIn: parent
                     width: Theme.buttonHeight
                     height: Theme.buttonHeight
                     radius: Theme.controlRadius
-                    color: newFolderButton.down ? Theme.darkDivider : Theme.darkRaised
+                    color: newButton.down ? Theme.darkDivider : Theme.darkRaised
                     border.width: 1
                     border.color: Theme.darkDivider
                 }
@@ -155,7 +186,7 @@ Page {
 
         Label {
             visible: page.library.folders.length === 0 && page.library.maps.length === 0
-            text: page.library.atRoot ? qsTr("No maps yet. Open a .mentis file to see it here.")
+            text: page.library.atRoot ? qsTr("No maps yet. Create one with New map or open a .mentis file.")
                                       : qsTr("No maps in this folder yet.")
             wrapMode: Text.Wrap
             color: Theme.darkTextMuted
@@ -373,7 +404,9 @@ Page {
     }
 
     // The row's menu (its ⋮), dark as the marker menu (ui-mobile.md): folder: Open, Rename…, Colour…,
-    // Move to…, Delete (only when empty); map: Open, Move to….
+    // Move to…, Delete (only when empty); map: Open, Move to…, Export… (FEAT-120 stage C), Delete…
+    // (asked first, FEAT-107); the
+    // header's "+" (FEAT-123): New map, New folder, under the button.
     Popup {
         id: entryMenu
         objectName: "entryMenu"
@@ -386,14 +419,20 @@ Page {
 
         function openFor(entry, item) {
             entryMenu.entry = entry
-            entryMenu.actions = entry.kind === "folder"
+            entryMenu.actions = entry.kind === "new"
+                ? [{ id: "newMap", label: qsTr("New map"), enabled: true },
+                   { id: "newFolder", label: qsTr("New folder"), enabled: true }]
+                : entry.kind === "folder"
                 ? [{ id: "open", label: qsTr("Open"), enabled: true },
                    { id: "rename", label: qsTr("Rename…"), enabled: true },
                    { id: "color", label: qsTr("Color…"), enabled: true },
                    { id: "move", label: qsTr("Move to…"), enabled: true },
                    { id: "delete", label: qsTr("Delete"), enabled: page.library.isEmptyFolder(entry.path) }]
                 : [{ id: "open", label: qsTr("Open"), enabled: true },
-                   { id: "move", label: qsTr("Move to…"), enabled: true }]
+                   { id: "renameMap", label: qsTr("Rename…"), enabled: true },
+                   { id: "move", label: qsTr("Move to…"), enabled: true },
+                   { id: "export", label: qsTr("Export…"), enabled: true },
+                   { id: "deleteMap", label: qsTr("Delete…"), enabled: true }]
             const p = item.mapToItem(page.contentItem, item.width - width, item.height)
             const menuHeight = actions.length * Theme.touchTarget + 2 * padding
             x = Math.max(Theme.grid, Math.min(p.x, page.width - width - Theme.grid))
@@ -408,12 +447,22 @@ Page {
                 else page.openRequested(entry.url)
             } else if (action === "rename") {
                 nameDialog.ask(entry.path, entry.name)
+            } else if (action === "renameMap") {
+                nameDialog.askRenameMap(entry.path, entry.name)
             } else if (action === "color") {
                 colorDialog.ask(entry.path, entry.color)
             } else if (action === "delete") {
                 page.done(page.library.removeFolder(entry.path))
+            } else if (action === "deleteMap") {
+                deleteMapDialog.ask(entry)
             } else if (action === "move") {
                 moveDialog.ask(entry)
+            } else if (action === "export") {
+                exportSheet.openFor(entry.url)
+            } else if (action === "newMap") {
+                typeSheet.openToCreate(typeSource)
+            } else if (action === "newFolder") {
+                nameDialog.ask("", "")
             }
         }
 
@@ -449,22 +498,68 @@ Page {
         }
     }
 
-    // New folder (no path) or Rename… (the folder's path).
+    // The type list only: no map is open in the Home.
+    MobileStyle { id: typeSource }
+    MapTypeSheet {
+        id: typeSheet
+        objectName: "newMapTypeSheet"
+        onCreated: variant => nameDialog.askMap(variant)
+    }
+
+    MapExportSheet {
+        id: exportSheet
+        library: page.library
+    }
+
+    // New folder (no path), Rename… (the folder's or, with renamingMap, the map's path) or, FEAT-123,
+    // New map (the variant chosen).
     ModalDialog {
         id: nameDialog
         objectName: "folderNameDialog"
         property string path
-        anchors.centerIn: parent
+        property string variant
+        property bool renamingMap
+        // Only the X, Create / Rename or Esc closes it. With the on-screen keyboard shown it moves to
+        // 16 px from the top, away from the keyboard; otherwise centred.
+        closePolicy: Popup.CloseOnEscape
+        x: (page.width - width) / 2
+        y: Qt.inputMethod.visible ? 4 * Theme.grid : (page.height - height) / 2
         width: Math.min(page.width - 8 * Theme.grid, 400)
         function ask(path, name) {
             nameDialog.path = path
+            nameDialog.variant = ""
+            nameDialog.renamingMap = false
             nameDialog.title = path === "" ? qsTr("New folder") : qsTr("Rename folder")
             nameField.text = path === "" ? qsTr("New folder") : name
             open()
             nameField.selectAll()
             nameField.forceActiveFocus()
         }
-        onAccepted: page.done(path === "" ? page.library.createFolder(nameField.text) : page.library.renameFolder(path, nameField.text))
+        function askRenameMap(path, name) {
+            nameDialog.path = path
+            nameDialog.variant = ""
+            nameDialog.renamingMap = true
+            nameDialog.title = qsTr("Rename map")
+            nameField.text = name
+            open()
+            nameField.selectAll()
+            nameField.forceActiveFocus()
+        }
+        function askMap(variant) {
+            nameDialog.path = ""
+            nameDialog.variant = variant
+            nameDialog.renamingMap = false
+            nameDialog.title = qsTr("New map")
+            nameField.text = qsTr("New map")
+            open()
+            nameField.selectAll()
+            nameField.forceActiveFocus()
+        }
+        onAccepted: {
+            if (variant !== "") page.createRequested(page.library.shown, nameField.text, variant)
+            else if (renamingMap) page.done(page.library.renameMap(path, nameField.text))
+            else page.done(path === "" ? page.library.createFolder(nameField.text) : page.library.renameFolder(path, nameField.text))
+        }
         Column {
             width: nameDialog.availableWidth
             spacing: Theme.grid
@@ -500,10 +595,9 @@ Page {
             }
         }
         buttons: [
-            DarkButton { text: qsTr("Cancel"); onClicked: nameDialog.reject() },
             DarkButton {
                 objectName: "folderNameAcceptButton"
-                text: nameDialog.path === "" ? qsTr("Create") : qsTr("Rename")
+                text: nameDialog.path === "" ? qsTr("Create") : qsTr("Rename")  // New folder and New map: Create
                 primary: true
                 enabled: nameField.text.trim() !== ""
                 onClicked: nameDialog.accept()
@@ -561,7 +655,33 @@ Page {
                 }
             }
         }
-        buttons: [ DarkButton { text: qsTr("Cancel"); onClicked: colorDialog.reject() } ]
+    }
+
+    // Delete… of a map: the file goes for good, so it is asked first, as the desktop's Delete sheet.
+    ModalDialog {
+        id: deleteMapDialog
+        objectName: "deleteMapDialog"
+        property string path
+        property string name
+        title: qsTr("Delete map")
+        anchors.centerIn: parent
+        width: Math.min(page.width - 8 * Theme.grid, 400)
+        function ask(entry) {
+            deleteMapDialog.path = entry.path
+            deleteMapDialog.name = entry.name
+            open()
+        }
+        onAccepted: page.done(page.library.removeMap(path))
+        Label {
+            width: deleteMapDialog.availableWidth  // not parent.width: a binding loop on the dialog's implicit height
+            text: qsTr("Delete the map \"%1\" with all its sheets? This cannot be undone.").arg(deleteMapDialog.name)
+            wrapMode: Text.Wrap
+            color: Theme.darkText
+            font.pixelSize: Theme.bodySize
+        }
+        buttons: [
+            DarkButton { objectName: "deleteMapConfirm"; text: qsTr("Delete"); primary: true; onClicked: deleteMapDialog.accept() }
+        ]
     }
 
     // Move to…: every folder of the tree; the folder the entry is in cannot be chosen, and a folder
@@ -611,6 +731,5 @@ Page {
                 }
             }
         }
-        buttons: [ DarkButton { text: qsTr("Cancel"); onClicked: moveDialog.reject() } ]
     }
 }

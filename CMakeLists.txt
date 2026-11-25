@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(Mentis VERSION 1.0.0 LANGUAGES CXX)
+project(Mentis VERSION 1.1.0 LANGUAGES CXX)
 
 # 2026-10-14: senza un tipo di build (generatori a configurazione singola, es. Ninja da riga di
 # comando) il compilatore non ottimizzava (-O0). Predefinito Release; Qt Creator e chi passa
@@ -8,6 +8,30 @@ project(Mentis VERSION 1.0.0 LANGUAGES CXX)
 # https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Tipo di build" FORCE)
+endif()
+
+# Load (2026-11-16, as krm's BUG-007): unlimited, Ninja ran a compiler per CPU thread plus several
+# GNU ld links at once, kept the laptop at 100 % and, on battery, slowed tests past their time
+# budgets. Local Ninja builds compile on half the CPU threads and link two programs at a time; CI
+# (variable CI set) keeps every core. Change with -DMENTIS_BUILD_JOBS=<n> -DMENTIS_LINK_JOBS=<n>.
+# https://cmake.org/cmake/help/latest/prop_gbl/JOB_POOLS.html
+if(CMAKE_GENERATOR MATCHES "Ninja" AND NOT DEFINED ENV{CI})
+    cmake_host_system_information(RESULT mentis_cpu_threads QUERY NUMBER_OF_LOGICAL_CORES)
+    math(EXPR mentis_jobs_default "${mentis_cpu_threads} / 2")
+    if(mentis_jobs_default LESS 1)
+        set(mentis_jobs_default 1)
+    endif()
+    set(MENTIS_BUILD_JOBS ${mentis_jobs_default} CACHE STRING "Compilers run at once by Ninja")
+    set(MENTIS_LINK_JOBS 2 CACHE STRING "Programs linked at once by Ninja")
+    foreach(mentis_jobs MENTIS_BUILD_JOBS MENTIS_LINK_JOBS)
+        if(NOT ${mentis_jobs} MATCHES "^[1-9][0-9]*$")
+            message(FATAL_ERROR "${mentis_jobs} must be a positive number, not '${${mentis_jobs}}'")
+        endif()
+    endforeach()
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS
+        mentis_compile=${MENTIS_BUILD_JOBS} mentis_link=${MENTIS_LINK_JOBS})
+    set(CMAKE_JOB_POOL_COMPILE mentis_compile)
+    set(CMAKE_JOB_POOL_LINK mentis_link)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -77,18 +101,38 @@ qt_add_library(MentisDomain STATIC
     src/numbering.cpp
     src/ganttplan.h
     src/ganttplan.cpp
+    src/ganttcanvas.h
+    src/ganttcanvas.cpp
+    src/ganttstylechoices.h
+    src/ganttstylechoices.cpp
+    src/ganttcommands.h
+    src/ganttcommands.cpp
+    src/gantttaskedits.h
+    src/gantttaskedits.cpp
     src/ganttcosts.h
     src/ganttcosts.cpp
+    src/ganttpeoplecharts.h
+    src/ganttpeoplecharts.cpp
+    src/ganttcolumns.h
+    src/ganttcolumns.cpp
+    src/ganttexport.h
+    src/ganttexport.cpp
+    src/ganttoffice.h
+    src/ganttoffice.cpp
     src/ganttresources.h
     src/ganttresources.cpp
     src/exportframe.h
     src/exportframe.cpp
+    src/mappages.h
+    src/mappages.cpp
     src/selectioncommands.h
     src/selectioncommands.cpp
     src/markdownimport.h
     src/markdownimport.cpp
     src/localization.h
     src/localization.cpp
+    src/calendarmonth.h
+    src/calendarmonth.cpp
     src/document.h
     src/document.cpp
     src/shortcuts.h
@@ -113,8 +157,14 @@ qt_add_library(MentisDomain STATIC
     src/mindmapmodel.cpp
     src/nodestyle.h
     src/nodeshape.cpp
+    src/imageframe.h
+    src/imageframe.cpp
     src/nodesketch.cpp
     src/richtitle.cpp
+    src/outlineformats.h
+    src/outlineformats.cpp
+    src/ganttnames.h
+    src/ganttnames.cpp
     src/richresources.h
     src/richresources.cpp
     src/nodestyle.cpp
@@ -130,6 +180,8 @@ qt_add_library(MentisDomain STATIC
     src/filevalidation.h
     src/markdownshortcuts.h
     src/markdownshortcuts.cpp
+    src/bracecompletion.h
+    src/bracecompletion.cpp
     src/markers.h
     src/markers.cpp
     src/mapstructure.h
@@ -142,10 +194,18 @@ qt_add_library(MentisDomain STATIC
     src/updates.cpp
     src/branchpath.h
     src/branchpath.cpp
+    src/branchline.h
+    src/branchline.cpp
+    src/stylechoices.h
+    src/stylechoices.cpp
     src/iconlibrary.h
     src/iconlibrary.cpp
     src/svgdocument.cpp
     src/svgshapes.cpp
+    src/stickercanvas.h
+    src/stickercanvas.cpp
+    src/stickeredit.h
+    src/stickeredit.cpp
     src/stickers.h
     src/stickers.cpp
     src/filevalidation.cpp
@@ -170,6 +230,8 @@ qt_add_library(MentisDomain STATIC
     src/ooxml.cpp
     src/pitch.h
     src/pitch.cpp
+    src/pitchchoices.h
+    src/pitchchoices.cpp
     src/officeexport.h
     src/officeexport.cpp
     src/formularendering.h
@@ -184,6 +246,10 @@ target_link_libraries(MentisDomain PUBLIC Qt6::Gui Qt6::Sql Qt6::Concurrent Qt6:
 qt_add_library(MentisFormula STATIC
     src/formulatext.h
     src/formulatext.cpp
+    src/formulafielddocument.h
+    src/formulafielddocument.cpp
+    src/latexcatalogue.h
+    src/latexcatalogue.cpp
 )
 target_include_directories(MentisFormula PUBLIC src)
 target_link_libraries(MentisFormula PUBLIC MentisDomain MentisMathText)
@@ -193,8 +259,12 @@ if(MENTIS_DESKTOP)
 qt_add_library(MentisCore STATIC
     src/resourcesdialog.h
     src/resourcesdialog.cpp
+    src/peoplechartspanel.h
+    src/peoplechartspanel.cpp
     src/ganttview.h
     src/ganttview.cpp
+    src/ganttnamefield.h
+    src/ganttnamefield.cpp
     src/datepicker.h
     src/datepicker.cpp
     src/numberfield.h
@@ -203,10 +273,6 @@ qt_add_library(MentisCore STATIC
     src/gantttaskpanel.cpp
     src/ganttbaselinemenu.h
     src/ganttbaselinemenu.cpp
-    src/ganttexport.h
-    src/ganttexport.cpp
-    src/ganttoffice.h
-    src/ganttoffice.cpp
     src/officeexportdialog.h
     src/officeexportdialog.cpp
     src/exportframecontrols.h
@@ -247,10 +313,14 @@ qt_add_library(MentisCore STATIC
     src/noteeditor.cpp
     src/formuladialog.h
     src/formuladialog.cpp
+    src/latexlistdialog.h
+    src/latexlistdialog.cpp
     src/variantgallery.h
     src/variantgallery.cpp
     src/wheelguard.h
     src/wheelguard.cpp
+    src/clickawaycommit.h
+    src/clickawaycommit.cpp
     src/updateprompt.h
     src/updateprompt.cpp
     src/help.h
@@ -277,6 +347,8 @@ qt_add_library(MentisCore STATIC
     src/segmentedcontrol.cpp
     src/sidepanel.h
     src/sidepanel.cpp
+    src/panelresizehandle.h
+    src/panelresizehandle.cpp
     src/modaldialog.h
     src/modaldialog.cpp
     src/linkdialogs.h
@@ -520,6 +592,8 @@ if(MENTIS_BUILD_MEDIA)
         find_package(Qt6 REQUIRED COMPONENTS Multimedia)
         qt_add_executable(MentisPromoVideos tools/media/promo_videos.cpp)
         target_link_libraries(MentisPromoVideos PRIVATE MentisCore MentisResources Qt6::Test Qt6::Multimedia)
+        # --phone: the phone app's QML pages (MentisMobileUi), driven as the desktop window.
+        target_link_libraries(MentisPromoVideos PRIVATE MentisMobileUi MentisMobileUiplugin)
     endif()
 endif()
 
@@ -747,6 +821,16 @@ if(BUILD_TESTING)
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()
 
+    # FEAT-133: LaTeX braces closed while typing (without widgets).
+    qt_add_executable(MentisBraceCompletionTest tests/brace_completion_test.cpp)
+    target_link_libraries(MentisBraceCompletionTest PRIVATE MentisCore Qt6::Test)
+    add_test(NAME MentisBraceCompletion COMMAND MentisBraceCompletionTest)
+    set_tests_properties(MentisBraceCompletion PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(WIN32)
+        set_tests_properties(MentisBraceCompletion PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endif()
+
     # FEAT-066: il Document senza finestre (fogli, storico, file, salvataggio automatico).
     qt_add_executable(MentisDocumentTest tests/document_test.cpp)
     target_link_libraries(MentisDocumentTest PRIVATE MentisCore Qt6::Test)
@@ -811,16 +895,41 @@ if(BUILD_TESTING)
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()
 
+    # FEAT-122 stage 0: the Gantt chart's drawing in the core; linking only MentisDomain checks it
+    # needs no widget.
+    qt_add_executable(MentisGanttCanvasTest tests/gantt_canvas_test.cpp)
+    target_link_libraries(MentisGanttCanvasTest PRIVATE MentisDomain Qt6::Test)
+    add_test(NAME MentisGanttCanvas COMMAND MentisGanttCanvasTest)
+    set_tests_properties(MentisGanttCanvas PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(WIN32)
+        set_tests_properties(MentisGanttCanvas PROPERTIES
+            ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+    endif()
+
     # FEAT-097: the mobile app's adapters and pages (MentisMobileUi, no Qt Widgets), on the desktop.
     if(TARGET MentisMobileUi)
         qt_add_executable(MentisMobileTest tests/mobile_test.cpp)
-        target_link_libraries(MentisMobileTest PRIVATE MentisMobileUi MentisMobileUiplugin MentisResources Qt6::Test)
+        # The pen test sets a high DPI factor (QHighDpiScaling, private Qt Gui API; a package of its
+        # own from Qt 6.9).
+        if(Qt6_VERSION VERSION_GREATER_EQUAL 6.9)
+            find_package(Qt6 REQUIRED COMPONENTS GuiPrivate)
+        endif()
+        target_link_libraries(MentisMobileTest PRIVATE MentisMobileUi MentisMobileUiplugin MentisResources Qt6::Test Qt6::GuiPrivate)
         target_compile_definitions(MentisMobileTest PRIVATE MENTIS_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
         add_test(NAME MentisMobile COMMAND MentisMobileTest)
         # The software renderer: the offscreen platform has no GPU.
         set_tests_properties(MentisMobile PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software")
         if(WIN32)
             set_tests_properties(MentisMobile PROPERTIES
+                ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+        endif()
+        # FEAT-119 stage 0: the phone's shapes and lines against the desktop scene's (both libraries).
+        qt_add_executable(MentisMobileRenderTest tests/mobile_render_test.cpp)
+        target_link_libraries(MentisMobileRenderTest PRIVATE MentisCore MentisMobileUi MentisResources Qt6::Test)
+        add_test(NAME MentisMobileRender COMMAND MentisMobileRenderTest)
+        set_tests_properties(MentisMobileRender PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        if(WIN32)
+            set_tests_properties(MentisMobileRender PROPERTIES
                 ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
         endif()
     endif()
@@ -935,7 +1044,7 @@ if(BUILD_TESTING)
     # Test areas (user, 2026-10-28; docs/engineering/quality-gates.md, "Test per area"): a change runs
     # the tests of the areas it touches plus "core", not the whole suite.
     #   cmake --build build --target tests-gantt tests-core   builds only those tests (and the app's library)
-    #   ctest --test-dir build -L "gantt|core" -j 8           runs them
+    #   ctest --test-dir build -L "gantt|core" -j 4           runs them
     # A test can be in more areas. A new test gets its areas here; CMake warns about one without.
     function(mentis_test_area area)
         if(NOT TARGET tests-${area})
@@ -958,14 +1067,15 @@ if(BUILD_TESTING)
     mentis_test_area(outliner OutlinerSelection MarkdownTyping Notes TaskBox Numbering NodeSearch MarkdownImport)
     mentis_test_area(side-panel SidePanel PanelContext StylePage ColorPicker NodeStyle MapStyleReset CustomPalettes
                      ThemeVariants ImageStyle Numbering StickersMarkers WheelGuard SvgDocument)
-    mentis_test_area(gantt GanttPlan GanttView)
-    mentis_test_area(text MarkdownTyping MarkdownShortcuts SpellCheck Formula)
+    mentis_test_area(gantt GanttPlan GanttView GanttCanvas)
+    mentis_test_area(text MarkdownTyping MarkdownShortcuts BraceCompletion SpellCheck Formula)
     mentis_test_area(import-export MarkdownImport MarkdownParse Export OfficeExport)
     mentis_test_area(settings ShortcutsUi Shortcuts SettingsUi Localization TranslationFiles UiTheme SpellCheck WindowFrame FocusMode Updates Help Tour)
     mentis_test_area(pitch Pitch PitchTemplate)
     mentis_test_area(mcp McpProtocol McpTools McpBridge)
     if(TARGET MentisMobileTest)
-        mentis_test_area(mobile Mobile)
+        mentis_test_area(mobile Mobile MobileRender)
+        mentis_test_area(map MobileRender)
     endif()
     get_directory_property(mentis_tests TESTS)
     foreach(test IN LISTS mentis_tests)

@@ -6,7 +6,7 @@ import Mentis.Mobile
 // on-screen keyboard (user's choice 2026-11-11). It opens to read: the keyboard comes with a tap on
 // the text. The text is edited as plain text: the formatting already there is kept and typed text
 // takes the format at the cursor. Done, Back or Esc write it (one Undo step; emptied = note removed);
-// Cancel leaves the note as it was (as written when the app last went to the background).
+// the X leaves the note as it was (as written when the app last went to the background).
 // FEAT-106: Remove takes the note and its icon off (one Undo step), shown when the topic has a note.
 ModalDialog {
     id: dialog
@@ -14,8 +14,9 @@ ModalDialog {
     required property MobileMap map
     // The page y where the keyboard starts (MapPage.keyboardTop).
     property real keyboardTop: parent ? parent.height : 0
-    // Set by Cancel: closing does not write.
+    // Set by the X: closing does not write.
     property bool discard: false
+    onCloseClicked: dialog.discard = true
 
     title: qsTr("Note")
     // A tap outside does not close it: half a note would be lost or written by a stray tap.
@@ -35,7 +36,7 @@ ModalDialog {
     }
 
     // Android may end the app in the background: the note typed so far is written and saved first
-    // (one Undo step; Cancel afterwards keeps it).
+    // (one Undo step; the X afterwards keeps it).
     Connections {
         target: Qt.application
         function onStateChanged() {
@@ -50,6 +51,22 @@ ModalDialog {
         noteText.focus = false
         Qt.inputMethod.hide()
         if (!dialog.discard) dialog.map.saveNote(noteText.textDocument)
+    }
+
+    // FEAT-124: the desktop note's Markdown shortcuts (FEAT-068): **, *, ~~, ==, `code`, "- ",
+    // "1. ", "## " and [text](address), with NoteEditor's sizes.
+    // FEAT-133: the braces of a formula closed while typing.
+    BraceTyping {
+        document: noteText.textDocument
+        active: dialog.opened
+    }
+    MarkdownTyping {
+        document: noteText.textDocument
+        active: dialog.opened
+        note: true
+        headingPx: 18
+        bodyPx: Theme.bodySize
+        onApplied: Qt.inputMethod.update(Qt.ImQueryInput)
     }
 
     Flickable {
@@ -99,11 +116,6 @@ ModalDialog {
                 dialog.close()
                 dialog.map.removeNote()
             }
-        },
-        DarkButton {
-            objectName: "noteCancelButton"
-            text: qsTr("Cancel")
-            onClicked: { dialog.discard = true; dialog.close() }
         },
         DarkButton {
             objectName: "noteDoneButton"

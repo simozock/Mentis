@@ -9,6 +9,7 @@
 // raccolte e si riordinano. Tutto vale per tutte le mappe: library.json e files/ nella cartella
 // dati dell'app (AppDataLocation/stickers o /markers). Nomi in inglese come all'origine.
 
+#include <QByteArray>
 #include <QList>
 #include <QSize>
 #include <QString>
@@ -70,6 +71,18 @@ QString displayName(const QString &path);
 // for the map's addMarkerImage). Empty when the file cannot be read.
 QString markerFor(const Item &item, const QString &collectionId, QByteArray *data = nullptr);
 QString customGroup(const QString &collectionId);  // without ":" (the marker's separator)
+// The markers of an own marker's group, as its collection lists them (each image registered with
+// Markers; the bytes in data, for the map's addMarkerImage): the values a click steps through and the
+// marker menu lists, as a drawn series' (FEAT-051). Empty when the group is not in this library.
+struct MarkerChoice {
+    QString marker;
+    QString name;
+    QByteArray data;
+};
+QList<MarkerChoice> groupMarkers(const QString &marker);
+// The marker after marker in its series or own group (the last goes back to the first); marker
+// itself when its own group is not in the library.
+QString nextMarker(const QString &marker, QByteArray *data = nullptr);
 
 // Controlli dei file (uguali per marcatori e adesivi): SVG consigliato, PNG accettato; al massimo
 // kMaxFileBytes; il contenuto deve leggersi come immagine (un SVG che non si disegna si rifiuta).

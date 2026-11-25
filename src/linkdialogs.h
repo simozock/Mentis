@@ -6,24 +6,42 @@
 #include <QJsonObject>
 #include <QList>
 
+#include <functional>
+
 class QCheckBox;
+class QLabel;
 class QLineEdit;
+class QStackedWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
+class SegmentedControl;
 
-// FEAT-027: scelta dell'argomento da collegare. Albero di tutti i fogli con i loro nodi (forma
-// piatta dello storico, MindMapModel::toFlatSnapshot) e ricerca: restano i nodi che contengono il
-// testo, con i loro antenati. Il nodo di partenza non si puo' scegliere. La casella aggiunge il
-// collegamento inverso; e' disattivata se il nodo scelto ha gia' un collegamento ad argomento.
-class TopicLinkDialog final : public ModalDialog {
+// FEAT-117: one dialog for a topic's links (FEAT-027), with a tab for a web page and a tab for
+// another topic. Insert applies the visible tab only; each tab keeps its input while switching.
+// Web page: the address, valid as NodeLinks::webAddress, with the reason under the field when the
+// scheme is not allowed. Topic: the tree of every sheet with its topics (the history's flat form,
+// MindMapModel::toFlatSnapshot) and a search that keeps the matches and their ancestors; the
+// source topic cannot be chosen; the checkbox adds the link back and is off when the chosen topic
+// already has a topic link. The tree is built the first time the Topic tab shows (sheets() may
+// read sheets from the file).
+class LinkDialog final : public ModalDialog {
     Q_OBJECT
 public:
+    enum class Tab { Web, Topic };
     struct SheetContent {
         QString id;
         QString name;
         QHash<QString, QJsonObject> content;
     };
-    TopicLinkDialog(QWidget *parent, const QList<SheetContent> &sheets, const QString &sourceId, const QString &currentTargetId);
+    LinkDialog(QWidget *parent, Tab tab, const QString &currentAddress, std::function<QList<SheetContent>()> sheets,
+               const QString &sourceId, const QString &currentTargetId);
+
+    Tab tab() const;
+    void setTab(Tab tab);
+    SegmentedControl *tabs() const { return m_tabs; }
+
+    QString address() const;  // full address, empty if not valid
+    QLineEdit *addressField() const { return m_address; }
 
     QString targetId() const;
     QString targetSheetId() const;
@@ -31,29 +49,22 @@ public:
     QLineEdit *searchField() const { return m_search; }
     QTreeWidget *tree() const { return m_tree; }
     QCheckBox *backCheck() const { return m_back; }
-    // Mostra solo i nodi che contengono text (maiuscole ignorate) e i loro antenati.
+    // Shows only the topics containing text (case ignored) and their ancestors.
     void filter(const QString &text);
-    // Seleziona il nodo con quell'id (per i test e per la modifica di un collegamento).
+    // Selects the topic with that id (tests, and editing a link).
     bool selectNode(const QString &id);
 
 private:
+    void buildTree();
     void updateButtons();
+    SegmentedControl *m_tabs = nullptr;
+    QStackedWidget *m_pages = nullptr;
+    QLineEdit *m_address = nullptr;
+    QLabel *m_error = nullptr;
     QLineEdit *m_search = nullptr;
     QTreeWidget *m_tree = nullptr;
     QCheckBox *m_back = nullptr;
-    QList<QTreeWidgetItem *> m_nodeItems;  // tutti i nodi, nell'ordine dell'albero
-};
-
-// FEAT-027: indirizzo di una pagina web. Il bottone si attiva solo con un indirizzo valido
-// (NodeLinks::webAddress); sotto il campo il motivo se lo schema non e' ammesso.
-class WebLinkDialog final : public ModalDialog {
-    Q_OBJECT
-public:
-    WebLinkDialog(QWidget *parent, const QString &currentAddress);
-    QString address() const;  // indirizzo completo, vuoto se non valido
-    QLineEdit *addressField() const { return m_address; }
-
-private:
-    QLineEdit *m_address = nullptr;
-    QLabel *m_error = nullptr;
+    std::function<QList<SheetContent>()> m_sheets;  // reset once the tree is built
+    QString m_sourceId, m_currentTargetId;
+    QList<QTreeWidgetItem *> m_nodeItems;  // every topic, in the tree's order
 };

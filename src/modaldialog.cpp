@@ -10,8 +10,12 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QShortcut>
 #include <QShowEvent>
+#include <QSpinBox>
+#include <QTextEdit>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QWindow>
@@ -36,15 +40,17 @@ ModalDialog::ModalDialog(QWidget *parent, const QString &title, const QString &a
         "QCheckBox { color:@text; font-size:14px; spacing:8px; }"
         "QCheckBox:disabled { color:@textMuted; }"
         "QPushButton { min-height:32px; max-height:32px; border-radius:4px; padding:0 16px; font-size:14px; }"
-        "QPushButton#ModalCancel, QPushButton#ModalSecondary { background:@surfaceRaised; color:@text; border:1px solid @divider; }"
-        "QPushButton#ModalCancel:hover, QPushButton#ModalSecondary:hover { background:@divider; }"
-        "QPushButton#ModalCancel:pressed, QPushButton#ModalSecondary:pressed { background:@surfaceSunken; }"
+        "QPushButton#ModalSecondary { background:@surfaceRaised; color:@text; border:1px solid @divider; }"
+        "QPushButton#ModalSecondary:hover { background:@divider; }"
+        "QPushButton#ModalSecondary:pressed { background:@surfaceSunken; }"
         "QPushButton#ModalAccept { background:@accent; color:@text; border:0; font-weight:600; }"
         "QPushButton#ModalAccept:disabled { background:@textMuted; color:@surface; }"
         "QPushButton:focus { outline:none; }"
         // BUG-036: "?" (FEAT-092) looks like the close button, not like Fusion's white tool button.
-        "QToolButton#ModalClose, QToolButton#ModalHelp { background:transparent; border:0; border-radius:4px; }"
-        "QToolButton#ModalClose:hover, QToolButton#ModalHelp:hover { background:@divider; }")));
+        "QToolButton#ModalClose, QToolButton#ModalHelp, QToolButton[modalTitleButton=\"true\"] { background:transparent; border:0;"
+        " border-radius:4px; }"
+        "QToolButton#ModalClose:hover, QToolButton#ModalHelp:hover, QToolButton[modalTitleButton=\"true\"]:hover { background:@divider; }"
+        "QToolButton[modalTitleButton=\"true\"]:checked { background:@surfaceRaised; }")));
 
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(16, 16, 16, 16);
@@ -82,7 +88,6 @@ ModalDialog::ModalDialog(QWidget *parent, const QString &title, const QString &a
     close->setFixedSize(28, 28);
     close->setToolTip(tr("Close"));
     close->setAccessibleName(tr("Close"));
-    close->hide();
     connect(close, &QToolButton::clicked, this, &QDialog::reject);
     titleRow->addWidget(close, 0, Qt::AlignTop);
     m_close = close;
@@ -100,73 +105,76 @@ ModalDialog::ModalDialog(QWidget *parent, const QString &title, const QString &a
     auto *buttons = new QHBoxLayout;
     buttons->setSpacing(8);
     buttons->addStretch();
-    m_cancel = new QPushButton(tr("Cancel"), m_surface);
-    m_cancel->setObjectName(QStringLiteral("ModalCancel"));
-    m_cancel->setAutoDefault(false);
     m_accept = new QPushButton(acceptText, m_surface);
     m_accept->setObjectName(QStringLiteral("ModalAccept"));
     m_accept->setDefault(true);  // Invio, se attivo
-    buttons->addWidget(m_cancel);
     buttons->addWidget(m_accept);
     surfaceLayout->addLayout(buttons);
-    connect(m_cancel, &QPushButton::clicked, this, &QDialog::reject);
     connect(m_accept, &QPushButton::clicked, this, &QDialog::accept);
+    // User's request 2026-11-24: Ctrl+Enter presses the main button from any field, also from a
+    // multi-line one (a note, a formula) where Enter starts a new line. Text fields leave Ctrl+Enter
+    // to shortcuts; the keypad's Enter matches too (QShortcutMap retries without KeypadModifier).
+    for (const QKeySequence &keys : {QKeySequence(Qt::CTRL | Qt::Key_Return), QKeySequence(Qt::CTRL | Qt::Key_Enter)}) {
+        auto *confirm = new QShortcut(keys, this);
+        connect(confirm, &QShortcut::activated, this, [this] {
+            if (m_accept->isVisible() && m_accept->isEnabled()) m_accept->click();
+        });
+    }
 }
 
 QPushButton *ModalDialog::addSecondaryButton(const QString &text) {
     auto *button = new QPushButton(text, m_surface);
     button->setObjectName(QStringLiteral("ModalSecondary"));
     button->setAutoDefault(false);
-    // Prima di "Annulla" nella riga dei bottoni (dopo lo spazio elastico).
+    // User's request 2026-11-05 (unsaved changes), for every modal since 2026-11-23: at the left edge
+    // of the row, before the stretch; the main button stays on the right.
     auto *buttons = static_cast<QHBoxLayout *>(m_surface->layout()->itemAt(m_surface->layout()->count() - 1)->layout());
-    buttons->insertWidget(1, button);
+    buttons->insertWidget(0, button);
     connect(button, &QPushButton::clicked, this, [this] { done(kSecondaryResult); });
     m_secondary = button;
     return button;
 }
 
-void ModalDialog::useCloseButton() {
-    m_cancel->hide();
-    m_close->show();
-    if (m_secondary) {
-        auto *buttons = static_cast<QHBoxLayout *>(m_surface->layout()->itemAt(m_surface->layout()->count() - 1)->layout());
-        buttons->removeWidget(m_secondary);
-        buttons->insertWidget(0, m_secondary);  // before the stretch: left edge
-    }
+QPushButton *ModalDialog::addSideButton(const QString &text) {
+    auto *button = new QPushButton(text, m_surface);
+    button->setObjectName(QStringLiteral("ModalSecondary"));  // same look as the secondary button
+    button->setAutoDefault(false);
+    auto *buttons = static_cast<QHBoxLayout *>(m_surface->layout()->itemAt(m_surface->layout()->count() - 1)->layout());
+    buttons->insertWidget(0, button);  // before the stretch: left edge
+    return button;
 }
 
 void ModalDialog::useOwnButtons() {
     m_separator->hide();
-    m_cancel->hide();
     m_accept->hide();
     m_accept->setDefault(false);  // Enter does not press a hidden button
-    m_close->show();
 }
+
+void ModalDialog::addTitleButton(QAbstractButton *button) {
+    auto *titleRow = static_cast<QHBoxLayout *>(m_surface->layout()->itemAt(0)->layout());
+    button->setParent(m_surface);
+    button->setProperty("modalTitleButton", true);  // styled as "?" and the X
+    button->setFixedSize(28, 28);
+    titleRow->insertWidget(titleRow->indexOf(m_help), button, 0, Qt::AlignTop);
+}
+
+void ModalDialog::setSurfaceWidth(int surfaceWidthPx) {
+    if (m_surface->width() == surfaceWidthPx && m_surface->minimumWidth() == surfaceWidthPx) return;
+    m_surface->setFixedWidth(surfaceWidthPx);
+    update();  // the hand-drawn shadow follows the surface
+}
+
+QAbstractButton *ModalDialog::closeButton() const { return m_close; }
 
 QRect ModalDialog::surfaceRect() const { return m_surface->geometry(); }
 
 ModalDialog::Choice ModalDialog::ask(QWidget *parent, const QString &title, const QString &text, const QString &primaryText,
-                                     const QString &secondaryText, const QString &cancelText) {
+                                     const QString &secondaryText) {
     ModalDialog dialog(parent, title, primaryText, 420);
     auto *message = new QLabel(text);
     message->setWordWrap(true);
     dialog.contentLayout()->addWidget(message);
     if (!secondaryText.isEmpty()) dialog.addSecondaryButton(secondaryText);
-    if (!cancelText.isEmpty()) dialog.cancelButton()->setText(cancelText);
-    const int result = dialog.exec();
-    if (result == QDialog::Accepted) return Choice::Primary;
-    if (result == kSecondaryResult) return Choice::Secondary;
-    return Choice::Cancel;
-}
-
-ModalDialog::Choice ModalDialog::askWithClose(QWidget *parent, const QString &title, const QString &text,
-                                              const QString &primaryText, const QString &secondaryText) {
-    ModalDialog dialog(parent, title, primaryText, 420);
-    auto *message = new QLabel(text);
-    message->setWordWrap(true);
-    dialog.contentLayout()->addWidget(message);
-    dialog.addSecondaryButton(secondaryText);
-    dialog.useCloseButton();
     const int result = dialog.exec();
     if (result == QDialog::Accepted) return Choice::Primary;
     if (result == kSecondaryResult) return Choice::Secondary;
@@ -179,7 +187,6 @@ void ModalDialog::inform(QWidget *parent, const QString &title, const QString &t
     message->setWordWrap(true);
     message->setTextInteractionFlags(Qt::TextSelectableByMouse);  // si puo' copiare il messaggio d'errore
     dialog.contentLayout()->addWidget(message);
-    dialog.cancelButton()->hide();
     dialog.exec();
 }
 
@@ -198,7 +205,6 @@ void ModalDialog::informWithMascot(QWidget *parent, const QPixmap &face, const Q
     message->setTextInteractionFlags(Qt::TextSelectableByMouse);
     row->addWidget(message, 1);
     dialog.contentLayout()->addLayout(row);
-    dialog.cancelButton()->hide();
     dialog.exec();
 }
 
@@ -234,7 +240,27 @@ void ModalDialog::showEvent(QShowEvent *event) {
         // window's Gantt note opened on the map (user, 2026-10-31).
         if (const int height = label->heightForWidth(inner); height >= 0) label->setMinimumHeight(height);
     }
+    // User's request 2026-11-23: the first input field takes the focus on opening, unless the dialog
+    // already gave it to a widget of its choice (a search field, a table).
+    if (!focusWidget())
+        if (QWidget *field = firstInputField()) field->setFocus(Qt::OtherFocusReason);
     QDialog::showEvent(event);
+}
+
+QWidget *ModalDialog::firstInputField() const {
+    // The focus chain follows the order the widgets were created in, top to bottom in the dialogs.
+    const auto editable = [](QWidget *widget) {
+        if (auto *line = qobject_cast<QLineEdit *>(widget)) return !line->isReadOnly();
+        if (auto *spin = qobject_cast<QAbstractSpinBox *>(widget)) return !spin->isReadOnly();
+        if (auto *text = qobject_cast<QTextEdit *>(widget)) return !text->isReadOnly();
+        if (auto *plain = qobject_cast<QPlainTextEdit *>(widget)) return !plain->isReadOnly();
+        return false;
+    };
+    for (QWidget *widget = nextInFocusChain(); widget && widget != this; widget = widget->nextInFocusChain()) {
+        if (widget->window() != this || !widget->isVisibleTo(this) || !widget->isEnabled()) continue;
+        if ((widget->focusPolicy() & Qt::TabFocus) && editable(widget)) return widget;
+    }
+    return nullptr;
 }
 
 void ModalDialog::mousePressEvent(QMouseEvent *event) {

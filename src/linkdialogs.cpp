@@ -3,6 +3,7 @@
 #include "uitheme.h"
 
 #include "nodelinks.h"
+#include "segmentedcontrol.h"
 
 #include <QCheckBox>
 #include <QHeaderView>
@@ -10,38 +11,65 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QStackedWidget>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
-#include <functional>
+#include <utility>
 
 namespace {
 enum Role { IdRole = Qt::UserRole, SheetRole, HasTopicLinkRole, SearchTextRole };
 
-// Titolo su una riga per l'albero (gli "a capo" del titolo diventano spazi).
+// The title on one line for the tree (line breaks become spaces).
 QString oneLine(const QString &title) {
     QString text = title;
     text.replace(QLatin1Char('\n'), QLatin1Char(' '));
-    return text.trimmed().isEmpty() ? TopicLinkDialog::tr("(untitled)") : text;
+    return text.trimmed().isEmpty() ? LinkDialog::tr("(untitled)") : text;
+}
+
+QWidget *page(QStackedWidget *pages, int spacing, QVBoxLayout **layout) {
+    auto *widget = new QWidget(pages);
+    *layout = new QVBoxLayout(widget);
+    (*layout)->setContentsMargins(0, 0, 0, 0);
+    (*layout)->setSpacing(spacing);
+    pages->addWidget(widget);
+    return widget;
 }
 }  // namespace
 
-TopicLinkDialog::TopicLinkDialog(QWidget *parent, const QList<SheetContent> &sheets, const QString &sourceId,
-                                 const QString &currentTargetId)
-    : ModalDialog(parent, tr("Choose the topic to link"), tr("Insert"), 480) {
+LinkDialog::LinkDialog(QWidget *parent, Tab tab, const QString &currentAddress, std::function<QList<SheetContent>()> sheets,
+                       const QString &sourceId, const QString &currentTargetId)
+    : ModalDialog(parent, tr("Insert a link"), tr("Insert"), 480), m_sheets(std::move(sheets)), m_sourceId(sourceId),
+      m_currentTargetId(currentTargetId) {
     Help::setPage(this, QStringLiteral("topic-contents/links.md"));  // FEAT-092: F1 and "?" open it
-    m_search = new QLineEdit(this);
+    m_tabs = new SegmentedControl({tr("Web page"), tr("Topic")}, this);
+    contentLayout()->addWidget(m_tabs);
+    // A stack is as tall as its tallest page (Topic): the buttons stay put when the tab changes.
+    m_pages = new QStackedWidget(this);
+    contentLayout()->addWidget(m_pages);
+
+    QVBoxLayout *layout = nullptr;
+    QWidget *web = page(m_pages, contentLayout()->spacing(), &layout);
+    m_address = new QLineEdit(currentAddress, web);
+    m_address->setPlaceholderText(QStringLiteral("https://"));
+    layout->addWidget(m_address);
+    m_error = new QLabel(tr("Only http, https and mailto addresses are allowed."), web);
+    m_error->setObjectName(QStringLiteral("ModalError"));
+    layout->addWidget(m_error);
+    layout->addStretch();
+
+    QWidget *topic = page(m_pages, contentLayout()->spacing(), &layout);
+    m_search = new QLineEdit(topic);
     m_search->setPlaceholderText(tr("Search"));
     m_search->addAction(QIcon(QStringLiteral(":/assets/hugeicons/search.svg")), QLineEdit::LeadingPosition);
     m_search->setClearButtonEnabled(true);
-    contentLayout()->addWidget(m_search);
-
-    m_tree = new QTreeWidget(this);
+    layout->addWidget(m_search);
+    m_tree = new QTreeWidget(topic);
     m_tree->setHeaderHidden(true);
     m_tree->setFixedHeight(320);
-    m_tree->setUniformRowHeights(true);  // misura delle righe senza chiederla a ogni voce (10.000 nodi)
-    // FEAT-035: albero scuro come il modale (AGENTS.md "Interfaccia scura").
+    m_tree->setUniformRowHeights(true);  // row heights without asking every item (10,000 topics)
+    // FEAT-035: a dark tree, as the modal.
     m_tree->setStyleSheet(UiTheme::qss(QStringLiteral(
         "QTreeWidget { background:@surfaceSunken; color:@text; border:0; border-radius:4px; font-size:14px;"
         " outline:0; padding:4px; }"
@@ -49,16 +77,43 @@ TopicLinkDialog::TopicLinkDialog(QWidget *parent, const QList<SheetContent> &she
         "QTreeWidget::item:hover { background:@divider; }"
         "QTreeWidget::item:selected { background:@surfaceRaised; color:@text; }"
         "QTreeWidget::item:disabled { color:@textMuted; }")));
-    contentLayout()->addWidget(m_tree);
+    layout->addWidget(m_tree);
+    m_back = new QCheckBox(tr("Also add the link to the chosen topic"), topic);
+    layout->addWidget(m_back);
 
-    // Albero di ogni foglio dalla forma piatta: figli raggruppati per genitore, ordinati per riga.
+    connect(m_address, &QLineEdit::textChanged, this, &LinkDialog::updateButtons);
+    connect(m_search, &QLineEdit::textChanged, this, &LinkDialog::filter);
+    connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &LinkDialog::updateButtons);
+    connect(m_tree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item) {
+        if (item->flags() & Qt::ItemIsSelectable) accept();
+    });
+    connect(m_tabs, &SegmentedControl::segmentActivated, this, [this](int index) { setTab(Tab(index)); });
+    m_address->selectAll();
+    setTab(tab);
+}
+
+LinkDialog::Tab LinkDialog::tab() const { return Tab(m_pages->currentIndex()); }
+
+void LinkDialog::setTab(Tab tab) {
+    if (tab == Tab::Topic) buildTree();
+    m_tabs->setCurrentIndex(int(tab));
+    m_pages->setCurrentIndex(int(tab));
+    updateButtons();
+    // The tab's field takes the focus, unless the arrow keys are moving along the tabs.
+    if (!m_tabs->hasFocus()) (tab == Tab::Web ? m_address : m_search)->setFocus();
+}
+
+void LinkDialog::buildTree() {
+    if (!m_sheets) return;
+    const QList<SheetContent> sheets = std::exchange(m_sheets, nullptr)();
+    // Each sheet's tree from the flat form: children grouped by parent, sorted by row.
     QFont sheetFont = m_tree->font();
     sheetFont.setWeight(QFont::DemiBold);
     QTreeWidgetItem *current = nullptr;
     for (const SheetContent &sheet : sheets) {
         auto *sheetItem = new QTreeWidgetItem(m_tree, {sheet.name});
         sheetItem->setFont(0, sheetFont);
-        sheetItem->setFlags(Qt::ItemIsEnabled);  // il foglio non si sceglie
+        sheetItem->setFlags(Qt::ItemIsEnabled);  // a sheet cannot be chosen
         QHash<QString, QList<std::pair<int, QString>>> children;
         QString rootId;
         for (auto it = sheet.content.cbegin(); it != sheet.content.cend(); ++it) {
@@ -73,10 +128,10 @@ TopicLinkDialog::TopicLinkDialog(QWidget *parent, const QList<SheetContent> &she
             item->setData(0, SheetRole, sheet.id);
             item->setData(0, HasTopicLinkRole, !node.value(QStringLiteral("topicLink")).toString().isEmpty());
             item->setData(0, SearchTextRole, title.toCaseFolded());
-            // Collegamento al nodo stesso: non permesso.
-            item->setFlags(id == sourceId ? Qt::NoItemFlags : Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            // A link to the topic itself is not allowed.
+            item->setFlags(id == m_sourceId ? Qt::NoItemFlags : Qt::ItemIsEnabled | Qt::ItemIsSelectable);
             m_nodeItems.append(item);
-            if (id == currentTargetId) current = item;
+            if (id == m_currentTargetId) current = item;
             auto list = children.value(id);
             std::sort(list.begin(), list.end());
             for (const auto &[row, childId] : std::as_const(list)) add(item, childId);
@@ -84,28 +139,17 @@ TopicLinkDialog::TopicLinkDialog(QWidget *parent, const QList<SheetContent> &she
         if (sheet.content.contains(rootId)) add(sheetItem, rootId);
     }
     m_tree->expandAll();
-
-    m_back = new QCheckBox(tr("Also add the link to the chosen topic"), this);
-    contentLayout()->addWidget(m_back);
-
-    connect(m_search, &QLineEdit::textChanged, this, &TopicLinkDialog::filter);
-    connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &TopicLinkDialog::updateButtons);
-    connect(m_tree, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem *item) {
-        if (item->flags() & Qt::ItemIsSelectable) accept();
-    });
     if (current) {
         m_tree->setCurrentItem(current);
         m_tree->scrollToItem(current);
     }
-    updateButtons();
-    m_search->setFocus();
 }
 
-void TopicLinkDialog::filter(const QString &text) {
+void LinkDialog::filter(const QString &text) {
     const QString needle = text.trimmed().toCaseFolded();
     m_tree->setUpdatesEnabled(false);
-    // Visita a ritroso: i figli vengono dopo il genitore, quindi un nodo sa gia' se ha un
-    // discendente visibile quando si arriva a lui.
+    // Backwards: children come after their parent, so a topic already knows whether it has a
+    // visible descendant when the visit reaches it.
     QHash<QTreeWidgetItem *, bool> visibleChild;
     visibleChild.reserve(m_nodeItems.size());
     for (auto it = m_nodeItems.crbegin(); it != m_nodeItems.crend(); ++it) {
@@ -122,7 +166,8 @@ void TopicLinkDialog::filter(const QString &text) {
     updateButtons();
 }
 
-bool TopicLinkDialog::selectNode(const QString &id) {
+bool LinkDialog::selectNode(const QString &id) {
+    buildTree();
     for (QTreeWidgetItem *item : std::as_const(m_nodeItems))
         if (item->data(0, IdRole).toString() == id && (item->flags() & Qt::ItemIsSelectable)) {
             m_tree->setCurrentItem(item);
@@ -131,45 +176,27 @@ bool TopicLinkDialog::selectNode(const QString &id) {
     return false;
 }
 
-QString TopicLinkDialog::targetId() const {
+QString LinkDialog::address() const { return NodeLinks::webAddress(m_address->text()); }
+
+QString LinkDialog::targetId() const {
     const QTreeWidgetItem *item = m_tree->currentItem();
     return item && item->isSelected() && !item->isHidden() ? item->data(0, IdRole).toString() : QString();
 }
 
-QString TopicLinkDialog::targetSheetId() const {
+QString LinkDialog::targetSheetId() const {
     return targetId().isEmpty() ? QString() : m_tree->currentItem()->data(0, SheetRole).toString();
 }
 
-bool TopicLinkDialog::alsoBack() const { return m_back->isEnabled() && m_back->isChecked(); }
+bool LinkDialog::alsoBack() const { return m_back->isEnabled() && m_back->isChecked(); }
 
-void TopicLinkDialog::updateButtons() {
+void LinkDialog::updateButtons() {
+    const bool validAddress = !address().isEmpty();
+    m_error->setVisible(!validAddress && !m_address->text().trimmed().isEmpty());
     const bool chosen = !targetId().isEmpty();
-    acceptButton()->setEnabled(chosen);
-    // Al massimo un collegamento ad argomento per nodo: l'inverso non sostituisce quello esistente.
+    acceptButton()->setEnabled(tab() == Tab::Web ? validAddress : chosen);
+    // At most one topic link per topic: the link back does not replace an existing one.
     const bool targetLinked = chosen && m_tree->currentItem()->data(0, HasTopicLinkRole).toBool();
     m_back->setEnabled(chosen && !targetLinked);
     if (!m_back->isEnabled()) m_back->setChecked(false);
     m_back->setToolTip(targetLinked ? tr("The chosen topic already has a topic link") : QString());
 }
-
-WebLinkDialog::WebLinkDialog(QWidget *parent, const QString &currentAddress)
-    : ModalDialog(parent, tr("Link to a web page"), tr("Insert"), 400) {
-    Help::setPage(this, QStringLiteral("topic-contents/links.md"));  // FEAT-092: F1 and "?" open it
-    m_address = new QLineEdit(currentAddress, this);
-    m_address->setPlaceholderText(QStringLiteral("https://"));
-    contentLayout()->addWidget(m_address);
-    m_error = new QLabel(tr("Only http, https and mailto addresses are allowed."), this);
-    m_error->setObjectName(QStringLiteral("ModalError"));
-    contentLayout()->addWidget(m_error);
-    auto update = [this] {
-        const bool valid = !address().isEmpty();
-        acceptButton()->setEnabled(valid);
-        m_error->setVisible(!valid && !m_address->text().trimmed().isEmpty());
-    };
-    connect(m_address, &QLineEdit::textChanged, this, update);
-    update();
-    m_address->selectAll();
-    m_address->setFocus();
-}
-
-QString WebLinkDialog::address() const { return NodeLinks::webAddress(m_address->text()); }

@@ -3,6 +3,9 @@
 #include "localization.h"
 #include "nodegeometry.h"
 #include "nodestyle.h"
+#include "hardwarekeyboard.h"
+#include "controlkey.h"
+#include "penasmouse.h"
 
 #include <QFont>
 #include <QGuiApplication>
@@ -28,4 +31,7 @@ void MobileApp::prepare() {
     // ui-mobile.md: the desktop's look, not a platform style; Basic is the plainest to draw over
     // (https://doc.qt.io/qt-6/qtquickcontrols-styles.html).
     QQuickStyle::setStyle(QStringLiteral("Basic"));
+    QGuiApplication::instance()->installEventFilter(new PenAsMouse(QGuiApplication::instance()));  // the pen is the mouse
+    new HardwareKeyboard(QGuiApplication::instance());  // no on-screen keyboard with a hardware one
+    new ControlKey(QGuiApplication::instance());  // Ctrl + tap adds to the selection
 }

@@ -61,6 +61,8 @@ Disegnate per Mentis, non Hugeicons (stesso tratto 1.5, angoli arrotondati, stes
   Home, Recenti, Apri file locale, Altri modelli).
   export-download.svg e export-copy.svg (FEAT-054: bottoni PNG/SVG/PDF e Copia negli appunti, tratto #ffffff).
   present.svg (FEAT-063: Presenta, nel gruppo in alto a destra).
+  gantt.svg (FEAT-097: Gantt nel menu della mappa del telefono, disegnata per Mentis); il menu usa anche outliner.svg.
+  chart-light.svg (FEAT-127: show/hide the people's charts in the Resources modal; drawn for Mentis, no Hugeicons path).
   format-painter.svg (FEAT-085: Copia formato, ultimo bottone della barra dell'argomento). Le icone dei 5 layout del Pitch sono
   disegnate nel codice (src/pitchpage.cpp, layoutIcon).
 Copie scure di icone Hugeicons (stesso tracciato, tratto #27303b) per la barra dell'argomento (FEAT-072 F3):
@@ -68,6 +70,7 @@ Copie scure di icone Hugeicons (stesso tracciato, tratto #27303b) per la barra d
   undo.svg -> Undo03Icon, redo.svg -> Redo03Icon, delete.svg -> Delete02Icon (FEAT-097: buttons of the
     mobile app, dark copies of editor-undo/redo/delete).
   copy.svg -> dark copy of export-copy.svg (FEAT-106: Copy the image in the mobile topic bar).
+  cut.svg -> drawn for Mentis in the set's style (FEAT-121 B: Cut in the phone's outliner selection bar).
   alert.svg -> Alert02Icon (Gantt: pulsante Percorso critico nella barra in alto, 2026-10-28).
   user-group.svg -> UserGroupIcon (FEAT-079: pulsante Risorse nella barra in alto del Gantt, 2026-10-28).
   camera.svg -> Camera01Icon (pulsante Baseline nella barra in alto del Gantt, 2026-10-30).

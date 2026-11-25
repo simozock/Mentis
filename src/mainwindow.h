@@ -155,6 +155,7 @@ public:
     void rotateVisual(MindNode *node);  // 90 gradi in senso orario (immagine, adesivo, formula)
     QSizeF fittedImageSize(const MindNode *node, const QString &path) const;  // immagini: larga come il nodo, almeno 200
     static constexpr qreal kMinInsertWidthPx = NodeGeometry::kMinInsertWidthPx;
+    void stepMarker(MindNode *node, const QString &marker);
     void setMarker(MindNode *node, const QString &series, const QString &marker);
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
@@ -293,9 +294,12 @@ private:
     void syncSheetSelect();
     void onSheetShown();
     void onHistoryRestored(bool incremental);
-    // FEAT-027: collegamenti dei nodi.
+    // FEAT-027, FEAT-117: a topic's links, in one dialog. editLink opens on the Topic tab when the
+    // topic has only a topic link, else on Web page; the other two open on their own tab.
+    void editLink(MindNode *node);
     void editTopicLink(MindNode *node);
     void editWebLink(MindNode *node);
+    void openLinkDialog(MindNode *node, bool topicTab);
     void followLink(MindNode *node, NodeItem::LinkKind kind);
     void showLinkMenu(MindNode *node, NodeItem::LinkKind kind, const QPoint &screenPos);
     // Passo di storico per i collegamenti cambiati, con l'eventuale altro foglio in attesa.
@@ -400,7 +404,6 @@ private:
     bool typingInField() const;
     void setFormatPainter(bool on, bool sticky = false);
     bool canPasteBranch() const;
-    void setTypedTask(MindNode *node, int task);                 // FEAT-068
     // FEAT-060: riquadro "Etichette" accanto al nodo (mappa o riga dell'outliner) e menu della pillola.
     void openLabels(MindNode *node);
     void finishLabels(const QString &id, const QStringList &labels);
@@ -585,7 +588,12 @@ private:
     static constexpr int kInspectorMinimumWidth = 256;  // floor even with narrower content (FEAT-072 B1: reference ~276 with scrollbar)
     // BUG-010: il pannello non scende sotto la larghezza del suo contenuto (pagina piu' larga).
     int inspectorMinimumWidth() const;
+    // The width dragged on the panel's left edge (user's request 2026-11-22), kept in the app's
+    // settings; at most half the window, never under the content's minimum.
+    int inspectorWidthFor(int wanted) const;
     void applyInspectorMinimumWidth();
+    class PanelResizeHandle *m_inspectorHandle = nullptr;
+    int m_inspectorDraggedWidth = 0;  // read from the settings once; 0 = the content's minimum
     int m_inspectorWidth = kInspectorMinimumWidth;      // larghezza a cui arriva l'animazione
     bool m_inspectorAnimating = false;
     // True while the side panel opens: each narrowing of the map view keeps the selected node in

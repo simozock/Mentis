@@ -3,6 +3,7 @@
 #include "maplibrary.h"
 #include "mapsnapshot.h"
 #include "mindmapmodel.h"  // MindMapModel::TopicStyle, kept by value
+#include "nodegeometry.h"
 #include "reordertarget.h"
 
 #include <QColor>
@@ -65,9 +66,15 @@ class MobileMap : public QObject {
     // B3: the selected topic has a formatted title (MindNode::titleHtml, not a formula), which the
     // title field edits as rich text (loadTitle, renameFrom); otherwise it stays plain (rename).
     Q_PROPERTY(bool selectedTitleRich READ selectedTitleRich NOTIFY selectionChanged)
+    // FEAT-124: the weight bold takes in the selected topic's title (OutlineFormats::storedBoldWeights:
+    // 900 on a topic already bold), for the Markdown shortcuts typed in the title field.
+    Q_PROPERTY(int selectedBoldWeight READ selectedBoldWeight NOTIFY selectionChanged)
     // FEAT-106: the selected topic's picture (image, sticker or formula) is chosen, as the desktop's
     // click on it: Remove takes off only the picture, a drag moves it around the title.
     Q_PROPERTY(bool pictureSelected READ pictureSelected NOTIFY selectionChanged)
+    // NodeGeometry's limits of a picture's width resized with the handles (FEAT-037, FEAT-106).
+    Q_PROPERTY(qreal minPictureWidth READ minPictureWidth CONSTANT)
+    Q_PROPERTY(qreal maxPictureWidth READ maxPictureWidth CONSTANT)
     Q_PROPERTY(bool selectedHasNote READ selectedHasNote NOTIFY selectionChanged)
     // FEAT-108: the selected topic's checkbox (FEAT-048) and web link (FEAT-027; empty = none).
     Q_PROPERTY(bool selectedHasCheckbox READ selectedHasCheckbox NOTIFY selectionChanged)
@@ -135,7 +142,10 @@ public:
     QStringList imageFilters() const;
     QStringList selectedMarkers() const;
     bool selectedTitleRich() const;
+    int selectedBoldWeight() const;
     bool pictureSelected() const;
+    static qreal minPictureWidth() { return NodeGeometry::kMinImageWidthPx; }
+    static qreal maxPictureWidth() { return NodeGeometry::kMaxImageWidthPx; }
     bool selectedHasNote() const;
     bool selectedHasCheckbox() const;
     QString selectedWebLink() const;
@@ -172,6 +182,11 @@ public:
     // Opens a map chosen with the system picker or listed by the library, through its local copy
     // (MapLibrary::localCopy); a new copy that is not a map is removed again.
     Q_INVOKABLE bool openUrl(const QUrl &url, MapLibrary *library);
+    // FEAT-123: a new map in `folder`, named `name` (a free file name), as the desktop's from the
+    // variant gallery (MainWindow::applyTemplate): the central topic and four main topics, the
+    // default colour theme, the variant's type and style, laid out. Written once and opened; false
+    // with lastError when it cannot be written.
+    Q_INVOKABLE bool create(const QString &folder, const QString &name, const QString &variant);
     Q_INVOKABLE bool switchSheet(int index);
     // FEAT-112: the desktop's sheet commands (FEAT-004), none of them a history step. Each first
     // ends the format painter, the relationship tool and the selection mode, as switchSheet.
@@ -219,6 +234,18 @@ public:
     // changes until the field's text is edited.
     Q_INVOKABLE void loadTitle(QQuickTextDocument *field);
     Q_INVOKABLE bool renameFrom(QQuickTextDocument *field, const QString &preedit, int cursor);
+    // Esc while a title is typed, as the desktop's InlineTitleEditor: keepTitle notes the selected
+    // topic's title when the editing starts; restoreTitle puts it back (the title is written as it
+    // is typed), the layout in the open step; false when nothing changes.
+    Q_INVOKABLE void keepTitle();
+    Q_INVOKABLE bool restoreTitle();
+    // FEAT-124, the desktop's format keys (FEAT-095; style: RichTitle::CharStyle). toggleFieldFormat:
+    // the title field's selection [start, end) as the format bar's button (on unless the selection
+    // has it; bold is the topic's bold weight, off its own weight); false without a selection.
+    // toggleCharStyle: every character of the selected topics (Gantt: the selected task's), on unless
+    // all have it, one Undo step; titles with formulas left as they are (MainWindow::toggleCharStyle).
+    Q_INVOKABLE bool toggleFieldFormat(QQuickTextDocument *field, int start, int end, int style);
+    Q_INVOKABLE bool toggleCharStyle(int style);
     // B3, the selected topic's note (FEAT-059): loadNote puts it in the field's document (its
     // formatted form, or the plain text); saveNote writes the field back as the desktop's
     // NoteEditor does (empty = note removed), the layout in one Undo step; false when the field was
@@ -270,6 +297,10 @@ public:
     Q_INVOKABLE void stopMultiSelect();
     Q_INVOKABLE void toggleInSelection(const QString &id);
     void multiSelectAt(const QPointF &mapPoint);
+    // Ctrl + a tap of the finger or the pen (ControlKey, user's request 2026-11-23), as the desktop's
+    // Ctrl+click: the mode turns on if needed and the topic is added or removed. False with Ctrl not
+    // held or when the mode cannot start (a relationship or a boundary selected): a plain tap then.
+    Q_INVOKABLE bool extendSelection(const QString &id);
     // FEAT-106: the selected topic's note and its icon taken off, the layout in one Undo step.
     Q_INVOKABLE bool removeNote();
     // FEAT-106 (FEAT-037's drag): the picture of topic `id` dropped at a map point goes to the zone
@@ -279,7 +310,16 @@ public:
     // FEAT-106 (NodeItem's handles, FEAT-037): the selected picture at a new size (map px), a too
     // narrow hand width widened, the layout in one Undo step; the picture stays selected. False when
     // nothing changes.
-    bool resizePicture(const QSizeF &size);
+    Q_INVOKABLE bool resizePicture(const QSizeF &size);
+    // FEAT-018: the selected topic's hand width (px of its text box; 0 = automatic), with the
+    // layout in one Undo step. False when nothing changes.
+    Q_INVOKABLE bool setTopicWidth(qreal px);
+    // FEAT-121 A3: topic `id` selected with its picture chosen, as a tap on the picture on the map
+    // (the outliner's rows, where the topic may be hidden on the map). Nothing without a picture.
+    Q_INVOKABLE void selectPicture(const QString &id);
+    // Topic `id` selected without its picture, also when it is the selected topic with its picture
+    // chosen (the desktop's clearPictureSelection on a click elsewhere in the row).
+    Q_INVOKABLE void selectTopic(const QString &id);
     // FEAT-106, the topic bar's Copy with the picture selected: the original image or sticker (not
     // a formula) on the system clipboard. Android's clipboard takes no images
     // through Qt: there the image is written into the app's files and shared by its content:// URI
@@ -294,8 +334,8 @@ public:
     Q_INVOKABLE bool copyFormulaCode();
     // The system's fixed-pitch family (QFontDatabase::FixedFont), for the formula's code field.
     Q_INVOKABLE static QString fixedFontFamily();
-    // FEAT-106, a tap on a marker (MainWindow::showMarkerMenu): the values of its series
-    // ({marker, label, checked}; none for an own marker, whose group has no values), then
+    // FEAT-106, a tap on a marker (MainWindow::showMarkerMenu): the values of its series or the
+    // markers of its own group in the library ({marker, label, checked}), then
     // setMarker puts a value on the selected topic and removeMarker takes the series off; one
     // Undo step with the layout each.
     Q_INVOKABLE QVariantList markerChoices(const QString &marker) const;
@@ -307,7 +347,7 @@ public:
     Q_INVOKABLE bool toggleCheckbox();
     // FEAT-108, a tap on the checkbox (Document::toggleTask): ticked or unticked, one Undo step.
     Q_INVOKABLE bool toggleTaskDone();
-    // FEAT-108, the desktop's WebLinkDialog: the address as it is stored (NodeLinks::webAddress:
+    // FEAT-108, the desktop's LinkDialog (FEAT-117): the address as it is stored (NodeLinks::webAddress:
     // http, https or mailto, "https://" added), empty when it is not allowed.
     Q_INVOKABLE static QString webAddress(const QString &typed);
     // The selected topic's web link set from a typed address (false when it is not allowed or
@@ -388,10 +428,14 @@ public:
     Q_INVOKABLE bool toggleMarker(const QString &path, const QString &name, const QString &collectionId);
     // Add in the markers and stickers modal: pickLibraryFile copies a picked file and checks it as
     // IconPage::checkedFiles ({ok, path, reason, small, smallReason, name, title}: name prefills the
-    // name, title asks it); addToLibrary puts it in the first own collection (made when missing),
-    // under that name, and into the selected topic.
+    // name, title asks it); addToLibrary puts it under that name in the own collection
+    // collectionId, or in a new one named newCollection when collectionId is empty (as the desktop's
+    // Add from file… on a collection and New group / New collection), and into the selected topic.
+    // ownCollections lists the own collections ({value: id, name}) for the choice.
     Q_INVOKABLE QVariantMap pickLibraryFile(const QUrl &url, bool marker);
-    Q_INVOKABLE bool addToLibrary(const QString &path, const QString &name, bool marker);
+    Q_INVOKABLE QVariantList ownCollections(bool marker) const;
+    Q_INVOKABLE bool addToLibrary(const QString &path, const QString &name, bool marker, const QString &collectionId,
+                                  const QString &newCollection);
     Q_INVOKABLE bool undo();
     Q_INVOKABLE bool redo();
     // The desktop's keys on a hardware keyboard (FEAT-097, ShortcutCatalog), as MainWindow runs
@@ -399,6 +443,10 @@ public:
     // with none selected from the central topic, which is selected when there is none that way;
     // false when nothing changes.
     Q_INVOKABLE bool selectNeighbour(int key);
+    // FEAT-126: Ctrl+arrows, the topic drawn that way from selectedId added to the selection as a
+    // tap in the Select more mode (FEAT-111), which turns on; one already in it becomes selectedId.
+    // With none selected as selectNeighbour; false when nothing changes.
+    Q_INVOKABLE bool addNeighbour(int key);
     Q_INVOKABLE void selectCentral();
     // Alt+Up / Alt+Down (FEAT-086): the topic among its siblings, the layout in one Undo step.
     Q_INVOKABLE bool moveAmongSiblings(int direction);
@@ -406,6 +454,30 @@ public:
     // the new topic is selected.
     Q_INVOKABLE bool addTopicBefore();
     Q_INVOKABLE bool addParentTopic();
+    // FEAT-121, the desktop outliner's commands on the selected topic, each with the layout in one
+    // Undo step and the topic still selected (false when nothing changes): Indent (under the sibling
+    // above, MainWindow::indentOutlineNode) and Outdent (after its parent); moveInOutline trades
+    // places with the sibling above (direction < 0) or below in the outline's order, floating and
+    // summary topics excepted (not the map's Alt+Up, which skips the other side's main topics);
+    // duplicateSelected puts a copy right after it and selects the copy.
+    Q_INVOKABLE bool indentSelected();
+    Q_INVOKABLE bool outdentSelected();
+    Q_INVOKABLE bool moveInOutline(int direction);
+    // The sibling `direction` rows away that a topic trades places with in the outline: not a floating
+    // topic (they stay last) nor a summary topic (no row); null when none. Shared with MobileOutline's
+    // Move up / Move down states.
+    static MindNode *outlineSibling(const MindNode *node, int direction);
+    Q_INVOKABLE bool duplicateSelected();
+    // FEAT-121 A2, the desktop outliner's drop (OutlineTreeView::dropEvent, MindMapModel::moveNode):
+    // topic `id` with its branch before (where < 0), inside as the last child (0) or after (> 0)
+    // topic `targetId`, the layout in one Undo step and the topic selected. False when nothing moves
+    // (its own branch, the central topic, a summary topic's tree, the same place).
+    Q_INVOKABLE bool dropInOutline(const QString &id, const QString &targetId, int where);
+    // FEAT-055 in the outline's main title: Markdown text on the clipboard that makes at least two
+    // topics takes the place of the whole sheet (Document::replaceMapWithMarkdown), one Undo step, the
+    // new central topic selected; an open title typing is closed first. Over kMaxPastedItems: the
+    // message and no change (true). False when the text is pasted as text (one topic or none).
+    Q_INVOKABLE bool pasteAsMap();
     // FEAT-085's keys: copyStyle keeps the selected topic's style (as the painter's copy),
     // pasteStyle puts it on the selected topic in one Undo step.
     Q_INVOKABLE void copyStyle();
@@ -420,6 +492,9 @@ public:
     // clipboard still holds the text of that copy.
     Q_INVOKABLE bool copyBranches();
     Q_INVOKABLE bool pasteBranches();
+    // The outliner's Cut (FEAT-121 B): the selected topics but the central one are copied as
+    // copyBranches, then removed as removeSelected, one Undo step.
+    Q_INVOKABLE bool cutBranches();
 
 signals:
     void opened();
@@ -440,6 +515,14 @@ signals:
     void linkHistoryChanged();
 
 private:
+    friend class MobileStyle;  // FEAT-119: the side panel's Style page edits through finishEdit
+    friend class PitchPresentation;  // FEAT-120: "No slides" in the map's message
+    friend class MobilePitch;  // FEAT-120 stage B: picked files, messages and Share for the templates
+    friend class MobileOutline;  // FEAT-121: the outliner's titles go through finishEdit
+    friend class MobileGantt;  // FEAT-122: the Gantt's Add task goes through finishEdit
+    friend class MobileGanttTask;  // FEAT-122 B2: the task panel's edits go through finishEdit
+    friend class MobileGanttStyle;  // FEAT-122 C2: the Gantt page's choices go through finishEdit
+    friend class MobileResources;  // FEAT-122 C1: the Resources modal's Save goes through finishEdit
     void setError(const QString &error);
     void setMessage(const QString &message);
     // newSheet: another sheet is shown (snapshotChanged, the canvas fits it).
@@ -452,15 +535,20 @@ private:
     void finishEdit(const QString &selected);
     bool applyStep(bool redo);
     MindNode *selectedNode() const;
+    const MindNode *neighbourOf(MindNode *from, int key) const;  // MapNavigation on the snapshot
     // The topics the commands act on: every selected one in the mode (FEAT-111), else the selected one.
     QList<MindNode *> targetNodes() const;
     void setCopiedStyle(const MindMapModel::TopicStyle &style);
+    void putOnClipboard(const QList<MindNode *> &nodes);  // the branches and their text
     // A picked file (a content:// URI or a local file) copied into pickedImagesFolder under its own
     // name; empty with error on failure. name: the picked file's name.
     QString copyPicked(const QUrl &url, QString *name, QString *error) const;
     // FEAT-114: the selected topic's file `index` copied into openedFilesFolder; empty with the
     // reason in `message`.
     QString openedCopy(int index);
+    // A file in openedFilesFolder handed to the system's share sheet (elsewhere its folder is
+    // shown); false with the reason in `message`.
+    bool shareCopy(const QString &copy, const QString &name);
     // FEAT-114: the sheet holding topic `id` (the active one first; others read from the file when
     // needed), -1 when none does; and the selection of a found place, kept by the link history.
     int sheetOfTopic(const QString &id);
@@ -491,6 +579,7 @@ private:
     QStringList m_multiSelection;   // FEAT-111: in the order added
     int m_openMs = -1;
     bool m_editingTitle = false;
+    struct KeptTitle { QString id, title, html; } m_keptTitle;  // keepTitle, restoreTitle
     bool m_formatPainter = false;
     bool m_formatPainterSticky = false;
     bool m_pictureSelected = false;  // FEAT-106; pictureSelected() checks the picture is still there

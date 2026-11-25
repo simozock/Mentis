@@ -3,6 +3,7 @@
 // FEAT-089: the editor of a Pitch template, in the Pitch tab under the slide preview (which shows
 // the draft). It changes only its draft: PitchPage saves it to the library and applies it.
 
+#include "pitchchoices.h"
 #include "pitchtemplate.h"
 
 #include <QWidget>
@@ -34,7 +35,7 @@ public:
     // Asks before deleting; replaceable by the tests.
     std::function<bool(const QString &name)> confirmDelete;
 
-    static constexpr int kColorCount = 9;
+    static constexpr int kColorCount = PitchChoices::kTemplateColorCount;
 
 signals:
     void draftChanged();
@@ -45,7 +46,7 @@ signals:
 private:
     void changed();
     void refresh();
-    void choosePicture(QByteArray Pitch::Template::*member, int maxSide, bool alwaysPng);
+    void choosePicture(int index);
     void exportDraft();
 
     Pitch::Template m_draft;

@@ -14,8 +14,6 @@ Type Markdown symbols and the text is formatted as you write: in map titles, the
 | `*text*` | *italic* |
 | `~~text~~` | ~~strikethrough~~ |
 | `==text==` | highlighted text |
-| `- [ ] ` or `[ ] ` at the start of a title | an empty checkbox |
-| `- [x] ` at the start of a title | a ticked checkbox |
 | `- ` at the start of a line (notes) | a bulleted list |
 | `1. ` at the start of a line (notes) | a numbered list |
 | `## ` at the start of a line (notes) | a heading |

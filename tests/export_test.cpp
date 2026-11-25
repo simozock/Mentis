@@ -511,7 +511,7 @@ void ExportTest::pdfDialogWritesAndPrintDialogOpens() {
         QVERIFY(dialog->findChild<QSpinBox *>(QStringLiteral("PageCopies")));
         // Print has no Fit to map: paper only.
         QCOMPARE(dialog->findChild<QComboBox *>(QStringLiteral("PageSize"))->findData(int(MapExporter::PageSize::FitToMap)), -1);
-        dialog->cancelButton()->click();  // nothing is printed by the test
+        dialog->closeButton()->click();  // nothing is printed by the test
     });
     print->trigger();
     QVERIFY(seen);

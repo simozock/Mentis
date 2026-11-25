@@ -37,9 +37,11 @@ class MapCanvas : public QQuickItem {
     Q_PROPERTY(QString frameReport READ frameReport NOTIFY benchmarkChanged)
     // The band of the item the map is seen in (item px): what lies above bandTop or below
     // bandBottom is covered (the top groups, the bottom groups or the on-screen keyboard).
-    // reveal() and centerSelected() keep the topic inside it. bandBottom <= 0 = the item's height.
+    // reveal() and revealForEditing() keep the topic inside it. bandBottom <= 0 = the item's height.
     Q_PROPERTY(qreal bandTop READ bandTop WRITE setBandTop NOTIFY bandChanged)
     Q_PROPERTY(qreal bandBottom READ bandBottom WRITE setBandBottom NOTIFY bandChanged)
+    // FEAT-119: the left edge of the side panel docked at the right (0 = none): revealed topics stay left of it.
+    Q_PROPERTY(qreal bandRight READ bandRight WRITE setBandRight NOTIFY bandChanged)
     // While true the selected topic's title is typed in the page's field, drawn over the topic in
     // its place (ui-text-editing.md, "Mappa"): the scene leaves that title out.
     Q_PROPERTY(bool editing READ editing WRITE setEditing NOTIFY editingChanged)
@@ -56,10 +58,10 @@ class MapCanvas : public QQuickItem {
     // grows the tab with the text): its colour (transparent for a topic or a relationship), its
     // height and the text's padding on each side (map px, scaled by the zoom).
     Q_PROPERTY(QColor editorBackdrop READ editorBackdrop NOTIFY editorChanged)
-    Q_PROPERTY(qreal tabHeight READ tabHeight CONSTANT)
+    Q_PROPERTY(qreal tabHeight READ tabHeight NOTIFY editorChanged)
     Q_PROPERTY(qreal tabPadding READ tabPadding CONSTANT)
     // B2: true while a topic picked up by a long press is dragged, or (FEAT-106) the selected
-    // topic's selected picture.
+    // topic's selected picture, or (FEAT-018) the selected topic's border.
     Q_PROPERTY(bool moving READ moving NOTIFY movingChanged)
     // FEAT-114: the tag whose topics are highlighted (the others faded); empty = none.
     Q_PROPERTY(QString labelHighlight READ labelHighlight NOTIFY labelHighlightChanged)
@@ -112,6 +114,8 @@ public:
     static constexpr qreal kCollapseGapPx = 4;
     static constexpr int kCollapseCountPx = 12;  // the count's font size
     static constexpr qreal kKnobTargetPx = 48;  // ui-mobile.md, "Touch targets"
+    // FEAT-018: half the 48 px target each side of the border a topic's width is dragged from.
+    static constexpr qreal kWidthTouchPx = 24;
     // B2: the desktop's scrolling near the view's edges while dragging (MindMapView, FEAT-033):
     // the zone, the step at its inner end and at the edge or beyond, every interval.
     static constexpr qreal kAutoScrollMarginPx = 24;
@@ -136,6 +140,8 @@ public:
     void setBandTop(qreal top);
     qreal bandBottom() const { return m_bandBottom; }
     void setBandBottom(qreal bottom);
+    qreal bandRight() const { return m_bandRight; }
+    void setBandRight(qreal right);
     bool editing() const { return m_editing; }
     QString labelHighlight() const { return m_labelHighlight; }
     void setEditing(bool editing);
@@ -145,9 +151,11 @@ public:
     QFont editorFont() const;
     QColor editorColor() const;
     QColor editorBackdrop() const;
-    static qreal tabHeight() { return Boundaries::kTitleHeightPx; }
+    qreal tabHeight() const;  // the selected boundary's (FEAT-130: grows with the title's size)
     static qreal tabPadding() { return Boundaries::kTitlePaddingPx; }
-    bool moving() const { return !m_movingId.isEmpty() || !m_pictureId.isEmpty() || m_bentHandle != 0 || m_resizedCorner != 0; }
+    bool moving() const {
+        return !m_movingId.isEmpty() || !m_pictureId.isEmpty() || m_bentHandle != 0 || m_resizedCorner != 0 || m_widthSide != 0;
+    }
     QPointF childKnob() const { return knob(true).centre; }
     QRectF childKnobTarget() const { return knob(true).target; }
     QPointF siblingKnob() const { return knob(false).centre; }
@@ -202,6 +210,16 @@ public:
     // FEAT-110: a drag starting within MapSnapshot::kRelationTouchPx of a handle of the selected
     // relationship (curved or elbow) bends it (moveTo, endMove: one Undo step); false elsewhere.
     Q_INVOKABLE bool beginRelationBend(qreal x, qreal y);
+    // FEAT-018 on the phone (user's request 2026-11-23): a drag starting on the left or right border
+    // of the selected topic (topicWidthSideAt) sets its width by hand, as NodeItem's border drag: the
+    // other side stays put, between the topic's minimum and kMaxManualNodeWidthPx. While the finger
+    // moves only the selection ring follows the new size (as the picture's handles); the drop applies
+    // it with the layout in one Undo step (moveTo, endMove). False elsewhere.
+    Q_INVOKABLE bool beginTopicResize(qreal x, qreal y);
+    // FEAT-018's double click on the border: a double tap on the selected topic's border zone, off
+    // its title, gives the topic back its automatic width (one Undo step, none when already
+    // automatic). False (the double tap edits or fits) elsewhere.
+    Q_INVOKABLE bool fitTopicWidthAt(qreal x, qreal y);
     // B2. Picks up the topic at an item point after a long press and selects it; false (nothing
     // picked up) on the background or on the central topic, which is only selected. On the
     // selected picture it picks up the picture instead (FEAT-106).
@@ -215,9 +233,11 @@ public:
     QPointF autoScrollStep(const QPointF &itemPoint) const;
     // Pans just enough to show a map rect with kFitMarginPx around it, as the desktop's reveal.
     void reveal(const QRectF &mapRect);
-    // While a title is edited: the selected topic in the middle of the band, at least kEditZoom so
-    // the text can be read, smaller only if the topic would not fit the band.
-    Q_INVOKABLE void centerSelected();
+    // While a title is edited: the selected topic at least at kEditZoom so the text can be read
+    // (zoomed around the topic), smaller only if it would not fit the band; the map then moves
+    // just enough to show it in the band, not at all if it is already there (user's request
+    // 2026-11-16: before, the topic was always centred).
+    Q_INVOKABLE void revealForEditing();
     // Pans just enough to show the selected topic (a selection moved by a key, as the desktop's
     // ensureVisible after an arrow).
     Q_INVOKABLE void revealSelected();
@@ -288,6 +308,13 @@ private:
     // FEAT-106: the selected picture's corner at an item point, as NodeItem::imageHandleAt: 1 top
     // left, 2 top right, 3 bottom right, 4 bottom left; 0 none.
     int pictureHandleAt(const QPointF &point) const;
+    // FEAT-018: the selected topic's border at an item point: -1 the left, 1 the right, 0 none. The
+    // zone runs along the shape's height, kWidthTouchPx outside the border and as far inside, at
+    // most a third of the shape, so the middle of a small topic still pans the map.
+    int topicWidthSideAt(const QPointF &point) const;
+    // FEAT-018: the selected topic's bounds (map px) measured at the hand width m_width, moved so
+    // the side opposite to the finger stays put (NodeItem::mouseMoveEvent).
+    QRectF resizedTopicBounds() const;
     // FEAT-106: the selected picture's rect as drawn (map px): its new size around its centre while
     // a handle moves.
     QRectF shownPictureRect(const MapSnapshot::Topic &topic) const;
@@ -299,6 +326,7 @@ private:
     qreal fitZoom() const;
     // The band in item px, the item's height for an unset bottom.
     qreal visibleBottom() const { return m_bandBottom > 0 ? std::min<qreal>(m_bandBottom, height()) : height(); }
+    qreal visibleRight() const { return m_bandRight > 0 ? std::min<qreal>(m_bandRight, width()) : width(); }
 
     QPointer<MobileMap> m_map;
     QPointF m_origin;   // map px at the item's top-left corner
@@ -308,6 +336,7 @@ private:
     bool m_selectionDirty = true;  // the selection ring is made again
     qreal m_bandTop = 0;
     qreal m_bandBottom = 0;
+    qreal m_bandRight = 0;
     bool m_editing = false;
     QString m_labelHighlight;  // FEAT-114
     int m_vertexCount = 0;     // of the built sheet, for the report
@@ -327,6 +356,13 @@ private:
     int m_resizedCorner = 0;
     QSizeF m_resizeStartSize;
     QSizeF m_resizeSize;
+    // FEAT-018: the selected topic's border being dragged (topicWidthSideAt; 0 = none), its text
+    // width when the drag started, its minimum, the hand width now and the ring's bounds at it.
+    int m_widthSide = 0;
+    qreal m_widthStart = 0;
+    qreal m_widthMin = 0;
+    qreal m_width = 0;
+    QRectF m_widthBounds;
     bool m_ghostDirty = false;      // the dragged copy is built again
     bool m_indicatorDirty = false;  // the slot and its branch are made again
     QTimer m_autoScrollTimer;

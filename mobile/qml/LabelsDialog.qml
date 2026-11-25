@@ -6,12 +6,13 @@ import Mentis.Mobile
 // (above the on-screen keyboard): the Auto sort switch (Labels::autoSort, an app setting), the field
 // with the topic's tags separated by commas, and the document's tags as pills that add themselves,
 // filtered by the word being typed (Labels::suggestions). Done, Back or Esc write the tags (one Undo
-// step, as the desktop's Enter, Esc or click outside); Cancel leaves them as they were.
+// step, as the desktop's Enter, Esc or click outside); the X leaves them as they were.
 ModalDialog {
     id: dialog
     objectName: "labelsDialog"
     required property MobileMap map
     property bool discard: false
+    onCloseClicked: dialog.discard = true
     property var allLabels: []
     readonly property var shownSuggestions: dialog.map.labelSuggestions(labelsField.text, dialog.allLabels)
 
@@ -147,11 +148,6 @@ ModalDialog {
     }
 
     buttons: [
-        DarkButton {
-            objectName: "labelsCancelButton"
-            text: qsTr("Cancel")
-            onClicked: { dialog.discard = true; dialog.close() }
-        },
         DarkButton {
             objectName: "labelsDoneButton"
             text: qsTr("Done")

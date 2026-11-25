@@ -6,6 +6,8 @@
 
 #include <QWidget>
 
+#include <functional>
+
 #include "mapstructure.h"
 
 class QComboBox;
@@ -24,6 +26,9 @@ public:
     QComboBox *directionSelect() const { return m_direction; }
     // FEAT-028 stage 2: inside a tree table the Mind map type is not offered.
     void setInTable(bool inTable);
+    // The directions of a type that change the layout where the topic is (MapStructure::effectiveDirections);
+    // the others stay listed but disabled. Unset: all of them.
+    void setDirectionFilter(std::function<QList<MapStructure::Direction>(MapStructure::Type)> filter) { m_effective = std::move(filter); }
 
 signals:
     // Scelta dell'utente (non emesso da setValue). Cambiando tipo la direzione e' la predefinita.
@@ -34,4 +39,5 @@ private:
     bool m_allowInherit;
     QComboBox *m_type = nullptr;
     QComboBox *m_direction = nullptr;
+    std::function<QList<MapStructure::Direction>(MapStructure::Type)> m_effective;
 };

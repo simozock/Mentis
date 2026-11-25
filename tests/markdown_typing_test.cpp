@@ -34,8 +34,8 @@ private slots:
     void init();
     void mapTitleBecomesBold();
     void typingOnSelectedTopicReplacesTitle();
-    void mapTitleCheckbox();
-    void outlinerTitleHighlightAndCheckbox();
+    void mapTitleCheckboxStaysText();
+    void outlinerTitleHighlight();
     void noteListLinkAndCode();
     void switchOffKeepsTheSymbols();
     void noteHighlightAndCodeInMarkdown();
@@ -160,17 +160,17 @@ void MarkdownTypingTest::typingOnSelectedTopicReplacesTitle() {
     QCOMPARE(other->title, QStringLiteral("Altro"));
 }
 
-void MarkdownTypingTest::mapTitleCheckbox() {
+void MarkdownTypingTest::mapTitleCheckboxStaysText() {
     MindNode *node = addNode(QStringLiteral("Vecchio"));
     typeInMapTitle(node, QStringLiteral("- [ ] Ripassare"));
     itemFor(node)->commitEditing();
     QApplication::processEvents();
-    QCOMPARE(node->title, QStringLiteral("Ripassare"));
-    QCOMPARE(node->task, MindNode::Task::Open);
-    QVERIFY(!itemFor(node)->taskRect().isEmpty());
+    // FEAT-124 (user, 2026-11-17): the symbols stay text, no checkbox.
+    QCOMPARE(node->title, QStringLiteral("- [ ] Ripassare"));
+    QCOMPARE(node->task, MindNode::Task::None);
 }
 
-void MarkdownTypingTest::outlinerTitleHighlightAndCheckbox() {
+void MarkdownTypingTest::outlinerTitleHighlight() {
     MindNode *node = addNode(QStringLiteral("Voce"));
     QTreeView *tree = showOutliner();
     QVERIFY(tree);
@@ -185,9 +185,9 @@ void MarkdownTypingTest::outlinerTitleHighlightAndCheckbox() {
     QTest::keyClick(field, Qt::Key_Return);
     QTest::qWait(50);
     QApplication::processEvents();
-    QCOMPARE(node->title, QStringLiteral("Fatto bene"));
+    QCOMPARE(node->title, QStringLiteral("[x] Fatto bene"));  // FEAT-124: no checkbox from "[x] "
     QVERIFY2(node->titleHtml.contains(QStringLiteral("#fff3a3"), Qt::CaseInsensitive), qPrintable(node->titleHtml));
-    QCOMPARE(node->task, MindNode::Task::Done);
+    QCOMPARE(node->task, MindNode::Task::None);
     showOutliner();  // torna alla mappa
 }
 

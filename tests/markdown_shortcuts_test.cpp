@@ -21,7 +21,7 @@ private slots:
     void typingAfterTheShortcutIsPlain();
     void falsePositivesStayAsTyped();
     void undoBringsBackTheSymbols();
-    void checkboxAtTheStartOfTheTitle();
+    void checkboxSymbolsStayText();
     void notesHaveListsHeadingLinksAndCode();
     void codeAndLinksAreNotesOnly();
     void switchOffKeepsTheSymbols();
@@ -32,7 +32,6 @@ private:
     struct Typed {
         std::unique_ptr<QTextDocument> document = std::make_unique<QTextDocument>();
         Result last;
-        int task = 0;
     };
     static Typed type(const QString &text, Context context = Context::Title);
     static QTextCharFormat formatAt(const QTextDocument &document, int position);
@@ -52,7 +51,6 @@ MarkdownShortcutsTest::Typed MarkdownShortcutsTest::type(const QString &text, Co
     for (const QChar c : text) {
         cursor.insertText(QString(c));
         typed.last = afterTyping(cursor, c, options);
-        if (typed.last.task) typed.task = typed.last.task;
     }
     return typed;
 }
@@ -105,16 +103,10 @@ void MarkdownShortcutsTest::undoBringsBackTheSymbols() {
     QCOMPARE(typed.document->toPlainText(), QStringLiteral("**ciao**"));
 }
 
-void MarkdownShortcutsTest::checkboxAtTheStartOfTheTitle() {
-    Typed open = type(QStringLiteral("- [ ] Ripassare"));
-    QCOMPARE(open.document->toPlainText(), QStringLiteral("Ripassare"));
-    QCOMPARE(open.task, 1);
-    Typed done = type(QStringLiteral("[x] Fatto"));
-    QCOMPARE(done.document->toPlainText(), QStringLiteral("Fatto"));
-    QCOMPARE(done.task, 2);
-    Typed middle = type(QStringLiteral("ok - [ ] no"));  // non a inizio titolo
-    QCOMPARE(middle.task, 0);
-    QCOMPARE(middle.document->toPlainText(), QStringLiteral("ok - [ ] no"));
+void MarkdownShortcutsTest::checkboxSymbolsStayText() {
+    // FEAT-124 (user, 2026-11-17): the checkbox's symbols stay text in a title.
+    for (const QString &text : {QStringLiteral("- [ ] Ripassare"), QStringLiteral("[x] Fatto"), QStringLiteral("ok - [ ] no")})
+        QCOMPARE(type(text).document->toPlainText(), text);
 }
 
 void MarkdownShortcutsTest::notesHaveListsHeadingLinksAndCode() {

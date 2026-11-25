@@ -115,7 +115,7 @@ bool MarkdownImportTest::importWithAnswer(ModalDialog::Choice answer) {
         // 2026-11-05: "Unsaved changes" has no "Cancel" but an X; "Don't save" left, "Save" right.
         auto *secondary = box->findChild<QPushButton *>(QStringLiteral("ModalSecondary"));
         auto *close = box->findChild<QToolButton *>(QStringLiteral("ModalClose"));
-        if (box->cancelButton()->isVisible() || !close || !close->isVisible() || !secondary
+        if (!close || !close->isVisible() || !secondary
             || secondary->x() >= box->acceptButton()->x() - 100) return;
         asked = true;
         if (answer == ModalDialog::Choice::Cancel) close->click();

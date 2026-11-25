@@ -1,6 +1,7 @@
 #include "structurepicker.h"
 
 #include "mapstructure.h"
+#include "stylechoices.h"
 #include "stylecontrols.h"
 #include "uitheme.h"
 
@@ -8,48 +9,11 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QSignalBlocker>
+#include <QStandardItemModel>
 #include <QVBoxLayout>
 
-namespace {
-// Tipi delle fasi C ed E (parentesi graffa, linea del tempo; gli altri seguiranno), nell'ordine della galleria.
-struct TypeEntry { MapStructure::Type type; };
-const QList<TypeEntry> &entries() {
-    static const QList<TypeEntry> list{
-        {MapStructure::Type::MindMap}, {MapStructure::Type::LogicChart}, {MapStructure::Type::Brace}, {MapStructure::Type::OrgChart},
-        {MapStructure::Type::TreeChart}, {MapStructure::Type::Timeline}, {MapStructure::Type::Fishbone},
-        {MapStructure::Type::TreeTable},  // FEAT-028
-    };
-    return list;
-}
-
-}  // namespace
-
-QString StructurePicker::typeName(MapStructure::Type type) {
-    switch (type) {
-    case MapStructure::Type::LogicChart: return StructurePicker::tr("Logic chart");
-    case MapStructure::Type::Brace: return StructurePicker::tr("Brace map");
-    case MapStructure::Type::OrgChart: return StructurePicker::tr("Org chart");
-    case MapStructure::Type::TreeChart: return StructurePicker::tr("Tree chart");
-    case MapStructure::Type::Timeline: return StructurePicker::tr("Timeline");
-    case MapStructure::Type::Fishbone: return StructurePicker::tr("Fishbone");
-    case MapStructure::Type::TreeTable: return StructurePicker::tr("Tree table");
-    default: return StructurePicker::tr("Mind map");
-    }
-}
-
-namespace {
-
-QString directionName(MapStructure::Direction direction) {
-    switch (direction) {
-    case MapStructure::Direction::Right: return StructurePicker::tr("Right");
-    case MapStructure::Direction::Left: return StructurePicker::tr("Left");
-    case MapStructure::Direction::Down: return StructurePicker::tr("Down");
-    case MapStructure::Direction::Up: return StructurePicker::tr("Up");
-    case MapStructure::Direction::OffAxis: return StructurePicker::tr("Off axis");
-    default: return StructurePicker::tr("Both sides");
-    }
-}
-}  // namespace
+// FEAT-119: the types, their order and the names are StyleChoices', shared with the phone.
+QString StructurePicker::typeName(MapStructure::Type type) { return StyleChoices::structureName(type); }
 
 StructurePicker::StructurePicker(bool allowInherit, bool withLabel, QWidget *parent) : QWidget(parent), m_allowInherit(allowInherit) {
     auto *layout = new QVBoxLayout(this);
@@ -57,7 +21,7 @@ StructurePicker::StructurePicker(bool allowInherit, bool withLabel, QWidget *par
     layout->setSpacing(8);
     QList<std::pair<QString, QString>> items;
     if (allowInherit) items.append({QString(), tr("Same as parent")});
-    for (const TypeEntry &entry : entries()) items.append({MapStructure::typeKey(entry.type), typeName(entry.type)});
+    for (const MapStructure::Type type : StyleChoices::structureTypes()) items.append({MapStructure::typeKey(type), typeName(type)});
     m_type = makeStructureSelect(items, this);
     m_type->setObjectName(QStringLiteral("StructureTypeSelect"));
     m_type->setAccessibleName(tr("Structure"));
@@ -113,9 +77,20 @@ void StructurePicker::fillDirections(const QString &typeKey, const QString &dire
     }
     const MapStructure::Type type = MapStructure::typeFromKey(typeKey);
     for (const MapStructure::Direction direction : MapStructure::directions(type))
-        m_direction->addItem(directionName(direction), MapStructure::directionKey(direction));
+        m_direction->addItem(StyleChoices::directionName(direction), MapStructure::directionKey(direction));
     const QString current = MapStructure::directionKey(MapStructure::directionFromKey(directionKey, type));
     m_direction->setCurrentIndex(std::max(0, m_direction->findData(current)));
     m_direction->setVisible(true);
-    m_direction->setEnabled(m_direction->count() > 1);
+    // Only the directions that change something can be chosen; the select is disabled when none of them
+    // is another than the current one (user request 2026-11-24: choosing some did nothing).
+    const QList<MapStructure::Direction> effective = m_effective ? m_effective(type) : MapStructure::directions(type);
+    auto *items = qobject_cast<QStandardItemModel *>(m_direction->model());
+    bool choice = false;
+    for (int i = 0; i < m_direction->count(); ++i) {
+        const QString key = m_direction->itemData(i).toString();
+        const bool enabled = effective.contains(MapStructure::directionFromKey(key, type));
+        if (items) items->item(i)->setEnabled(enabled);
+        choice = choice || (enabled && key != current);
+    }
+    m_direction->setEnabled(choice);
 }

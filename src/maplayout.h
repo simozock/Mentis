@@ -5,6 +5,7 @@
 #include "nodegeometry.h"
 #include "summary.h"
 
+#include <QColor>
 #include <QHash>
 #include <QList>
 #include <QMarginsF>
@@ -13,6 +14,7 @@
 #include <QString>
 
 #include <functional>
+#include <optional>
 
 // FEAT-096 stage 2: distances and helpers of the map layout, shared with the drawing of the lines
 // (MindMapScene::updateEdge). Moved unchanged from mindmapscene.cpp.
@@ -141,6 +143,18 @@ public:
     struct TablePlace { QRectF rect; QString owner; QString levelOne; bool holdsBranch = false; };
     const QHash<QString, TablePlace> &tableCells() const { return m_tableCells; }
     const QHash<QString, TablePlace> &tableFrames() const { return m_tableFrames; }  // stage 2: the outer cell of a table in a cell
+    // FEAT-028: how a topic's cell is drawn, from the topics as they are now (a fill set by hand
+    // wins), shared by the desktop scene (NodeItem::TableCell) and the phone (FEAT-097). rect and
+    // frame in the node's coordinates; frame (stage 2, a table in a cell) is the outer table's cell.
+    struct TableLook {
+        QRectF rect;
+        QColor fill, border;
+        bool holdsBranch = false;
+        QRectF frame;
+        QColor frameFill, frameBorder;
+    };
+    // nodeOf finds a topic of the sheet by id (null when none). Empty when the node is not in a table.
+    std::optional<TableLook> tableLook(const MindNode *node, const std::function<const MindNode *(const QString &)> &nodeOf) const;
     // FEAT-026 phase E: how far each fishbone's spine runs from its head's centre (towards the tail).
     const QHash<const MindNode *, qreal> &fishboneReach() const { return m_fishboneReach; }
     // Distanze del layout (kNormalSpacing e kCompactSpacing): "Mappa compatta" del foglio le riduce
@@ -171,6 +185,7 @@ private:
     // after the last. alongX: the children follow each other left to right (a row) or top to bottom;
     // ascending: the list runs towards larger coordinates.
     QMarginsF boundaryPad(const QList<MindNode *> &children, int index, bool alongX, bool ascending) const;
+    QMarginsF boundaryRoom(const Boundary &boundary) const;  // Boundaries::room with the run's last size
 
     MindMapModel *m_model;
     QHash<MindNode *, QPointF> m_autoPositions;

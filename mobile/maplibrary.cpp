@@ -148,6 +148,22 @@ bool MapLibrary::moveMap(const QString &map, const QString &folder) {
     return move.error.isEmpty();
 }
 
+bool MapLibrary::removeMap(const QString &map) {
+    QString error;
+    const bool removed = MapFolder(m_folder).removeMap(map, &error);
+    setError(error);
+    refresh();
+    return removed;
+}
+
+bool MapLibrary::renameMap(const QString &map, const QString &name) {
+    QString error;
+    const bool renamed = !MapFolder(m_folder).renameMapFile(map, name, &error).isEmpty();
+    setError(error);
+    refresh();
+    return renamed;
+}
+
 bool MapLibrary::moveFolder(const QString &folder, const QString &target) {
     QString error;
     const bool moved = !MapFolder(m_folder).moveFolder(folder, target, &error).isEmpty();

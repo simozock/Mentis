@@ -1,5 +1,8 @@
 #include "nodesketch.h"
 
+#include "nodeshape.h"
+
+#include <QPainterPathStroker>
 #include <QPolygonF>
 #include <QTransform>
 
@@ -246,6 +249,54 @@ QColor opaqueOver(const QColor &color, const QColor &background) {
     return QColor::fromRgbF(color.redF() * alpha + background.redF() * (1 - alpha),
                             color.greenF() * alpha + background.greenF() * (1 - alpha),
                             color.blueF() * alpha + background.blueF() * (1 - alpha));
+}
+
+Drawing drawing(NodeShape shape, NodeFillStyle fill, NodeBorderStyle border, qreal borderWidth, const QRectF &shapeBox,
+                qreal cornerRadius, quint64 seed) {
+    const QPainterPath outline = NodeShapes::outline(shape, shapeBox, cornerRadius);
+    Drawing result;
+    // Il bordo si tiene gia' tracciato (contorno del tratto): paint() lo riempie soltanto, invece di
+    // ricalcolare il tratto a ogni ridisegno.
+    auto stroked = [](const QPainterPath &path, qreal width, Qt::PenStyle style) {
+        QPainterPathStroker stroker;
+        stroker.setWidth(width);
+        stroker.setCapStyle(Qt::RoundCap);
+        stroker.setJoinStyle(Qt::RoundJoin);
+        stroker.setDashPattern(style);
+        // Curve gia' spezzate in segmenti: il rasterizzatore non deve farlo a ogni ridisegno.
+        QPainterPath flat;
+        flat.setFillRule(Qt::WindingFill);
+        for (const QPolygonF &polygon : stroker.createStroke(path).toSubpathPolygons()) flat.addPolygon(polygon);
+        return flat;
+    };
+    if (fill == NodeFillStyle::PienoManoLibera) result.area = roughArea(outline, seed);
+    else if (NodeStyle::isPatternFill(fill)) result.pattern = pattern(fill, outline, seed);
+    if (isFreehand(border)) {
+        QPainterPath line;
+        if (NodeShapes::hasOpenBorder(shape)) {
+            quint64 lineSeed = seed;
+            for (const QLineF &underline : NodeShapes::borderLines(shape, shapeBox, borderWidth))
+                line.addPath(roughLine(underline, lineSeed++));
+            for (const QPainterPath &mark : NodeShapes::marks(shape, shapeBox))  // FEAT-030 stage B
+                line.addPath(roughPath(mark, lineSeed++));
+        } else {
+            line = roughOutline(outline, seed);
+            // Il riempimento pieno segue la stessa linea del bordo, cosi' gli angoli della forma
+            // regolare non escono dal tratto irregolare.
+            result.borderArea = line;
+            result.borderArea.closeSubpath();
+            // FEAT-030: the lines inside the shape are freehand too.
+            quint64 innerSeed = seed + 1;
+            for (const QPainterPath &inner : NodeShapes::innerLines(shape, shapeBox, cornerRadius)) {
+                // Closed lines (a fold, a card, a circle) go round; open ones (bars, an arc) do not.
+                const bool closed = inner.elementCount() > 2 && QPointF(inner.elementAt(0)) == QPointF(inner.elementAt(inner.elementCount() - 1));
+                line.addPath(closed ? roughOutline(inner, innerSeed++) : roughPath(inner, innerSeed++));
+            }
+        }
+        result.border = stroked(line, borderWidth, NodeStyle::borderPenStyle(border));
+        result.borderLine = line;
+    }
+    return result;
 }
 
 }  // namespace NodeSketch

@@ -9,7 +9,6 @@
 #include "mapstructure.h"
 #include "mindmapmodel.h"
 #include "nodegeometry.h"
-#include "performance.h"
 
 #include <QPainterPath>
 
@@ -83,7 +82,7 @@ void MapCanvas::setMap(MobileMap *map) {
         connect(m_map, &MobileMap::contentChanged, this, &MapCanvas::onContentChanged);
         connect(m_map, &MobileMap::selectionChanged, this, [this] {
             // The handle belonged to the relationship or the picture selected before.
-            if (m_bentHandle != 0 || m_resizedCorner != 0) endMove(false);
+            if (m_bentHandle != 0 || m_resizedCorner != 0 || m_widthSide != 0) endMove(false);
             m_selectionDirty = true;
             if (m_editing) m_sceneDirty = true;  // the title left out follows the selection
             emit editorChanged();
@@ -111,6 +110,10 @@ void MapCanvas::onContentChanged() {
         if (!m_map || !m_map->selectedRelation()) endMove(false);
     } else if (m_resizedCorner != 0) {
         if (!m_map || !m_map->pictureSelected()) endMove(false);  // an Undo took the picture off
+    } else if (m_widthSide != 0) {
+        // An Undo with another finger: the ring follows the topic's new state, or the drag ends.
+        if (!m_map || !m_map->selectedTopic()) endMove(false);
+        else m_widthBounds = resizedTopicBounds();
     } else if (moving()) {
         // Drawn again under a moving finger (an Undo with another finger): the copy and the slot
         // follow the new sheet, or the move ends when its topic is no longer drawn.
@@ -136,6 +139,12 @@ void MapCanvas::setBandBottom(qreal bottom) {
     emit bandChanged();
 }
 
+void MapCanvas::setBandRight(qreal right) {
+    if (qFuzzyCompare(right, m_bandRight)) return;
+    m_bandRight = right;
+    emit bandChanged();
+}
+
 void MapCanvas::setEditing(bool editing) {
     if (editing == m_editing) return;
     m_editing = editing;
@@ -152,7 +161,12 @@ QRectF MapCanvas::relationLabelBox(const MapSnapshot::Relation &relation) const 
 
 QRectF MapCanvas::boundaryTab(const MapSnapshot::BoundaryShape &shape) const {
     if (!shape.titleRect.isEmpty()) return shape.titleRect;
-    return Boundaries::titleRect(shape.stroke, QFontMetricsF(shape.look.font).horizontalAdvance(tr("Title")));
+    return Boundaries::titleRect(shape.boundary, shape.stroke, QFontMetricsF(shape.look.font).horizontalAdvance(tr("Title")));
+}
+
+qreal MapCanvas::tabHeight() const {
+    const MapSnapshot::BoundaryShape *boundary = m_map ? m_map->selectedBoundary() : nullptr;
+    return boundary ? Boundaries::titleHeight(boundary->boundary) : Boundaries::kTitleHeightPx;
 }
 
 QRectF MapCanvas::selectedBounds() const {
@@ -305,7 +319,16 @@ qreal MapCanvas::editorWidth() const {
     if (const MapSnapshot::BoundaryShape *boundary = m_map ? m_map->selectedBoundary() : nullptr)
         return QFontMetricsF(boundary->look.font).horizontalAdvance(tr("Title"));
     const MapSnapshot::Topic *topic = m_map ? m_map->selectedTopic() : nullptr;
-    return topic ? topic->geometry->plainLayoutSize().width() : 0;
+    if (!topic) return 0;
+    const NodeGeometry &geometry = *topic->geometry;
+    if (geometry.plainLayout()) return geometry.plainLayoutSize().width();
+    // B3: a formatted title is typed as the document laid out for it.
+    if (const QTextDocument *rich = geometry.richDocument()) return rich->textWidth();
+    // A title with $...$ formulas has no plain layout (its size stayed 0, so the field was 1 px wide
+    // and showed one letter per line: bug 2026-11-13). FEAT-116: the field shows the formulas as
+    // pictures and grows with its content up to this width: the topic's, or the hand width.
+    return geometry.layoutCustomWidth() > 0 ? std::max<qreal>(1, geometry.manualTextWidth() - 2 * geometry.padX())
+                                            : geometry.maxTextNodeWidth() - 2 * geometry.padX();
 }
 
 int MapCanvas::editorAlignment() const {
@@ -391,12 +414,23 @@ void MapCanvas::tapAt(qreal x, qreal y) {
         m_map->relateAt(point, MapSnapshot::kRelationTouchPx / m_zoom);
         return;
     }
+    // Ctrl + tap on a topic adds or removes it, as the desktop's Ctrl+click; on the background as a tap.
+    if (const MapSnapshot::Topic *topic = m_map->snapshot() ? m_map->snapshot()->topicAt(point) : nullptr;
+        topic && m_map->extendSelection(topic->node->id))
+        return;
     if (m_map->multiSelect()) {  // FEAT-111: a tap only adds or removes a topic
         m_map->multiSelectAt(point);
         return;
     }
     if (relationHandleAt(QPointF(x, y)) != 0) return;  // FEAT-110: as the desktop, a handle keeps the selection
     if (pictureHandleAt(QPointF(x, y)) != 0) return;   // FEAT-106: the same for the picture's
+    // FEAT-018: as a click on the border, a tap just outside the selected topic's border keeps it,
+    // when nothing else (a topic, a relationship, a boundary) is there to be selected.
+    if (topicWidthSideAt(QPointF(x, y)) != 0) {
+        const MapSnapshot *snapshot = m_map->snapshot();
+        const qreal tolerance = MapSnapshot::kRelationTouchPx / m_zoom;
+        if (!snapshot->topicAt(point) && !snapshot->relationAt(point, tolerance) && !snapshot->boundaryAt(point, tolerance)) return;
+    }
     m_map->selectAt(point, MapSnapshot::kRelationTouchPx / m_zoom);
     // The icon is 22 px at zoom 1: its target grows to the phone's 48 px, but only inside the topic,
     // so a tap beside it still reaches the neighbour or the background.
@@ -511,6 +545,63 @@ bool MapCanvas::beginPictureResize(qreal x, qreal y) {
     return true;
 }
 
+int MapCanvas::topicWidthSideAt(const QPointF &point) const {
+    if (!m_map || m_editing || m_map->multiSelect()) return 0;
+    const MapSnapshot::Topic *topic = m_map->selectedTopic();
+    if (!topic) return 0;
+    const QRectF mapShape = topic->geometry->shapeRect().translated(topic->position);
+    const QRectF shape(itemPoint(mapShape.topLeft()), itemPoint(mapShape.bottomRight()));
+    if (shape.isEmpty() || point.y() < shape.top() || point.y() > shape.bottom()) return 0;
+    const qreal inside = std::min(kWidthTouchPx, shape.width() / 3);
+    const qreal toLeft = point.x() - shape.left(), toRight = shape.right() - point.x();
+    const bool left = toLeft >= -kWidthTouchPx && toLeft <= inside;
+    const bool right = toRight >= -kWidthTouchPx && toRight <= inside;
+    if (left && right) return std::abs(toLeft) <= std::abs(toRight) ? -1 : 1;
+    return left ? -1 : right ? 1 : 0;
+}
+
+QRectF MapCanvas::resizedTopicBounds() const {
+    const MapSnapshot::Topic *topic = m_map ? m_map->selectedTopic() : nullptr;
+    MindNode *node = topic && m_map->document() ? m_map->document()->model()->nodeById(topic->node->id) : nullptr;
+    if (!node) return {};
+    // NodeItem sets customWidth while the border moves: measured at it here, the model left as it
+    // was. NodeGeometry reads the node when asked, so before the width is put back.
+    const qreal kept = std::exchange(node->customWidth, m_width);
+    const std::unique_ptr<NodeGeometry> geometry = MapSnapshot::measure(node);
+    const qreal width = geometry->textRect().width();
+    const QRectF bounds = geometry->normalBoundingRect();
+    node->customWidth = kept;
+    return bounds.translated(topic->position + QPointF((width - m_widthStart) / 2 * m_widthSide, 0));
+}
+
+bool MapCanvas::beginTopicResize(qreal x, qreal y) {
+    const int side = topicWidthSideAt(QPointF(x, y));
+    if (side == 0) return false;
+    endMove(false);
+    const MapSnapshot::Topic *topic = m_map->selectedTopic();
+    m_widthSide = side;
+    m_widthStart = topic->geometry->textRect().width();
+    m_widthMin = std::min(topic->geometry->minimumCustomWidth(), kMaxManualNodeWidthPx);
+    m_width = m_widthStart;
+    m_widthBounds = topic->bounds;
+    m_moveItemPoint = QPointF(x, y);
+    m_grabOffset = mapPoint(m_moveItemPoint);  // where the finger started (map px)
+    m_selectionDirty = true;
+    emit movingChanged();
+    update();
+    return true;
+}
+
+bool MapCanvas::fitTopicWidthAt(qreal x, qreal y) {
+    if (topicWidthSideAt(QPointF(x, y)) == 0) return false;
+    // Off the title and the picture only: a double tap on them still edits the title or the formula.
+    const MapSnapshot::Topic *topic = m_map->selectedTopic();
+    const QPointF point = mapPoint(QPointF(x, y)) - topic->position;
+    if (topic->geometry->textArea().contains(point) || topic->geometry->imageRect().contains(point)) return false;
+    if (topic->node->customWidth > 0) m_map->setTopicWidth(0);
+    return true;
+}
+
 int MapCanvas::relationHandleAt(const QPointF &point) const {
     const MapSnapshot::Relation *relation = m_map ? m_map->selectedRelation() : nullptr;
     if (!relation || relation->relationship.shape == Relationship::Shape::Straight) return 0;
@@ -588,6 +679,18 @@ void MapCanvas::moveTo(qreal x, qreal y) {
         update();
         return;
     }
+    if (m_widthSide != 0) {
+        // NodeItem::mouseMoveEvent: the border follows the finger, the other side stays put.
+        const qreal delta = (mapPoint(m_moveItemPoint).x() - m_grabOffset.x()) * m_widthSide;
+        const qreal width = std::clamp(std::round(m_widthStart + delta), m_widthMin, kMaxManualNodeWidthPx);
+        if (width != m_width) {
+            m_width = width;
+            m_widthBounds = resizedTopicBounds();
+            m_selectionDirty = true;
+            update();
+        }
+        return;
+    }
     if (m_bentHandle != 0) {
         m_bentControl = mapPoint(m_moveItemPoint) + m_grabOffset;
         m_selectionDirty = true;
@@ -613,6 +716,16 @@ void MapCanvas::endMove(bool drop) {
         update();
         // After the state is cleared: the step builds the sheet again (contentChanged).
         if (drop && m_map && m_resizeSize != m_resizeStartSize) m_map->resizePicture(m_resizeSize);
+        return;
+    }
+    if (m_widthSide != 0) {
+        m_widthSide = 0;
+        m_selectionDirty = true;
+        emit movingChanged();
+        update();
+        // NodeItem's release: a step only when the width changed. After the state is cleared: the
+        // step builds the sheet again (contentChanged).
+        if (drop && m_map && std::abs(m_width - m_widthStart) >= 0.5) m_map->setTopicWidth(m_width);
         return;
     }
     if (m_bentHandle != 0) {
@@ -656,7 +769,7 @@ QPointF MapCanvas::autoScrollStep(const QPointF &itemPoint) const {
         if (const qreal intoHigh = position - (high - kAutoScrollMarginPx); intoHigh > 0) return step(intoHigh);
         return 0;
     };
-    return {axis(itemPoint.x(), 0, width()), axis(itemPoint.y(), m_bandTop, visibleBottom())};
+    return {axis(itemPoint.x(), 0, visibleRight()), axis(itemPoint.y(), m_bandTop, visibleBottom())};
 }
 
 void MapCanvas::autoScrollTick() {
@@ -674,8 +787,8 @@ void MapCanvas::revealSelected() {
 void MapCanvas::reveal(const QRectF &mapRect) {
     if (width() <= 0 || height() <= 0) return;
     const qreal margin = kFitMarginPx / m_zoom;
-    const QRectF visible(mapPoint(QPointF(0, m_bandTop)), mapPoint(QPointF(width(), visibleBottom())));
-    if (visible.height() <= 0) return;
+    const QRectF visible(mapPoint(QPointF(0, m_bandTop)), mapPoint(QPointF(visibleRight(), visibleBottom())));
+    if (visible.height() <= 0 || visible.width() <= 0) return;
     const QRectF wanted = mapRect.adjusted(-margin, -margin, margin, margin);
     // Each axis: the smallest move that brings the rect in; a rect larger than the view shows its
     // top-left corner.
@@ -692,16 +805,23 @@ void MapCanvas::reveal(const QRectF &mapRect) {
     update();
 }
 
-void MapCanvas::centerSelected() {
+void MapCanvas::revealForEditing() {
     const QRectF bounds = selectedBounds();  // FEAT-110: a relationship's label too
-    const qreal top = m_bandTop;
-    const qreal band = visibleBottom() - top;
-    if (width() <= 2 * kFitMarginPx || band <= 2 * kFitMarginPx || bounds.isEmpty()) return;
-    const qreal fits = std::min((width() - 2 * kFitMarginPx) / bounds.width(), (band - 2 * kFitMarginPx) / bounds.height());
-    m_zoom = std::clamp(std::min(std::max(m_zoom, kEditZoom), fits), minZoom(), kMaxZoom);
-    m_origin = bounds.center() - QPointF(width() / 2, top + band / 2) / m_zoom;
-    emit viewChanged();
-    update();
+    const qreal band = visibleBottom() - m_bandTop;
+    const qreal across = visibleRight();  // FEAT-119: left of the side panel
+    if (across <= 2 * kFitMarginPx || band <= 2 * kFitMarginPx || bounds.isEmpty()) return;
+    const qreal fits = std::min((across - 2 * kFitMarginPx) / bounds.width(), (band - 2 * kFitMarginPx) / bounds.height());
+    const qreal zoom = std::clamp(std::min(std::max(m_zoom, kEditZoom), fits), minZoom(), kMaxZoom);
+    if (!qFuzzyCompare(zoom, m_zoom)) {
+        // Zoomed around the topic's centre, so the topic stays where it was on the screen.
+        const QPointF anchor = bounds.center();
+        const QPointF onScreen = (anchor - m_origin) * m_zoom;
+        m_zoom = zoom;
+        m_origin = anchor - onScreen / m_zoom;
+        emit viewChanged();
+        update();
+    }
+    reveal(bounds);  // moves the map only if the topic is not fully in the band
 }
 
 void MapCanvas::geometryChange(const QRectF &newGeometry, const QRectF &oldGeometry) {
@@ -832,9 +952,17 @@ QSGNode *MapCanvas::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) {
             }
             MapScene::Vertices vertices;
             for (const MapSnapshot::Topic *at : ringed) {
-                const qreal inset = kSelectionGap + NodeGeometry::borderOutside(at->node) + kSelectionWidth / 2;
                 QPainterPath ring;
-                ring.addRoundedRect(at->bounds.adjusted(4 - inset, 4 - inset, inset - 4, inset - 4), kSelectionRadius, kSelectionRadius);
+                // FEAT-018: while its border is dragged, the ring at the topic's new size.
+                const QRectF bounds = m_widthSide != 0 && at == topic ? m_widthBounds : at->bounds;
+                if (at->cell) {
+                    // FEAT-028, NodeItem::paint on a cell: the square ring inside the cell, over its fill.
+                    const qreal inset = kSelectionGap + NodeGeometry::kTableBorderPx / 2 + kSelectionWidth / 2;
+                    ring.addRect(at->cell->rect.adjusted(inset, inset, -inset, -inset));
+                } else {
+                    const qreal inset = kSelectionGap + NodeGeometry::borderOutside(at->node) + kSelectionWidth / 2;
+                    ring.addRoundedRect(bounds.adjusted(4 - inset, 4 - inset, inset - 4, inset - 4), kSelectionRadius, kSelectionRadius);
+                }
                 for (const QPolygonF &polyline : MapScene::strokePolylines(ring))
                     MapScene::appendStroke(vertices, polyline, kSelectionWidth, polyline.isClosed(), false, kSelectionColor);
             }
@@ -977,13 +1105,6 @@ QSGNode *MapCanvas::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) {
     matrix.scale(float(m_zoom), float(m_zoom));
     matrix.translate(float(-m_origin.x()), float(-m_origin.y()));
     transform->setMatrix(matrix);
-    // NodeItem::paint, P6: below the detail zoom only the shapes, without the text. The titles are
-    // the content's last child (MapScene::build); an opacity of 0 skips them in the renderer.
-    if (QSGNode *content = sheet->firstChild()) {
-        auto *text = static_cast<QSGOpacityNode *>(content->lastChild());
-        const qreal opacity = m_zoom >= Performance::detailZoomThreshold() ? 1 : 0;
-        if (text->opacity() != opacity) text->setOpacity(opacity);
-    }
     if (benchmarkRunning()) m_updateUs.append(timer.nsecsElapsed() / 1000);
     return root;
 }

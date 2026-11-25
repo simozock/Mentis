@@ -13,12 +13,53 @@ AbstractButton {
     id: control
     readonly property bool iconOnly: icon.source.toString() !== ""
     readonly property real visualWidth: iconOnly ? Theme.groupButtonSize : label.implicitWidth + 4 * Theme.grid
+    // FEAT-118: an adding tool of the topic bar goes under the group's "+" when the bar does not fit.
+    // `shown` says whether the selection wants it; `folded` is set by its FloatingGroup; `menuText`
+    // names its row in the "+" menu.
+    property bool adding: false
+    property bool shown: true
+    property bool folded: false
+    property string menuText
+    visible: shown && !(adding && folded)
     padding: 0
     // No keyboard focus: Space, Enter and Tab are the map's keys (KeyCommands), not a button's.
     focusPolicy: Qt.NoFocus
     implicitWidth: visualWidth + Theme.groupGap
     implicitHeight: Theme.touchTarget
     Accessible.name: text
+    // The pen's hover (PenAsMouse) shows the hover fill and the tooltip, whatever the platform's default.
+    hoverEnabled: true
+
+    // The button's name in a tooltip, as the desktop's (user's request 2026-11-19): an icon button,
+    // after 700 ms with the pen or the mouse over it (Qt's tooltip wake-up delay,
+    // QStyle::SH_ToolTip_WakeUpDelay), or at once on a long press, which then does not press it
+    // (AbstractButton skips clicked after pressAndHold); after the release it stays 1.5 s. A text
+    // button shows its name already: a long press presses it, as before.
+    // The tooltip is made the first time it is wanted: most buttons never show one.
+    property bool tipHeld: false
+    property NameTip tip: null
+    readonly property bool tipWanted: iconOnly && text !== "" && (tipHeld || hovered)
+    onTipWantedChanged: if (tipWanted && !tip) tip = tipComponent.createObject(control)
+    onPressAndHold: {
+        if (iconOnly) tipHeld = true
+        else clicked()
+    }
+    onReleased: if (tipHeld) tipRelease.restart()
+    onCanceled: tipHeld = false
+    Timer {
+        id: tipRelease
+        interval: 1500
+        onTriggered: control.tipHeld = false
+    }
+    Component {
+        id: tipComponent
+        NameTip {
+            inset: (control.height - Theme.groupButtonSize) / 2
+            visible: control.tipWanted && control.visible && (control.tipHeld || !control.down)
+            delay: control.tipHeld ? 0 : 700
+            text: control.text
+        }
+    }
 
     background: Item {
         Rectangle {

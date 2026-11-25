@@ -10,12 +10,43 @@ import Mentis.Mobile
 // (4+3+2+1, 3+2+1, 2+1, 1). A few rectangles, no effect or offscreen buffer (AGENTS.md).
 // Buttons wider than maximumWidth wrap into rows: the bottom row holds as many as fit, the rows
 // above the rest, in reading order (the topic bar on a phone, user's request 2026-11-11).
+// FEAT-118: with an overflowButton, when the other visible children and the shown adding tools
+// (GroupButton.adding) do not fit in one row, all the adding tools fold under it (all or nothing,
+// so its menu always holds the same tools); the overflowButton shows itself while `folded`.
 Item {
     id: group
     default property alias content: row.data
     property real maximumWidth: Infinity
+    property Item overflowButton: null
     // The row's padding at each side: 4 px of touch margin, 4 inside the frame, less the button's 1.
     readonly property real sidePadding: 2 * Theme.grid - Theme.groupGap / 2
+    readonly property bool folded: {
+        if (!overflowButton) return false
+        let fixed = 0
+        let adding = 0
+        for (const child of row.children) {
+            if (child === overflowButton) continue
+            if (child.adding === true) {
+                if (child.shown) adding += child.width
+            } else if (child.visible) {
+                fixed += child.width
+            }
+        }
+        return adding > 0 && fixed + adding > maximumWidth - 2 * sidePadding
+    }
+    // The adding tools that the selection wants, in the bar's order: the rows of the "+" menu.
+    readonly property var addingTools: {
+        const result = []
+        for (const child of row.children)
+            if (child !== overflowButton && child.adding === true && child.shown) result.push(child)
+        return result
+    }
+    onFoldedChanged: fold()
+
+    function fold() {
+        for (const child of row.children)
+            if (child.adding !== undefined) child.folded = folded
+    }
     // The visible children split into rows, filled from the last child backwards so the bottom row
     // is the fullest; a child wider than the room still gets a row of its own.
     readonly property var lines: {
@@ -42,7 +73,7 @@ Item {
     implicitHeight: row.height
 
     onLinesChanged: place()
-    Component.onCompleted: place()
+    Component.onCompleted: { fold(); place() }
 
     function place() {
         let y = 0

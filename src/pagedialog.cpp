@@ -316,7 +316,7 @@ GanttPages::Options PageDialog::ganttOptions() const {
     options.size = static_cast<MapExporter::PageSize>(m_size->currentData().toInt());
     options.landscape = m_orientation->currentIndex() == 1;
     options.fitWidth = m_ganttFit->currentIndex() == 0;
-    options.scale = static_cast<GanttChart::Scale>(m_ganttUnit->currentIndex());
+    options.scale = static_cast<GanttCanvas::Scale>(m_ganttUnit->currentIndex());
     return options;
 }
 

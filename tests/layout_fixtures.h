@@ -134,6 +134,7 @@ inline Topics build(Document &document, const Fixture &fixture, const std::funct
         e->style.shape = NodeShape::LineaSotto;
         e->style.borderStyle = NodeBorderStyle::ContinuoManoLibera;
         NodeGeometry::showAllNotes() = fixture.content == Fixture::Content::Notes;
+        model.sheetStyle.showNotes = fixture.content == Fixture::Content::Notes;  // the phone reads the sheet's (FEAT-119)
         model.sheetStyle.justify = fixture.content == Fixture::Content::Justify;
         model.refreshStyles();
         if (contentSet) contentSet();

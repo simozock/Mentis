@@ -55,7 +55,7 @@ private:
     MapExporter::Options options() const;
     Scope scope() const;
     bool ganttChosen() const;
-    GanttChart::Scale ganttUnit() const;
+    GanttCanvas::Scale ganttUnit() const;
     GanttPages::Content ganttContent() const;
     void refreshPreview();
     void exportAs(MapExporter::Format format);

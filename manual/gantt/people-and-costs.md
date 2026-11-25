@@ -10,7 +10,7 @@ List the project's people, give them tasks, and Mentis counts hours and costs.
 
 1. Click **Resources** in the top bar.
 2. Click **+ Add person**: **First name**, **Last name**, **Email**, **Role**, **Hourly cost**. Drag a row's number to reorder; **×** removes.
-3. Choose the **Currency**: EUR, USD, GBP, CHF, or **+ Add currency…** with a code and a symbol.
+3. Choose each person's **Currency**: EUR, USD, GBP, CHF, or **+ Add currency…** with a code and a symbol. A new person takes the currency of the one above.
 4. Under **Working week**, set **Saturday**, **Sunday** and **Length of a working day** (8 hours at first), then **Save**.
 
 Days off stretch tasks on the timeline.
@@ -25,4 +25,8 @@ Days off stretch tasks on the timeline.
 
 ## Read the costs
 
-Cost = working days × length of the working day × share × hourly cost. Choose **Gantt and costs** or **Costs** when you [export the plan](export.md).
+Cost = working days × length of the working day × share × hourly cost, in the person's currency. Amounts in different currencies are never added: a total shows one amount per currency, such as €1,200.00 + $300.00. Choose **Gantt and costs** or **Costs** when you [export the plan](export.md).
+
+## See the people's charts
+
+Beside the people (under them in a narrow window), **Resources** shows the **Planned cost**, **Person-days**, **Days per person** and **Cost by role**. Click a person's row for their **Load** (by the Gantt's scale, red above 100 %) and **Progress of the tasks**; click their number to go back. The chart button by the title hides them.

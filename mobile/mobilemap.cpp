@@ -1,10 +1,16 @@
 #include "mobilemap.h"
 
+#include "controlkey.h"
+
+#include "mobileshare.h"
+
 #include "bmapstorage.h"
+#include "custompalettes.h"
 #include "document.h"
 #include "filevalidation.h"
 #include "formulatext.h"
 #include "iconlibrary.h"
+#include "mapfolder.h"
 #include "maplayout.h"
 #include "mapvariants.h"
 #include "markdownimport.h"
@@ -15,6 +21,7 @@
 #include "nodegeometry.h"
 #include "nodelinks.h"
 #include "nodesearch.h"
+#include "outlineformats.h"
 #include "performance.h"
 #include "richtitle.h"
 #include "stickers.h"
@@ -29,6 +36,7 @@
 #include <QMimeData>
 #include <QElapsedTimer>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QTextCursor>
@@ -81,6 +89,8 @@ bool putOnAndroidClipboard(const QString &file) {
     return true;
 }
 
+}  // namespace
+
 // FEAT-114: the file through the same FileProvider in an ACTION_VIEW (open with) or ACTION_SEND
 // (share) intent, read permission granted, in the system's chooser.
 // https://developer.android.com/training/secure-file-sharing/share-file
@@ -110,9 +120,16 @@ bool startAndroidFileIntent(const QString &file, bool share, const QString &choo
     context.callMethod<void>("startActivity", "(Landroid/content/Intent;)V", chooser.object());
     return !QJniEnvironment().checkAndClearExceptions();
 }
-
-}  // namespace
 #endif
+
+bool MobileShare::share(const QString &file, const QString &chooserTitle) {
+#ifdef Q_OS_ANDROID
+    return startAndroidFileIntent(file, true, chooserTitle);
+#else
+    Q_UNUSED(chooserTitle);
+    return QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(file).absolutePath()));  // the folder, off Android
+#endif
+}
 
 Q_LOGGING_CATEGORY(lcMobileMap, "mentis.mobile.map")
 
@@ -216,6 +233,14 @@ void MobileMap::multiSelectAt(const QPointF &mapPoint) {
     else stopMultiSelect();
 }
 
+bool MobileMap::extendSelection(const QString &id) {
+    if (id.isEmpty() || !ControlKey::held()) return false;
+    startMultiSelect();
+    if (!m_multiSelect) return false;
+    toggleInSelection(id);
+    return true;
+}
+
 void MobileMap::setCopiedStyle(const MindMapModel::TopicStyle &style) {
     m_copiedStyle = style;
     emit copiedStyleChanged();
@@ -287,6 +312,34 @@ bool MobileMap::openUrl(const QUrl &url, MapLibrary *library) {
     if (open(path)) return true;
     if (created) library->discard(path);
     return false;
+}
+
+bool MobileMap::create(const QString &folder, const QString &name, const QString &variant) {
+    setError(QString());
+    if (!QFileInfo(folder).isDir()) { setError(tr("The folder %1 cannot be found.").arg(folder)); return false; }
+    const QString path = QDir(folder).absoluteFilePath(MapFolder::freeName(folder, MapFolder::fileNameFor(name.trimmed())));
+    {
+        // A document of its own, as MainWindow::applyTemplate(1, variant) fills the model before
+        // startUntitled; the open map, if any, is left as it is until the new file opens.
+        Document document;
+        MindMapModel *model = document.model();
+        model->clear();  // "Central Topic"
+        const CustomPalettes::DefaultTheme theme = CustomPalettes::defaultTheme();  // MainWindow::applyDefaultTheme
+        const bool custom = theme.palette.group == NodeStyle::PaletteGroup::Personalizzata;
+        model->setTheme(theme.palette.id, theme.palette.colors, custom ? theme.palette.name : QString(), theme.variant);
+        MapVariants::apply(*model, MapVariants::find(variant) ? variant : MapVariants::all().first().id, true);
+        model->refreshStyles();
+        { const MapSnapshot laidOut(model, true); }  // the positions, as MindMapScene::autoLayout
+        document.startUntitled();
+        const Document::Result saved = document.save(path, BmapStorage::SaveReason::Explicit);
+        document.close();
+        if (!saved.ok) {
+            QFile::remove(path);  // nothing half written stays in the list
+            setError(saved.error);
+            return false;
+        }
+    }
+    return open(path);
 }
 
 bool MobileMap::switchSheet(int index) {
@@ -508,8 +561,26 @@ void MobileMap::selectAt(const QPointF &mapPoint, qreal relationTolerance) {
 }
 
 bool MobileMap::pictureSelected() const {
-    const MapSnapshot::Topic *topic = m_pictureSelected ? selectedTopic() : nullptr;
-    return topic && !topic->geometry->imageRect().isEmpty();  // not after an Undo took it off
+    // Read on the topic, not on the snapshot: in the outliner it may be in a branch closed on the map.
+    // Not after an Undo took the picture off.
+    const MindNode *node = m_pictureSelected ? selectedNode() : nullptr;
+    return node && (!node->imagePath.isEmpty() || !node->formula.isEmpty());
+}
+
+void MobileMap::selectTopic(const QString &id) {
+    select(id);
+    if (!m_pictureSelected) return;
+    m_pictureSelected = false;
+    emit selectionChanged();
+}
+
+void MobileMap::selectPicture(const QString &id) {
+    select(id);
+    const MindNode *node = selectedNode();
+    const bool picture = node && (!node->imagePath.isEmpty() || !node->formula.isEmpty());
+    if (!picture || m_pictureSelected) return;
+    m_pictureSelected = true;
+    emit selectionChanged();
 }
 
 bool MobileMap::selectedHasNote() const {
@@ -564,10 +635,76 @@ bool MobileMap::rename(const QString &title) {
     return true;
 }
 
+void MobileMap::keepTitle() {
+    const MindNode *node = selectedNode();
+    m_keptTitle = node ? KeptTitle{node->id, node->title, node->titleHtml} : KeptTitle{};
+}
+
+bool MobileMap::restoreTitle() {
+    MindNode *node = selectedNode();
+    const KeptTitle kept = std::exchange(m_keptTitle, KeptTitle{});
+    if (!node || node->id != kept.id || (node->title == kept.title && node->titleHtml == kept.html)
+        || !m_document->editTitle(node, kept.title, kept.html))
+        return false;
+    finishEdit(node->id);
+    return true;
+}
+
 bool MobileMap::selectedTitleRich() const {
     const MindNode *node = selectedNode();
     // As NodeItem's editor: a formula stays its plain source.
     return node && !node->titleHtml.isEmpty() && !FormulaText::containsMath(node->title);
+}
+
+int MobileMap::selectedBoldWeight() const {
+    const MindNode *node = selectedNode();
+    return node ? OutlineFormats::storedBoldWeights(node).bold : QFont::Bold;
+}
+
+bool MobileMap::toggleFieldFormat(QQuickTextDocument *field, int start, int end, int style) {
+    const MindNode *node = selectedNode();
+    QTextDocument *text = field ? field->textDocument() : nullptr;
+    if (!node || !text || start == end) return false;
+    QTextCursor cursor(text);
+    cursor.setPosition(std::clamp(std::min(start, end), 0, text->characterCount() - 1));
+    cursor.setPosition(std::clamp(std::max(start, end), 0, text->characterCount() - 1), QTextCursor::KeepAnchor);
+    // As TextFormatBar: the button is checked from the selection's format, a click turns it over.
+    const QTextCharFormat now = cursor.charFormat();
+    const int bold = OutlineFormats::storedBoldWeights(node).bold;
+    QTextCharFormat format;
+    switch (RichTitle::CharStyle(style)) {
+    case RichTitle::CharStyle::Bold: format.setFontWeight(now.fontWeight() >= bold ? node->fontWeight : bold); break;
+    case RichTitle::CharStyle::Italic: format.setFontItalic(!now.fontItalic()); break;
+    case RichTitle::CharStyle::Underline: format.setFontUnderline(!now.fontUnderline()); break;
+    case RichTitle::CharStyle::StrikeOut: format.setFontStrikeOut(!now.fontStrikeOut()); break;
+    default: return false;
+    }
+    cursor.mergeCharFormat(format);
+    return true;
+}
+
+bool MobileMap::toggleCharStyle(int style) {
+    if (style < 0 || style > int(RichTitle::CharStyle::StrikeOut)) return false;
+    const auto charStyle = RichTitle::CharStyle(style);
+    QList<MindNode *> nodes;
+    for (MindNode *node : targetNodes())
+        if (!node->title.isEmpty() && !FormulaText::containsMath(node->title)) nodes.append(node);
+    if (nodes.isEmpty()) return false;
+    const auto base = [](const MindNode *node) {
+        return RichTitle::BaseStyle{node->fontWeight, node->italic, node->underline, node->strikeOut};
+    };
+    bool all = true;
+    for (const MindNode *node : std::as_const(nodes))
+        all = all && RichTitle::hasEverywhere(node->title, node->titleHtml, charStyle, base(node), OutlineFormats::storedBoldWeights(node).bold);
+    m_document->flushPendingStep();  // one Undo step of its own
+    bool changed = false;
+    for (MindNode *node : std::as_const(nodes))
+        changed = m_document->setFormattedTitle(node, node->title,
+                                                RichTitle::withEverywhere(node->title, node->titleHtml, charStyle, !all, base(node),
+                                                                          OutlineFormats::storedBoldWeights(node).bold)) || changed;
+    if (!changed) return false;
+    finishEdit(m_selectedId);  // bold is wider: the layout joins the step
+    return true;
 }
 
 void MobileMap::loadTitle(QQuickTextDocument *field) {
@@ -702,6 +839,14 @@ bool MobileMap::resizePicture(const QSizeF &size) {
     return true;
 }
 
+bool MobileMap::setTopicWidth(qreal px) {
+    MindNode *node = selectedNode();
+    if (!node || !m_document->model()->setCustomWidths({{node, px}})) return false;
+    m_document->markChanged();  // as MobileStyle::edited
+    finishEdit(node->id);
+    return true;
+}
+
 bool MobileMap::copyPicture() {
     const MindNode *node = pictureSelected() ? selectedNode() : nullptr;
     if (!node) return false;
@@ -780,12 +925,18 @@ QVariantList MobileMap::markerChoices(const QString &marker) const {
                                        {QStringLiteral("checked"), option == marker}});
         }
     }
+    for (const IconLibrary::MarkerChoice &choice : IconLibrary::groupMarkers(marker))
+        choices.append(QVariantMap{{QStringLiteral("marker"), choice.marker}, {QStringLiteral("label"), choice.name},
+                                   {QStringLiteral("checked"), choice.marker == marker}});
     return choices;
 }
 
 bool MobileMap::setMarker(const QString &marker) {
     MindNode *node = selectedNode();
-    if (!node || !Markers::isValid(marker) || !m_document->setMarker(node, Markers::seriesOf(marker), marker)) return false;
+    if (!node || !Markers::isValid(marker)) return false;
+    // An own marker's image goes into the document (registered by IconLibrary::groupMarkers).
+    if (Markers::isCustom(marker)) m_document->model()->addMarkerImage(Markers::customImage(marker), Markers::image(Markers::customImage(marker)));
+    if (!m_document->setMarker(node, Markers::seriesOf(marker), marker)) return false;
     finishEdit(node->id);
     return true;
 }
@@ -971,12 +1122,11 @@ bool MobileMap::openFile(int index) {
 bool MobileMap::shareFile(int index) {
     const QString copy = openedCopy(index);
     if (copy.isEmpty()) return false;
-    const QString name = selectedNode()->files[index].name;
-#ifdef Q_OS_ANDROID
-    const bool shared = startAndroidFileIntent(copy, true, tr("Share \"%1\"").arg(name));
-#else
-    const bool shared = QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(copy).absolutePath()));
-#endif
+    return shareCopy(copy, selectedNode()->files[index].name);
+}
+
+bool MobileMap::shareCopy(const QString &copy, const QString &name) {
+    const bool shared = MobileShare::share(copy, tr("Share \"%1\"").arg(name));
     if (!shared) setMessage(tr("\"%1\" could not be shared.").arg(name));
     return shared;
 }
@@ -1168,7 +1318,8 @@ bool MobileMap::moveTopic(const QString &id, const QPointF &mapPoint) {
     const ReorderTarget target = moveTarget(id, mapPoint);
     if (target.kind != ReorderTarget::Kind::Child && target.kind != ReorderTarget::Kind::Insert) return false;
     MindNode *node = m_document->model()->nodeById(id);
-    if (!m_document->moveNode(node, target.parent, target.row, target.side)) return false;
+    const int fromSide = node && m_snapshot ? m_snapshot->layout()->sideOf(node) : 0;
+    if (!m_document->moveNode(node, target.parent, target.row, target.side, fromSide)) return false;
     finishEdit(id);  // as MainWindow::reorderNode: the move and the layout, one step
     return true;
 }
@@ -1342,6 +1493,27 @@ bool MobileMap::selectNeighbour(int key) {
     // As MainWindow::eventFilter: with none selected the arrow starts from the central topic.
     MindNode *selected = selectedNode();
     MindNode *from = selected ? selected : m_document->model()->root();
+    const MindNode *to = neighbourOf(from, key);
+    if (!to && selected) return false;
+    setSelected(to ? to->id : from->id);
+    return true;
+}
+
+bool MobileMap::addNeighbour(int key) {
+    if (!isOpen() || !m_snapshot) return false;
+    MindNode *selected = selectedNode();
+    if (!selected) return selectNeighbour(key);
+    const MindNode *to = neighbourOf(selected, key);
+    if (!to) return false;
+    if (!m_multiSelect) startMultiSelect();
+    if (!m_multiSelect) return false;  // a relationship or boundary is selected
+    if (!m_multiSelection.contains(to->id)) m_multiSelection.append(to->id);
+    m_selectedId = to->id;
+    emit selectionChanged();
+    return true;
+}
+
+const MindNode *MobileMap::neighbourOf(MindNode *from, int key) const {
     MapNavigation::Scene scene;
     scene.layout = m_snapshot->layout();
     QHash<const MindNode *, const MapSnapshot::Topic *> drawn;
@@ -1358,10 +1530,7 @@ bool MobileMap::selectNeighbour(int key) {
         const MapSnapshot::Topic *at = drawn.value(topic);
         return at ? at->geometry->shapeRect().translated(at->position) : QRectF();
     };
-    const MindNode *to = MapNavigation::neighbour(scene, from, Qt::Key(key));
-    if (!to && selected) return false;
-    setSelected(to ? to->id : from->id);
-    return true;
+    return MapNavigation::neighbour(scene, from, Qt::Key(key));
 }
 
 void MobileMap::selectCentral() {
@@ -1394,6 +1563,92 @@ bool MobileMap::addParentTopic() {
     return true;
 }
 
+bool MobileMap::indentSelected() {
+    MindNode *node = selectedNode();
+    if (!node || !m_document->indentNode(node)) return false;
+    finishEdit(node->id);
+    return true;
+}
+
+bool MobileMap::outdentSelected() {
+    MindNode *node = selectedNode();
+    if (!node || !m_document->outdentNode(node)) return false;
+    finishEdit(node->id);
+    return true;
+}
+
+MindNode *MobileMap::outlineSibling(const MindNode *node, int direction) {
+    if (!node || !node->parent || node->floating || node->summaryTopic || direction == 0) return nullptr;
+    const auto &siblings = node->parent->children;
+    int from = 0;
+    while (from < int(siblings.size()) && siblings[from].get() != node) ++from;
+    const int to = from + (direction > 0 ? 1 : -1);
+    if (to < 0 || to >= int(siblings.size())) return nullptr;
+    MindNode *other = siblings[to].get();
+    return other->floating || other->summaryTopic ? nullptr : other;
+}
+
+bool MobileMap::moveInOutline(int direction) {
+    MindNode *node = selectedNode();
+    MindNode *other = outlineSibling(node, direction);
+    if (!other) return false;
+    MindNode *parent = node->parent;
+    const auto &siblings = parent->children;
+    int to = 0;
+    while (to < int(siblings.size()) && siblings[to].get() != other) ++to;
+    // MindMapModel::moveNode's row is counted before the topic leaves its place.
+    if (!m_document->moveNode(node, parent, direction > 0 ? to + 1 : to, 0)) return false;
+    finishEdit(node->id);
+    return true;
+}
+
+bool MobileMap::duplicateSelected() {
+    MindNode *created = m_document ? m_document->duplicateNode(selectedNode()) : nullptr;
+    if (!created) return false;
+    finishEdit(created->id);
+    return true;
+}
+
+bool MobileMap::dropInOutline(const QString &id, const QString &targetId, int where) {
+    MindMapModel *model = isOpen() ? m_document->model() : nullptr;
+    MindNode *node = model ? model->nodeById(id) : nullptr;
+    MindNode *target = model ? model->nodeById(targetId) : nullptr;
+    if (!node || !target || node == target) return false;
+    MindNode *parent = where == 0 ? target : target->parent;
+    if (!parent) return false;
+    int row = -1;  // inside: the last child
+    if (where != 0) {
+        const auto &siblings = parent->children;
+        row = 0;
+        while (row < int(siblings.size()) && siblings[row].get() != target) ++row;
+        if (where > 0) ++row;  // counted before the topic leaves its place, as moveNode
+    }
+    if (!m_document->moveNode(node, parent, row, 0)) return false;
+    finishEdit(node->id);
+    return true;
+}
+
+bool MobileMap::pasteAsMap() {
+    const QMimeData *mime = isOpen() ? QGuiApplication::clipboard()->mimeData() : nullptr;
+    if (!mime || !mime->hasText()) return false;
+    const QString text = mime->text();
+    const MarkdownImport::Result parsed = MarkdownImport::parse(text, MarkdownImport::kMaxPastedItems);
+    if (parsed.tooLarge) {
+        setMessage(tr("Text too long: you can paste at most %1 items at a time.").arg(MarkdownImport::kMaxPastedItems));
+        return true;
+    }
+    if (parsed.itemCount < 2) return false;
+    const bool typing = m_editingTitle;
+    setEditingTitle(false);  // the title typed so far is its own step
+    const Document::PasteResult result = m_document->replaceMapWithMarkdown(text);
+    if (!result.first) {
+        setEditingTitle(typing);  // pasted as text: the typing goes on in a step of its own
+        return false;
+    }
+    finishEdit(result.first->id);
+    return true;
+}
+
 void MobileMap::copyStyle() {
     if (const MindNode *node = selectedNode()) setCopiedStyle(m_document->model()->topicStyle(node));
 }
@@ -1409,14 +1664,28 @@ bool MobileMap::pasteStyle() {
 bool MobileMap::copyBranches() {
     const QList<MindNode *> nodes = targetNodes();
     if (nodes.isEmpty()) return false;
+    putOnClipboard(nodes);
+    setMessage(nodes.size() == 1 ? tr("Topic copied") : tr("Topics copied"));
+    return true;
+}
+
+bool MobileMap::cutBranches() {
+    if (!isOpen() || !m_selectedRelationId.isEmpty() || !m_selectedBoundaryId.isEmpty()) return false;
+    QList<MindNode *> nodes = targetNodes();
+    nodes.removeIf([](const MindNode *node) { return !node->parent; });
+    if (nodes.isEmpty()) return false;
+    putOnClipboard(nodes);
+    m_pictureSelected = false;  // the topic goes, not only its picture
+    return removeSelected();
+}
+
+void MobileMap::putOnClipboard(const QList<MindNode *> &nodes) {
     m_copiedBranches = m_document->branchesData(nodes);
     m_copiedBranchesText = m_document->branchesText(nodes);
     auto *mime = new QMimeData;
     mime->setData(Document::branchesMimeType(), m_copiedBranches);  // dropped by Android's clipboard
     mime->setText(m_copiedBranchesText);
     QGuiApplication::clipboard()->setMimeData(mime);  // the clipboard owns mime
-    setMessage(nodes.size() == 1 ? tr("Topic copied") : tr("Topics copied"));
-    return true;
 }
 
 bool MobileMap::pasteBranches() {
@@ -1528,13 +1797,21 @@ QVariantMap MobileMap::pickLibraryFile(const QUrl &url, bool marker) {
     return result;
 }
 
-bool MobileMap::addToLibrary(const QString &path, const QString &name, bool marker) {
+QVariantList MobileMap::ownCollections(bool marker) const {
+    QVariantList list;
+    for (const IconLibrary::Collection &c : IconLibrary::collections(marker ? IconLibrary::Kind::Marker : IconLibrary::Kind::Sticker))
+        if (!c.builtIn) list.append(QVariantMap{{QStringLiteral("value"), c.id}, {QStringLiteral("name"), c.name}});
+    return list;
+}
+
+bool MobileMap::addToLibrary(const QString &path, const QString &name, bool marker, const QString &collectionId,
+                             const QString &newCollection) {
     const IconLibrary::Kind kind = marker ? IconLibrary::Kind::Marker : IconLibrary::Kind::Sticker;
-    // IconPage::ensureOwnCollection: the first own collection, made when there is none.
-    QString collection;
-    for (const IconLibrary::Collection &c : IconLibrary::collections(kind))
-        if (!c.builtIn) { collection = c.id; break; }
-    if (collection.isEmpty()) collection = IconLibrary::addCollection(kind, marker ? tr("My markers") : tr("My stickers"));
+    QString collection = collectionId;
+    if (collection.isEmpty()) {
+        const QString named = newCollection.trimmed();
+        collection = IconLibrary::addCollection(kind, !named.isEmpty() ? named : marker ? tr("My markers") : tr("My stickers"));
+    }
     const QString shown = name.trimmed().isEmpty() ? IconLibrary::displayName(path) : name;
     const QString copy = collection.isEmpty() ? QString() : IconLibrary::addFile(kind, collection, path, shown);
     if (copy.isEmpty()) {

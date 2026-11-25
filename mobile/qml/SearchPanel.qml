@@ -8,20 +8,12 @@ import Mentis.Mobile
 // them the found topics in tree order, grouped by sheet with Current file, the found part
 // highlighted as on the desktop. A tap on a result shows the topic (MobileMap.reveal). The options
 // live while the app runs, as on the desktop.
-// FEAT-114: openPicker makes it the desktop's TopicLinkDialog: the selected topic is not offered,
-// the switch "Also add the link to the chosen topic" and (with a link already) Remove link sit
-// under the field, and a tap on a result links to it (MobileMap.setTopicLink, one Undo step).
 Popup {
     id: panel
     objectName: "searchPanel"
     required property MobileMap map
     // A result tapped: the panel is closed, the topic shown.
     signal revealed()
-
-    // FEAT-114: choosing the target of the selected topic's link (openPicker), with its back link.
-    property bool picking: false
-    property bool alsoBack: false
-    property string source
 
     property bool allSheets: true
     property bool wholeWords: false
@@ -37,38 +29,18 @@ Popup {
     focus: true
 
     function openSearch() {
-        picking = false
         open()
         findField.selectAll()
         findField.forceActiveFocus()
         Qt.inputMethod.show()
         refresh()
     }
-    function openPicker() {
-        if (map.selectedId === "") return
-        picking = true
-        alsoBack = false
-        source = map.selectedId
-        findField.text = ""
-        open()
-        findField.forceActiveFocus()
-        Qt.inputMethod.show()
-        refresh()
-    }
     function refresh() {
-        let found = visible ? map.search(findField.text, allSheets, wholeWords, matchCase, fields) : []
-        if (picking) {
-            // The topic itself is not offered; a sheet's name only over results that remain.
-            found = found.filter(row => row.header || row.id !== source)
-            found = found.filter((row, i) => !row.header || (i + 1 < found.length && !found[i + 1].header))
-        }
-        results = found
+        results = visible ? map.search(findField.text, allSheets, wholeWords, matchCase, fields) : []
     }
     function reveal(sheet, id) {
-        const linking = picking
         close()
-        if (linking) map.setTopicLink(sheet, id, alsoBack)
-        else if (map.reveal(sheet, id)) revealed()
+        if (map.reveal(sheet, id)) revealed()
     }
 
     onClosed: {
@@ -132,12 +104,14 @@ Popup {
                 objectName: "findField"
                 width: findRow.width - optionsButton.width - closeButton.width
                 height: Theme.touchTarget
-                placeholderText: panel.picking ? qsTr("Find the topic to link") : qsTr("Find")
+                placeholderText: qsTr("Find")
                 placeholderTextColor: Theme.darkTextMuted
                 color: Theme.darkText
                 font.pixelSize: Theme.bodySize
                 verticalAlignment: TextInput.AlignVCenter
-                leftPadding: 2 * Theme.grid
+                // The box sits as far from the panel's left edge as from its top.
+                readonly property real inset: (height - Theme.fieldHeight) / 2
+                leftPadding: inset + 2 * Theme.grid
                 rightPadding: 2 * Theme.grid
                 selectByMouse: true
                 inputMethodHints: Qt.ImhNoPredictiveText
@@ -150,7 +124,8 @@ Popup {
                 background: Item {
                     Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: parent.width
+                        x: findField.inset
+                        width: parent.width - findField.inset
                         height: Theme.fieldHeight
                         radius: Theme.controlRadius
                         color: Theme.darkSunken
@@ -178,37 +153,6 @@ Popup {
                 onClicked: panel.close()
             }
         }
-        DarkSwitch {
-            id: backSwitch
-            objectName: "alsoBackSwitch"
-            visible: panel.picking
-            width: parent.width
-            leftPadding: 2 * Theme.grid
-            rightPadding: 2 * Theme.grid
-            text: qsTr("Also add the link to the chosen topic")
-            checked: panel.alsoBack
-            onToggled: panel.alsoBack = checked
-        }
-        ItemDelegate {
-            id: removeLink
-            objectName: "removeTopicLinkButton"
-            visible: panel.picking && panel.map.selectedTopicLink !== ""
-            width: parent.width
-            implicitHeight: Theme.touchTarget
-            padding: 0
-            leftPadding: 2 * Theme.grid
-            contentItem: Label {
-                text: qsTr("Remove link")
-                color: Theme.darkText
-                font.pixelSize: Theme.bodySize
-                verticalAlignment: Text.AlignVCenter
-            }
-            background: Rectangle {
-                radius: Theme.controlRadius
-                color: removeLink.down ? Theme.darkDivider : "transparent"
-            }
-            onClicked: { panel.close(); panel.map.removeTopicLink() }
-        }
         Label {
             objectName: "noResultsLabel"
             visible: findField.text.trim() !== "" && panel.results.length === 0 && !searchDelay.running
@@ -225,9 +169,7 @@ Popup {
             objectName: "searchResults"
             width: parent.width
             // Down to the keyboard (or the page's bottom), at most the rows' height.
-            height: Math.min(contentHeight, Math.max(0, panel.maxHeight - 2 * panel.padding - findRow.height
-                                                     - (backSwitch.visible ? backSwitch.height : 0)
-                                                     - (removeLink.visible ? removeLink.height : 0)))
+            height: Math.min(contentHeight, Math.max(0, panel.maxHeight - 2 * panel.padding - findRow.height))
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             model: panel.results

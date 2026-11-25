@@ -20,6 +20,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QComboBox>
+#include <QStandardItemModel>
 #include <QToolButton>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -902,6 +903,20 @@ void BalancedLayoutTest::structuresOfTheSheetAndOfABranch() {
     QCOMPARE(m[0]->structure, QStringLiteral("tree"));
     for (const auto &child : m[0]->children) QVERIFY(box(child.get()).top() > box(m[0]).bottom());
     QCOMPARE(branchType->currentData().toString(), QStringLiteral("tree"));
+    // User request 2026-11-24: only the directions that change the layout can be chosen. A tree branch
+    // goes right or left; both sides is only the central topic's.
+    auto *direction = m_window->findChild<StylePage *>()->findChild<QComboBox *>(QStringLiteral("StructureDirectionSelect"));
+    QVERIFY(direction);
+    const auto choosable = [direction](const QString &key) {
+        auto *items = qobject_cast<QStandardItemModel *>(direction->model());
+        return items && items->item(direction->findData(key))->isEnabled();
+    };
+    QVERIFY(direction->isEnabled());
+    QVERIFY(choosable(QStringLiteral("left")));
+    QVERIFY(!choosable(QStringLiteral("both")));
+    // A logic chart in a mind map grows on its branch's side: no direction changes it.
+    emit branchType->activated(branchType->findData(QStringLiteral("logic")));
+    QVERIFY(!direction->isEnabled());
     emit branchType->activated(branchType->findData(QString()));  // Come il genitore
     QVERIFY(m[0]->structure.isEmpty());
     for (const auto &child : m[0]->children) QVERIFY(box(child.get()).left() > box(m[0]).right());
@@ -977,6 +992,17 @@ void BalancedLayoutTest::arrowKeysMoveBetweenNodes() {
     QCOMPARE(m_scene->selectedNode(), m[1]);
     QTest::keyClick(m_view, Qt::Key_Left);
     QCOMPARE(m_scene->selectedNode(), root);
+    // FEAT-126: Ctrl+arrows add the topic that way, going on from the one reached last.
+    QTest::keyClick(m_view, Qt::Key_Right, Qt::ControlModifier);
+    QCOMPARE(m_scene->selectedNodes().size(), 2);
+    QVERIFY(m_scene->selectedNodes().contains(root) && m_scene->selectedNodes().contains(m[0]));
+    QTest::keyClick(m_view, Qt::Key_Down, Qt::ControlModifier);
+    QCOMPARE(m_scene->selectedNodes().size(), 3);
+    QVERIFY(m_scene->selectedNodes().contains(m[1]));
+    QTest::keyClick(m_view, Qt::Key_Up, Qt::ControlModifier);  // back on one already selected
+    QCOMPARE(m_scene->selectedNodes().size(), 3);
+    QTest::keyClick(m_view, Qt::Key_Down);  // a plain arrow with several selected: nothing
+    QCOMPARE(m_scene->selectedNodes().size(), 3);
     // Organigramma: in basso i figli, ai lati i fratelli.
     const QList<MindNode *> o = newMap({1, 1});
     m_model->root()->structure = QStringLiteral("org");

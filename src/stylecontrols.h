@@ -1,5 +1,7 @@
 #pragma once
 
+#include "stylechoices.h"
+
 // FEAT-019 (docs/features/FEAT-019-fondamenta-stile-nodo.md): componenti comuni dello stile.
 // ColorPicker e' il selettore colori unico dell'app: pagina Stile del pannello e barra di
 // formattazione del testo usano questo, non copie proprie.
@@ -71,7 +73,7 @@ public:
     static constexpr int kSwatchPx = 24;   // campioni della griglia, del tema e dei recenti
     static constexpr int kGapPx = 4;       // griglia di AGENTS.md
     static constexpr int kPaddingPx = 12;
-    static constexpr int kMaxRecentColors = 9;
+    static constexpr int kMaxRecentColors = StyleChoices::kMaxRecentColors;
 
     struct Options {
         QColor current;               // colore di partenza (non valido = nessuno, valori misti)
@@ -353,6 +355,8 @@ public:
     PixelField *heightField() const { return m_height; }
     QToolButton *chainButton() const { return m_chain; }  // acceso = proporzioni mantenute
     QToolButton *resetSizeButton() const { return m_resetSize; }
+    QComboBox *shapeField() const { return m_shape; }  // FEAT-129: hidden for a sticker
+    QComboBox *effectField() const { return m_effect; }  // FEAT-131
     QComboBox *borderField() const { return m_border; }
     PixelField *borderWidthField() const { return m_borderWidth; }
     ColorField *borderColorField() const { return m_borderColor; }
@@ -381,6 +385,9 @@ private:
     PixelField *m_height = nullptr;
     QToolButton *m_chain = nullptr;
     QToolButton *m_resetSize = nullptr;
+    QComboBox *m_shape = nullptr;
+    QWidget *m_shapeRow = nullptr;
+    QComboBox *m_effect = nullptr;
     QComboBox *m_border = nullptr;
     PixelField *m_borderWidth = nullptr;
     ColorField *m_borderColor = nullptr;
@@ -553,8 +560,14 @@ public:
     explicit BoundaryStylePage(QWidget *parent = nullptr);
     // Values of the boundaries (empty = controls disabled); the default colors are the effective
     // ones shown when a boundary has no color of its own. Emits nothing.
-    void setBoundaries(const QList<Boundary> &boundaries, const QColor &defaultLineColor, const QColor &defaultFillColor);
+    void setBoundaries(const QList<Boundary> &boundaries, const QColor &defaultLineColor, const QColor &defaultFillColor,
+                       const QColor &defaultTitleColor);
     QComboBox *shapeField() const { return m_shape; }
+    QComboBox *fillStyleField() const { return m_fillStyle; }  // FEAT-134
+    QComboBox *titleFontField() const { return m_titleFont; }  // FEAT-130
+    QComboBox *titleSizeField() const { return m_titleSize; }
+    ColorField *titleColorField() const { return m_titleColor; }
+    QToolButton *titleBoldButton() const { return m_titleBold; }
     QComboBox *patternField() const { return m_pattern; }
     QComboBox *widthField() const { return m_width; }
     ColorField *lineColorField() const { return m_lineColor; }
@@ -564,10 +577,15 @@ signals:
     void edited(const std::function<void(Boundary &)> &change);
 private:
     QComboBox *m_shape = nullptr;
+    QComboBox *m_fillStyle = nullptr;
     QComboBox *m_pattern = nullptr;
     QComboBox *m_width = nullptr;
     ColorField *m_lineColor = nullptr;
     ColorField *m_fillColor = nullptr;
+    QComboBox *m_titleFont = nullptr;
+    QComboBox *m_titleSize = nullptr;
+    ColorField *m_titleColor = nullptr;
+    QToolButton *m_titleBold = nullptr;
 };
 
 class RelationshipStylePage final : public QWidget {

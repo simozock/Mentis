@@ -28,6 +28,8 @@ private slots:
     void subfoldersAreMadeRenamedAndRemoved();
     void mapMovesWithAFreeName();
     void openMapMovesOnceClosed();
+    void removeMapDeletesItsFiles();
+    void renameMapFileKeepsItsJournal();
     void everyMapMovesToANewFolder();
     void aNewFolderInsideTheOldOneIsSkipped();
     void aDiscardedCopyIsNotReused();
@@ -232,6 +234,66 @@ void MapFolderTest::mapMovesWithAFreeName() {
     QCOMPARE(MapFolder::moved(QStringLiteral("/a/b/c.mentis"), QStringLiteral("/a/b"), QStringLiteral("/a/x")), QStringLiteral("/a/x/c.mentis"));
     QCOMPARE(MapFolder::moved(QStringLiteral("/a/bc/c.mentis"), QStringLiteral("/a/b"), QStringLiteral("/a/x")), QStringLiteral("/a/bc/c.mentis"));
     QCOMPARE(MapFolder::moved(QStringLiteral("/a/b"), QStringLiteral("/a/b"), QStringLiteral("/a/x")), QStringLiteral("/a/x"));
+}
+
+// A map deleted from the phone's Home: the file and SQLite's leftovers go; not while open, not outside.
+void MapFolderTest::removeMapDeletesItsFiles() {
+    QTemporaryDir root;
+    QTemporaryDir outside;
+    const MapFolder folder(root.path());
+    const QString map = QDir::cleanPath(root.filePath(QStringLiteral("Old.mentis")));
+    write(map, "old map");
+    write(map + QStringLiteral("-journal"), "journal");
+    QString error;
+    {
+        QLockFile lock(map + QStringLiteral(".lock"));
+        lock.setStaleLockTime(0);
+        QVERIFY(lock.tryLock(0));
+        QVERIFY(!folder.removeMap(map, &error));  // open
+        QVERIFY(!error.isEmpty());
+        QVERIFY(QFileInfo::exists(map));
+    }
+    const QString stranger = QDir::cleanPath(outside.filePath(QStringLiteral("Other.mentis")));
+    write(stranger, "other map");
+    QVERIFY(!folder.removeMap(stranger, &error));
+    QVERIFY(QFileInfo::exists(stranger));
+    error.clear();
+    QVERIFY(folder.removeMap(map, &error));
+    QVERIFY(error.isEmpty());
+    QVERIFY(!QFileInfo::exists(map));
+    QVERIFY(!QFileInfo::exists(map + QStringLiteral("-journal")));
+    QVERIFY(!folder.removeMap(map, &error));  // already gone
+}
+
+void MapFolderTest::renameMapFileKeepsItsJournal() {
+    QTemporaryDir root;
+    const MapFolder folder(root.path());
+    const QString map = QDir::cleanPath(root.filePath(QStringLiteral("Old.mentis")));
+    write(map, "old map");
+    write(map + QStringLiteral("-journal"), "journal");
+    write(root.filePath(QStringLiteral("Taken.mentis")), "taken");
+    QString error;
+    {
+        QLockFile lock(map + QStringLiteral(".lock"));
+        lock.setStaleLockTime(0);
+        QVERIFY(lock.tryLock(0));
+        QVERIFY(folder.renameMapFile(map, QStringLiteral("New"), &error).isEmpty());  // open
+        QVERIFY(!error.isEmpty());
+        QVERIFY(QFileInfo::exists(map));
+    }
+    error.clear();
+    QVERIFY(folder.renameMapFile(map, QStringLiteral("  "), &error).isEmpty());
+    QVERIFY(!error.isEmpty());
+    error.clear();
+    const QString taken = folder.renameMapFile(map, QStringLiteral("Taken"), &error);
+    QCOMPARE(QFileInfo(taken).fileName(), QStringLiteral("Taken (2).mentis"));
+    QVERIFY(!QFileInfo::exists(map));
+    QVERIFY(QFileInfo::exists(taken + QStringLiteral("-journal")));
+    const QString lower = folder.renameMapFile(taken, QStringLiteral("taken (2)"), &error);
+    QVERIFY2(!lower.isEmpty(), qPrintable(error));
+    QVERIFY(QDir(root.path()).entryList({QStringLiteral("*.mentis")}).contains(QStringLiteral("taken (2).mentis")));
+    QVERIFY(QFileInfo::exists(lower + QStringLiteral("-journal")));
+    QCOMPARE(folder.renameMapFile(lower, QStringLiteral("taken (2)"), &error), lower);  // same name
 }
 
 void MapFolderTest::openMapMovesOnceClosed() {

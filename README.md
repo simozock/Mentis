@@ -142,9 +142,9 @@ agent can work on any map on your computer, and on the maps open in the app.
 
 ## 📦 Download and build
 
-Ready-to-install releases will be published on the
-[Releases](https://github.com/simozock/Mentis/releases) page. Until then, you can build Mentis from
-source: see **[BUILD.md](BUILD.md)**.
+Ready-to-install packages for Windows, macOS, Linux and Android phones are on the
+[Releases](https://github.com/simozock/Mentis/releases) page. To build Mentis from source, see
+**[BUILD.md](BUILD.md)**.
 
 > [!NOTE]
 > **Privacy.** Mentis connects to the internet only to check for updates: once a day, at startup,

@@ -738,7 +738,17 @@ void McpToolsTest::namesCalendarAndReplacing() {
     QVERIFY(call(QStringLiteral("update_person"), {{"path", path}, {"id", ada}, {"hourly_cost", -1}}).isError);
     QVERIFY(!call(QStringLiteral("update_person"), {{"path", path}, {"id", ada}, {"last_name", "Lovelace"}, {"role", "Autrice"},
                                                      {"email", "ada@example.org"}, {"hourly_cost", 42.5}}).isError);
+    QVERIFY(call(QStringLiteral("update_person"), {{"path", path}, {"id", ada}, {"currency", ""}}).isError);
+    QVERIFY(!call(QStringLiteral("update_person"), {{"path", path}, {"id", ada}, {"currency", "USD"}}).isError);
+    // FEAT-128: a new person takes the last one's currency; set_currency one person's or everyone's.
     const QString bob = call(QStringLiteral("add_person"), {{"path", path}, {"first_name", "Bob"}}).structured.value("id").toString();
+    QJsonArray listed = call(QStringLiteral("read_gantt"), {{"path", path}}).structured.value("people").toArray();
+    QCOMPARE(listed.at(1).toObject().value("currency").toString(), QStringLiteral("USD $"));
+    QVERIFY(call(QStringLiteral("set_currency"), {{"path", path}, {"currency", "GBP"}, {"person", "nessuno"}}).isError);
+    QCOMPARE(call(QStringLiteral("set_currency"), {{"path", path}, {"currency", "GBP"}, {"person", bob}}).structured.value("people").toInt(), 1);
+    listed = call(QStringLiteral("read_gantt"), {{"path", path}}).structured.value("people").toArray();
+    QCOMPARE(listed.at(0).toObject().value("currency").toString(), QStringLiteral("USD $"));
+    QCOMPARE(listed.at(1).toObject().value("currency").toString(), QStringLiteral("GBP £"));
     QVERIFY(!call(QStringLiteral("assign_people"), {{"path", path}, {"ids", QJsonArray{task}}, {"assign", QJsonArray{ada}}}).isError);
     QVERIFY(call(QStringLiteral("remove_person"), {{"path", path}, {"id", ada}}).text.contains("confirmation"));
     QVERIFY(!call(QStringLiteral("remove_person"), {{"path", path}, {"id", bob}}).isError);  // not assigned: no question
@@ -759,7 +769,9 @@ void McpToolsTest::namesCalendarAndReplacing() {
     QCOMPARE(person.value("name").toString(), QStringLiteral("Ada Lovelace"));
     QCOMPARE(person.value("email").toString(), QStringLiteral("ada@example.org"));
     QCOMPARE(person.value("hourly_cost").toDouble(), 42.5);
-    QVERIFY(gantt.value("currency").toString().startsWith(QStringLiteral("CHF")));
+    QCOMPARE(person.value("currency").toString(), QStringLiteral("CHF Fr."));  // set_currency without person: everyone's
+    QVERIFY(!gantt.contains("currency"));
+    QVERIFY(gantt.value("costs").toObject().contains(QStringLiteral("CHF Fr.")));  // the sheet's cost per currency
     QCOMPARE(gantt.value("baselines").toArray().first().toObject().value("name").toString(), QStringLiteral("Piano iniziale"));
     const QJsonObject calendar = gantt.value("calendar").toObject();
     QCOMPARE(calendar.value("working_days").toArray().size(), 6);
@@ -863,7 +875,17 @@ void McpToolsTest::sharesCurrenciesAndGanttStyle() {
     const QString rootId = call(QStringLiteral("create_map"), {{"path", path}, {"title", "Quote"}}).structured.value("rootId").toString();
     const QString task = call(QStringLiteral("add_topic"), {{"path", path}, {"parent_id", rootId}, {"title", "Scavo"}}).structured.value("id").toString();
     const QString ada = call(QStringLiteral("add_person"), {{"path", path}, {"first_name", "Ada"}, {"email", "ada@example.org"}}).structured.value("id").toString();
+    QVERIFY(call(QStringLiteral("update_person"), {{"path", path}, {"id", ada}, {"currency", ""}}).isError);
+    QVERIFY(!call(QStringLiteral("update_person"), {{"path", path}, {"id", ada}, {"currency", "USD"}}).isError);
+    // FEAT-128: a new person takes the last one's currency; set_currency one person's or everyone's.
     const QString bob = call(QStringLiteral("add_person"), {{"path", path}, {"first_name", "Bob"}}).structured.value("id").toString();
+    QJsonArray listed = call(QStringLiteral("read_gantt"), {{"path", path}}).structured.value("people").toArray();
+    QCOMPARE(listed.at(1).toObject().value("currency").toString(), QStringLiteral("USD $"));
+    QVERIFY(call(QStringLiteral("set_currency"), {{"path", path}, {"currency", "GBP"}, {"person", "nessuno"}}).isError);
+    QCOMPARE(call(QStringLiteral("set_currency"), {{"path", path}, {"currency", "GBP"}, {"person", bob}}).structured.value("people").toInt(), 1);
+    listed = call(QStringLiteral("read_gantt"), {{"path", path}}).structured.value("people").toArray();
+    QCOMPARE(listed.at(0).toObject().value("currency").toString(), QStringLiteral("USD $"));
+    QCOMPARE(listed.at(1).toObject().value("currency").toString(), QStringLiteral("GBP £"));
     // Shares: given with the assignment, changed later for one person only.
     QVERIFY(call(QStringLiteral("assign_people"), {{"path", path}, {"ids", QJsonArray{task}}, {"assign", QJsonArray{ada}}, {"percent", 0}}).isError);
     QVERIFY(call(QStringLiteral("assign_people"), {{"path", path}, {"ids", QJsonArray{task}}, {"unassign", QJsonArray{ada}}, {"percent", 50}}).isError);
@@ -879,12 +901,12 @@ void McpToolsTest::sharesCurrenciesAndGanttStyle() {
     QVERIFY(call(QStringLiteral("set_gantt_style"), {{"path", path}, {"tasks", QJsonObject{{"size", 3}}}}).isError);
     const McpServer::ToolResult styled = call(QStringLiteral("set_gantt_style"), {{"path", path},
         {"tasks", QJsonObject{{"shape", "rounded"}, {"fill", NodeStyle::fillStyleKey(NodeFillStyle::Nessuno)}, {"color", "#2563eb"}}},
-        {"summaries", QJsonObject{{"shape", "brace"}}}, {"milestones", QJsonObject{{"shape", "star"}, {"border", "dashed"}}},
-        {"relations", QJsonObject{{"line", "dotted"}, {"end", NodeStyle::branchEndKey(BranchEnd::Dot)}, {"width", "bold"}, {"end_size", "large"}}}});
+        {"summaries", QJsonObject{{"shape", "brace"}}}, {"milestones", QJsonObject{{"shape", "star"}, {"border", "dashed"}, {"border_color", "#7c3aed"}}},
+        {"relations", QJsonObject{{"line", "dotted"}, {"end", NodeStyle::branchEndKey(BranchEnd::Dot)}, {"width", "bold"}, {"end_size", "large"}, {"color", "#0f766e"}}}});
     QVERIFY2(!styled.isError, qPrintable(styled.text));
     QVERIFY(call(QStringLiteral("set_gantt_task_style"), {{"path", path}, {"ids", QJsonArray{task}}, {"shape", "blob"}}).isError);
     const McpServer::ToolResult own = call(QStringLiteral("set_gantt_task_style"), {{"path", path}, {"ids", QJsonArray{task}},
-        {"shape", "arrow"}, {"border", "none"}, {"color", "#16a34a"}, {"label", true}});
+        {"shape", "arrow"}, {"border", "none"}, {"border_color", "#b91c1c"}, {"color", "#16a34a"}, {"label", true}});
     QVERIFY2(!own.isError, qPrintable(own.text));
     const QJsonObject gantt = call(QStringLiteral("read_gantt"), {{"path", path}}).structured;
     const QJsonObject first = gantt.value("tasks").toArray().first().toObject();
@@ -894,13 +916,17 @@ void McpToolsTest::sharesCurrenciesAndGanttStyle() {
     QCOMPARE(first.value("priority").toInt(), 4);
     QCOMPARE(first.value("shape").toString(), QStringLiteral("arrow"));
     QCOMPARE(first.value("border").toString(), QStringLiteral("none"));
+    QCOMPARE(first.value("border_color").toString(), QStringLiteral("#b91c1c"));
     QCOMPARE(first.value("label").toBool(), true);
     const QJsonObject style = gantt.value("style").toObject();
     QCOMPARE(style.value("tasks").toObject().value("shape").toString(), QStringLiteral("rounded"));
     QCOMPARE(style.value("tasks").toObject().value("color").toString(), QStringLiteral("#2563eb"));
     QCOMPARE(style.value("summaries").toObject().value("shape").toString(), QStringLiteral("brace"));
     QCOMPARE(style.value("milestones").toObject().value("border").toString(), QStringLiteral("dashed"));
+    QCOMPARE(style.value("milestones").toObject().value("border_color").toString(), QStringLiteral("#7c3aed"));
+    QVERIFY(style.value("tasks").toObject().value("border_color").isNull());  // automatic
     QCOMPARE(style.value("relations").toObject().value("end_size").toString(), QStringLiteral("large"));
+    QCOMPARE(style.value("relations").toObject().value("color").toString(), QStringLiteral("#0f766e"));
     Document document;
     QVERIFY(document.open(path, false).ok);
     const GanttPlan plan = document.model()->gantt();
@@ -910,14 +936,23 @@ void McpToolsTest::sharesCurrenciesAndGanttStyle() {
     QCOMPARE(plan.linkWidth(), GanttPlan::LinkWidth::Bold);
     QCOMPARE(plan.milestoneShape(), GanttPlan::MilestoneShape::Star);
     QCOMPARE(document.model()->nodeById(task)->branchColor, QColor("#16a34a"));
+    QCOMPARE(plan.defaultBorderColor(GanttPlan::BarKind::Milestone), QColor("#7c3aed"));  // saved and read back
+    QCOMPARE(plan.task(task)->borderColor, QColor("#b91c1c"));
+    QCOMPARE(plan.linkColor(), QColor("#0f766e"));
     document.close();
+    QVERIFY(call(QStringLiteral("set_gantt_task_style"), {{"path", path}, {"ids", QJsonArray{task}}, {"border_color", "nope"}}).isError);
     // null: back to the sheet's and the default.
-    QVERIFY(!call(QStringLiteral("set_gantt_task_style"), {{"path", path}, {"ids", QJsonArray{task}}, {"shape", QJsonValue()}, {"label", QJsonValue()}}).isError);
+    QVERIFY(!call(QStringLiteral("set_gantt_task_style"), {{"path", path}, {"ids", QJsonArray{task}}, {"shape", QJsonValue()}, {"label", QJsonValue()},
+                                                           {"border_color", QJsonValue()}}).isError);
     QVERIFY(!call(QStringLiteral("set_gantt_style"), {{"path", path}, {"tasks", QJsonObject{{"color", QJsonValue()}}}}).isError);
+    QVERIFY(call(QStringLiteral("set_gantt_style"), {{"path", path}, {"relations", QJsonObject{{"color", 3}}}}).isError);
+    QVERIFY(!call(QStringLiteral("set_gantt_style"), {{"path", path}, {"relations", QJsonObject{{"color", QJsonValue()}}}}).isError);
     const QJsonObject reset = call(QStringLiteral("read_gantt"), {{"path", path}}).structured;
     QVERIFY(!reset.value("tasks").toArray().first().toObject().contains("shape"));
     QVERIFY(!reset.value("tasks").toArray().first().toObject().contains("label"));
+    QVERIFY(!reset.value("tasks").toArray().first().toObject().contains("border_color"));
     QVERIFY(reset.value("style").toObject().value("tasks").toObject().value("color").isNull());
+    QVERIFY(reset.value("style").toObject().value("relations").toObject().value("color").isNull());
     // Currencies saved on this computer.
     GanttResources::removeSavedCurrency(QStringLiteral("RON lei"));
     QVERIFY(call(QStringLiteral("add_currency"), {{"currency", "EUR"}}).isError);  // built in
@@ -929,7 +964,8 @@ void McpToolsTest::sharesCurrenciesAndGanttStyle() {
     QVERIFY(!call(QStringLiteral("remove_currency"), {{"currency", "RON lei"}}).isError);
     QVERIFY(call(QStringLiteral("remove_currency"), {{"currency", "RON lei"}}).isError);
     QVERIFY(call(QStringLiteral("remove_currency"), {{"currency", "USD"}}).isError);
-    QCOMPARE(call(QStringLiteral("read_gantt"), {{"path", path}}).structured.value("currency").toString(), QStringLiteral("RON lei"));
+    QCOMPARE(call(QStringLiteral("read_gantt"), {{"path", path}}).structured.value("people").toArray().first().toObject().value("currency").toString(),
+             QStringLiteral("RON lei"));  // the person keeps it
     // A person removed (the shares go with the assignment).
     QVERIFY(!call(QStringLiteral("remove_person"), {{"path", path}, {"id", bob}, {"confirm", true}}).isError);
     QCOMPARE(call(QStringLiteral("read_gantt"), {{"path", path}}).structured.value("people").toArray().size(), 1);

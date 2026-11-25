@@ -68,7 +68,7 @@ TopicTools::TopicTools(MindMapView *view, MindMapScene *scene, QObject *parent)
         if (selected.size() == 1 && relation) relation(selected.front());
     });
     m_relation->installEventFilter(this);  // the double click, as for the painter
-    addTool(QStringLiteral(":/assets/hugeicons/link-web.svg"), tr("Insert a web link in the topic"), &webLink);
+    addTool(QStringLiteral(":/assets/hugeicons/link-web.svg"), tr("Insert a link in the topic"), &link);  // FEAT-117
     addTool(QStringLiteral(":/assets/hugeicons/image.svg"), tr("Insert an image in the topic"), &image);
     addTool(QStringLiteral(":/assets/hugeicons/note.svg"), tr("Add a note to the topic"), &note);
     addTool(QStringLiteral(":/assets/hugeicons/checkbox.svg"), tr("Add or remove the topic's checkbox"), &checkbox);

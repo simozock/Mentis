@@ -64,6 +64,7 @@ private:
     Boundary m_boundary;
     Look m_look;
     QRectF m_stroke;
+    Boundaries::Fill m_fill;  // FEAT-134: rebuilt only when the shape, the fill style or the rect change
     QRectF m_titleRect;
     qreal m_titleWidth = 0;  // measured for m_measuredTitle in m_measuredFont
     QString m_measuredTitle;

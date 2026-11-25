@@ -31,6 +31,7 @@ public:
     static constexpr qreal kLinkButtonPx = 22;       // a button of the side columns (square)
     static constexpr qreal kLinkIconGapPx = 4;       // between two buttons
     static constexpr qreal kLinkTextGapPx = 8;       // between the content and the first button
+    static constexpr qreal kTableBorderPx = 1.5;     // FEAT-028, a tree-table cell's border (measured live 2026-10-25)
     static constexpr qreal kMaxFormulaNodeWidth = 440;  // a topic with formulas wraps beyond
     // Text topics: as wide as the title, wrapped beyond. BUG-003 (2026-10-15): no fixed minimum size;
     // only an empty title stays as wide as one character (minContentWidth).
@@ -79,6 +80,9 @@ public:
         QString title, titleHtml;
         QRgb formulaColor = 0;  // the text colour, only for titles with formulas
         bool isRoot = false;
+        // The text padding: it follows the level (main or sub topic), summaries and braces, so a topic
+        // moved to another level lays its text out again.
+        QPointF padding;
         qreal customWidth = 0;
         bool strikeOut = false;   // FEAT-020: the formatted text is laid out again with the strike-out
         // FEAT-022: font, size, weight, italic, underline, case and alignment.
@@ -180,6 +184,17 @@ private:
     qreal m_justifiedWidth = 0;
     std::optional<QSizeF> m_editingSize;
     std::unique_ptr<TitleFormula> m_formula;  // titles with $...$
+    // What m_formula was laid out from: the same inputs reuse it.
+    struct FormulaInputs {
+        QString title;
+        QFont font;
+        QColor color;
+        qreal maxWidth = 0;
+        bool operator==(const FormulaInputs &other) const {
+            return title == other.title && font == other.font && color == other.color && maxWidth == other.maxWidth;
+        }
+    };
+    FormulaInputs m_formulaInputs;
     // Formatted titles, laid out when the data change, not in paint().
     std::unique_ptr<QTextDocument> m_richDocument;
     QSizeF m_textSize;            // plain title measured in updateText(), not at every paint()

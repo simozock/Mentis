@@ -1,16 +1,20 @@
 // FEAT-074: Gantt plan model and scheduling (working days, dependencies, summaries, critical path,
 // refused edits, JSON round trip, performance).
 #include "ganttcosts.h"
+#include "ganttpeoplecharts.h"
 #include "ganttplan.h"
 #include "ganttresources.h"
 
 #include <QElapsedTimer>
 #include <QJsonArray>
+#include <QLocale>
+#include <QScopeGuard>
 #include <QTest>
 
 class GanttPlanTest final : public QObject {
     Q_OBJECT
 private slots:
+    void shownName();
     void calendar();
     void dependencyTypes();
     void linkPlaces();
@@ -23,6 +27,7 @@ private slots:
     void undated();
     void baselines();
     void costs();
+    void peopleCharts();  // FEAT-127
     void performance();
 };
 
@@ -66,6 +71,14 @@ GanttPlan workWeekPlan() {
 }
 
 }  // namespace
+
+// The Gantt shows a name without its formulas (user, 2026-11-16); a lone dollar stays.
+void GanttPlanTest::shownName() {
+    QCOMPARE(GanttTask::shown(QStringLiteral("Area $x^2$ of the  room")), QStringLiteral("Area of the room"));
+    QCOMPARE(GanttTask::shown(QStringLiteral("$$\\frac{a}{b}$$ ratio")), QStringLiteral("ratio"));
+    QCOMPARE(GanttTask::shown(QStringLiteral("$y$")), QString());
+    QCOMPARE(GanttTask::shown(QStringLiteral("costs 5$ or 10$")), QStringLiteral("costs 5$ or 10$"));
+}
 
 void GanttPlanTest::calendar() {
     QCOMPARE(kMonday.dayOfWeek(), 1);
@@ -387,13 +400,11 @@ void GanttPlanTest::resources() {
     QVERIFY(!GanttResources::isValidEmail("a@b@c"));
 
     GanttResources list;
-    list.currency = "  ";
-    list.people = {{{}, "  Anna ", "Rossi", "anna@example.com", "Developer", 4550},
-                   {{}, "", "", "", "", 0},  // empty row: dropped
+    list.people = {{{}, "  Anna ", "Rossi", "anna@example.com", "Developer", 4550, {"  ", "€"}},
+                   {{}, "", "", "", "", 0, {"USD", "$"}},  // empty row, whatever the currency: dropped
                    {"keep", QString(300, 'x'), "", "", "", GanttResources::kMaxHourlyCostCents + 1}};
     const GanttResources clean = list.normalized();
-    QCOMPARE(clean.currency, QString("EUR"));  // no name: EUR with its symbol
-    QCOMPARE(clean.currencySymbol, QString("€"));
+    QCOMPARE(clean.people[0].currency, GanttCurrency());  // no name: EUR with its symbol
     QCOMPARE(clean.people.size(), 2);
     QCOMPARE(clean.people[0].firstName, QString("Anna"));
     QVERIFY(!clean.people[0].id.isEmpty());
@@ -403,34 +414,50 @@ void GanttPlanTest::resources() {
     QCOMPARE(clean.normalized(), clean);
 
     // A currency typed as its name and symbol (user, 2026-10-29).
-    GanttResources typed;
-    typed.setCurrencyText("  Bitcoin   ₿ ");
-    QCOMPARE(typed.currency, QString("Bitcoin"));
-    QCOMPARE(typed.currencySymbol, QString("₿"));
-    QCOMPARE(typed.currencyText(), QString("Bitcoin ₿"));
-    typed.setCurrencyText("USD");  // a listed one without its symbol takes it
-    QCOMPARE(typed.normalized().currencySymbol, QString("$"));
-    typed.setCurrencyText("SEK");  // no symbol: the name is shown
-    QCOMPARE(typed.normalized().displaySymbol(), QString("SEK"));
-    QCOMPARE(typed.normalized().currencyText(), QString("SEK"));
-    typed.setCurrencyText("Very long currency name 123456");
-    QCOMPARE(typed.normalized().currency.size(), GanttResources::kMaxCurrencyLength);
-    QCOMPARE(typed.normalized().currencySymbol, QString("12345"));
-    QVERIFY(!typed.normalized().toJson().contains("people"));
+    GanttCurrency typed = GanttCurrency::fromText("  Bitcoin   ₿ ");
+    QCOMPARE(typed.code, QString("Bitcoin"));
+    QCOMPARE(typed.symbol, QString("₿"));
+    QCOMPARE(typed.text(), QString("Bitcoin ₿"));
+    QCOMPARE(GanttCurrency::fromText("USD").normalized().symbol, QString("$"));  // a listed one without its symbol takes it
+    typed = GanttCurrency::fromText("SEK").normalized();  // no symbol: the name is shown
+    QCOMPARE(typed.displaySymbol(), QString("SEK"));
+    QCOMPARE(typed.text(), QString("SEK"));
+    typed = GanttCurrency::fromText("Very long currency name 123456").normalized();
+    QCOMPARE(typed.code.size(), GanttCurrency::kMaxCodeLength);
+    QCOMPARE(typed.symbol, QString("12345"));
 
+    // FEAT-128: each person's currency; EUR and a listed currency's own symbol are not written.
     GanttResources francs = clean;
-    francs.currency = "CHF";
-    francs.currencySymbol.clear();
+    francs.people[0].currency = {"CHF", {}};
     QJsonObject json = francs.toJson();
-    QCOMPARE(json.value("currency").toString(), QString("CHF"));
-    QVERIFY(!json.contains("currencySymbol"));  // a listed currency's own symbol is not written
-    QCOMPARE(json.value("people").toArray()[0].toObject().value("hourlyCost").toDouble(), 45.5);
+    QVERIFY(!json.contains("currency"));  // no longer the document's
+    const QJsonObject anna = json.value("people").toArray()[0].toObject();
+    QCOMPARE(anna.value("currency").toString(), QString("CHF"));
+    QVERIFY(!anna.contains("currencySymbol"));
+    QCOMPARE(anna.value("hourlyCost").toDouble(), 45.5);
     QVERIFY(!json.value("people").toArray()[1].toObject().contains("email"));
-    QCOMPARE(GanttResources::fromJson(json), francs);
-    francs.setCurrencyText("RON lei");
+    QVERIFY(!json.value("people").toArray()[1].toObject().contains("currency"));  // EUR
+    QCOMPARE(GanttResources::fromJson(json), francs.normalized());
+    francs.people[1].currency = GanttCurrency::fromText("RON lei");
     json = francs.toJson();
-    QCOMPARE(json.value("currencySymbol").toString(), QString("lei"));
+    QCOMPARE(json.value("people").toArray()[1].toObject().value("currencySymbol").toString(), QString("lei"));
     QCOMPARE(GanttResources::fromJson(json), francs);
+    QCOMPARE(francs.usedCurrencies(), (QVector<GanttCurrency>{{"CHF", {}}, {"RON", "lei"}}));
+    QCOMPARE(francs.newPersonCurrency(), (GanttCurrency{"RON", "lei"}));  // the last person's
+    QCOMPARE(GanttResources().newPersonCurrency(), GanttCurrency());
+
+    // A file written before FEAT-128: the document's currency goes to its people.
+    const GanttResources old = GanttResources::fromJson(QJsonObject{
+        {"currency", "GBP"},
+        {"people", QJsonArray{QJsonObject{{"id", "a"}, {"firstName", "Anna"}}, QJsonObject{{"id", "b"}, {"firstName", "Bo"}, {"currency", "USD"}}}}});
+    QCOMPARE(old.people[0].currency, (GanttCurrency{"GBP", "£"}));
+    QCOMPARE(old.people[1].currency, (GanttCurrency{"USD", "$"}));
+    // EUR with a symbol of its own: only "currencySymbol" is written, and read back as the person's.
+    GanttResources euros = clean;
+    euros.people[0].currency = {"EUR", "EUR€"};
+    QCOMPARE(GanttResources::fromJson(euros.toJson()), euros);
+    QCOMPARE(GanttCurrency::fromText("Swiss Franc").normalized().code, QString("Swiss"));  // the last space parts the symbol
+    QCOMPARE((GanttCurrency{"Swiss Franc", {}}).normalized().code, QString("SwissFranc"));  // no spaces in a code
 }
 
 void GanttPlanTest::json() {
@@ -679,30 +706,155 @@ void GanttPlanTest::costs() {
                                        {"U", {{"p2", 100}}}, {"M", {{"p1", 100}}}};
     const GanttCosts costs = GanttCosts::compute(plan, plan.schedule(), assignments, {p1, p2});
     using Amount = GanttCosts::Amount;
-    QCOMPARE(costs.taskPeople.value("A").value("p1"), (Amount{24 * 60, 120000}));
-    QCOMPARE(costs.taskPeople.value("A").value("p2"), (Amount{12 * 60, 39996}));
-    QCOMPARE(costs.tasks.value("B"), (Amount{8 * 60, 40000}));  // the unknown person left out
+    const auto eur = [](qint64 minutes, qint64 cents) { return Amount{minutes, GanttMoney(GanttCurrency(), cents)}; };
+    QCOMPARE(costs.taskPeople.value("A").value("p1"), eur(24 * 60, 120000));
+    QCOMPARE(costs.taskPeople.value("A").value("p2"), eur(12 * 60, 39996));
+    QCOMPARE(costs.tasks.value("B"), eur(8 * 60, 40000));  // the unknown person left out
     QCOMPARE(costs.tasks.value("M"), Amount{});
-    QCOMPARE(costs.tasks.value("U"), (Amount{16 * 60, 53328}));
-    QCOMPARE(costs.tasks.value("S"), (Amount{44 * 60, 199996}));
-    QCOMPARE(costs.taskPeople.value("S").value("p1"), (Amount{32 * 60, 160000}));
-    QCOMPARE(costs.people.value("p1"), (Amount{32 * 60, 160000}));
-    QCOMPARE(costs.people.value("p2"), (Amount{28 * 60, 93324}));
-    QCOMPARE(costs.total, (Amount{60 * 60, 253324}));
+    QCOMPARE(costs.tasks.value("U"), eur(16 * 60, 53328));
+    QCOMPARE(costs.tasks.value("S"), eur(44 * 60, 199996));
+    QCOMPARE(costs.taskPeople.value("S").value("p1"), eur(32 * 60, 160000));
+    QCOMPARE(costs.people.value("p1"), eur(32 * 60, 160000));
+    QCOMPARE(costs.people.value("p2"), eur(28 * 60, 93324));
+    QCOMPARE(costs.total, eur(60 * 60, 253324));
     // Weeks: B's two days of each week; U in none.
     QCOMPARE(costs.weeks.size(), 2);
-    QCOMPARE(costs.weeks.value(kMonday).value("p1"), (Amount{28 * 60, 140000}));
-    QCOMPARE(costs.weeks.value(kMonday).value("p2"), (Amount{12 * 60, 39996}));
-    QCOMPARE(costs.weeks.value(kMonday.addDays(7)).value("p1"), (Amount{4 * 60, 20000}));
+    QCOMPARE(costs.weeks.value(kMonday).value("p1"), eur(28 * 60, 140000));
+    QCOMPARE(costs.weeks.value(kMonday).value("p2"), eur(12 * 60, 39996));
+    QCOMPARE(costs.weeks.value(kMonday.addDays(7)).value("p1"), eur(4 * 60, 20000));
     // Rounded once per task and person, and the days still add up: 33 % of a day = 158 min.
     GanttPlan small;
     add(small, "D", kMonday, 3);
     const GanttCosts odd = GanttCosts::compute(small, small.schedule(), {{"D", {{"p2", 33}}}}, {p2});
     QCOMPARE(odd.tasks.value("D").minutes, qint64(475));  // 3 x 480 x 0.33 = 475.2
-    QCOMPARE(odd.tasks.value("D").cents, qint64(26386));   // 475 / 60 x 3333 = 26386.25
+    QCOMPARE(odd.tasks.value("D").cost, GanttMoney(GanttCurrency(), 26386));   // 475 / 60 x 3333 = 26386.25
     Amount week;
     for (const auto &people : odd.weeks) week += people.value("p2");
     QCOMPARE(week, odd.tasks.value("D"));
+}
+
+void GanttPlanTest::peopleCharts() {
+    // FEAT-127: per-day minutes add up to the weeks and the months; a day's, week's and month's
+    // capacity with Saturday and Sunday off and a 7.30 h day; overload flagged. Numbers by hand.
+    const QLocale before;
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
+    const auto restore = qScopeGuard([before] { QLocale::setDefault(before); });
+    GanttCalendar calendar = workWeek();
+    calendar.minutesPerDay = 450;
+    GanttPlan plan;
+    QVERIFY(plan.setCalendar(calendar));
+    add(plan, "A", kMonday, 3);             // Mon-Wed
+    add(plan, "B", kMonday, 2);             // Mon-Tue: p1 at 200 %
+    add(plan, "C", kMonday.addDays(4), 3);  // Fri, then Mon-Tue of the next week
+    add(plan, "U", {}, 2);                  // undated: in the totals, not in the load
+    add(plan, "M", kMonday, 0);             // milestone: nothing
+    plan.setProgress(plan.tasks().at(0).id, 50);
+    GanttResource p1, p2, p3;
+    p1 = {"p1", "Anna", "Rossi", {}, "Dev", 6000};
+    p2 = {"p2", "Marco", "Bianchi", {}, "Design", 4000};
+    p3 = {"p3", "Luca", "Verdi", {}, "Dev", 1000};  // no task
+    const QString a = plan.tasks().at(0).id, b = plan.tasks().at(1).id, c = plan.tasks().at(2).id,
+                  u = plan.tasks().at(3).id, m = plan.tasks().at(4).id;
+    const GanttAssignments assignments{{a, {{"p1", 100}}}, {b, {{"p1", 100}}}, {c, {{"p2", 50}}},
+                                       {u, {{"p2", 100}}}, {m, {{"p1", 100}}}};
+
+    // The days add up to the weeks, the weeks to the dated minutes.
+    const GanttCosts costs = GanttCosts::compute(plan, plan.schedule(), assignments, {p1, p2, p3});
+    QHash<QString, qint64> byDay, byWeek;
+    for (const auto &people : costs.days)
+        for (auto person = people.cbegin(); person != people.cend(); ++person) byDay[person.key()] += person->minutes;
+    for (const auto &people : costs.weeks)
+        for (auto person = people.cbegin(); person != people.cend(); ++person) byWeek[person.key()] += person->minutes;
+    QCOMPARE(byDay, byWeek);
+    QCOMPARE(byDay.value("p1"), qint64(2250));  // 5 days x 7.30 h
+    QCOMPARE(byDay.value("p2"), qint64(675));   // C at 50 %; U undated
+    QCOMPARE(costs.days.value(kMonday).value("p1").minutes, qint64(900));
+    QVERIFY(!costs.days.contains(kMonday.addDays(5)));  // Saturday
+
+    using Scale = GanttCanvas::Scale;
+    const QVector<GanttResource> people{p1, p2, p3};
+    const GanttPeopleCharts days = GanttPeopleCharts::compute(plan, assignments, people, Scale::Days);
+    // Seven working days from Monday to the next Tuesday; the weekend has no column.
+    const QVector<GanttPeopleCharts::Period> &load = days.people.at(0).load;
+    QCOMPARE(load.size(), 7);
+    QCOMPARE(load.at(4).first, kMonday.addDays(4));
+    QCOMPARE(load.at(5).first, kMonday.addDays(7));
+    QCOMPARE(load.at(0).capacityMinutes, qint64(450));
+    QCOMPARE(load.at(0).minutes, qint64(900));
+    QCOMPARE(load.at(0).percent(), 200);
+    QVERIFY(load.at(0).overloaded());
+    QCOMPARE(load.at(2).percent(), 100);  // full is not overloaded
+    QVERIFY(!load.at(2).overloaded());
+    QCOMPARE(load.at(3).minutes, qint64(0));
+    const GanttPeopleCharts weeks = GanttPeopleCharts::compute(plan, assignments, people, Scale::Weeks);
+    QCOMPARE(weeks.people.at(0).load.size(), 2);
+    QCOMPARE(weeks.people.at(0).load.at(0).capacityMinutes, qint64(5 * 450));
+    QCOMPARE(weeks.people.at(0).load.at(0).minutes, qint64(2250));
+    QCOMPARE(weeks.people.at(1).load.at(0).minutes + weeks.people.at(1).load.at(1).minutes, qint64(675));
+    const GanttPeopleCharts months = GanttPeopleCharts::compute(plan, assignments, people, Scale::Months);
+    QCOMPARE(months.people.at(0).load.size(), 1);
+    QCOMPARE(months.people.at(0).load.at(0).capacityMinutes, qint64(21 * 450));  // November 2026: 21 weekdays
+    QCOMPARE(months.people.at(0).load.at(0).minutes, qint64(2250));
+
+    // The summary equals the cost export's figures.
+    QCOMPARE(days.cost, costs.total.cost);
+    QCOMPARE(days.minutes, costs.total.minutes);
+    QCOMPARE(days.cost, GanttMoney(GanttCurrency(), 330000));  // p1 2250 min x 60.00 + p2 1575 min x 40.00
+    QCOMPARE(days.personDays(), QString("8.5"));
+    QCOMPARE(days.costText(), QString("€3,300"));
+    QCOMPARE(days.days.size(), 3);
+    QCOMPARE(days.dayCount(days.days.at(0).minutes), QString("5"));
+    QCOMPARE(days.dayCount(days.days.at(1).minutes), QString("3.5"));
+    QCOMPARE(days.roleBars.size(), 1);
+    QCOMPARE(days.roleBarTitle(days.roleBars.at(0)), QString());  // one currency: no title
+    const QVector<GanttPeopleCharts::Role> &dayRoles = days.roleBars.at(0).roles;
+    QCOMPARE(dayRoles.size(), 2);
+    QCOMPARE(dayRoles.at(0).name, QString("Dev"));
+    QCOMPARE(dayRoles.at(0).percent, 68);
+    QCOMPARE(dayRoles.at(1).percent, 32);
+    // A person: tasks (the milestone left out), days, cost, progress weighted by the hours.
+    const GanttPeopleCharts::Person &anna = days.people.at(0);
+    QCOMPARE(anna.name, QString("Anna Rossi"));
+    QCOMPARE(anna.tasks, 2);
+    QCOMPARE(anna.doneMinutes, qint64(675));  // A's 1350 min at 50 %
+    QCOMPARE(days.personLine(anna), QString("2 tasks · 5 days · €2,250"));
+    QCOMPARE(days.progressLine(anna), QString("30% · 3.5 days left"));
+    QVERIFY(days.periodTip(load.at(0)).contains("200%"));
+    QVERIFY(!days.empty());
+    QVERIFY(GanttPeopleCharts::compute(plan, {}, people, Scale::Days).empty());
+
+    // More than eight roles: the cheapest in "Other".
+    QVector<GanttResource> many;
+    GanttAssignments everyone;
+    for (int i = 0; i < 10; ++i) {
+        many.append({QString("r%1").arg(i), QString("P%1").arg(i), "X", {}, QString("Role %1").arg(i), 1000 * (i + 1)});
+        everyone[a].append({QString("r%1").arg(i), 100});
+    }
+    const GanttPeopleCharts roles = GanttPeopleCharts::compute(plan, everyone, many, Scale::Days);
+    const QVector<GanttPeopleCharts::Role> &manyRoles = roles.roleBars.at(0).roles;
+    QCOMPARE(manyRoles.size(), GanttPeopleCharts::kMaxRoles + 1);
+    QCOMPARE(manyRoles.front().name, QString("Role 9"));
+    QCOMPARE(manyRoles.back().name, QString("Other"));
+    QCOMPARE(manyRoles.back().cents, qint64(1350 * (1000 + 2000) / 60));
+
+    // FEAT-128: people in two currencies are never added; a line and a role bar per currency.
+    GanttResource dollars = p2;
+    dollars.currency = {"USD", "$"};
+    const GanttPeopleCharts mixed = GanttPeopleCharts::compute(plan, assignments, {p1, dollars, p3}, Scale::Days);
+    GanttMoney expected(GanttCurrency(), 225000);
+    expected += GanttMoney(GanttCurrency{"USD", "$"}, 105000);
+    QCOMPARE(mixed.cost, expected);
+    QCOMPARE(mixed.costText(), QString("€2,250\n$1,050"));
+    QCOMPARE(mixed.cost.text(), QString("€2,250.00 + $1,050.00"));
+    QCOMPARE(mixed.roleBars.size(), 2);
+    QCOMPARE(mixed.roleBarTitle(mixed.roleBars.at(0)), QString("EUR €"));
+    QCOMPARE(mixed.roleBars.at(1).roles.size(), 1);
+    QCOMPARE(mixed.roleBars.at(1).roles.at(0).name, QString("Design"));
+    QCOMPARE(mixed.roleBars.at(1).roles.at(0).percent, 100);
+    QCOMPARE(mixed.personLine(mixed.people.at(1)), QString("2 tasks · 3.5 days · $1,050"));
+    const GanttCosts mixedCosts = GanttCosts::compute(plan, plan.schedule(), assignments, {p1, dollars});
+    QCOMPARE(mixedCosts.people.value("p2").cost, GanttMoney(GanttCurrency{"USD", "$"}, 105000));
+    QCOMPARE(GanttMoney().text(GanttCurrency{"CHF", {}}), GanttResources::formatCost(0, "CHF"));  // nothing: 0 in the fallback
 }
 
 QTEST_GUILESS_MAIN(GanttPlanTest)

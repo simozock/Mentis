@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFileInfo>
 #include <QLabel>
 #include <QLocale>
 #include <QPushButton>
@@ -36,13 +37,24 @@ void UpdatePrompt::checkAtStartup() {
 void UpdatePrompt::checkNow(QWidget *parent) { check(true, parent); }
 
 void UpdatePrompt::check(bool manual, QWidget *parent) {
-    if (m_checker) return;  // one check at a time
+    if (m_checker) {
+        // One request at a time: "Check now" during the startup check takes over its answer.
+        if (manual) {
+            m_manual = true;
+            m_parent = parent;
+        }
+        return;
+    }
+    m_manual = manual;
+    m_parent = parent;
     m_checker = new UpdateChecker(this);
-    QPointer<QWidget> guard(parent);
-    connect(m_checker, &UpdateChecker::finished, this, [this, manual, guard](bool ok, const Updates::Release &release) {
+    connect(m_checker, &UpdateChecker::finished, this, [this](bool ok, const Updates::Release &release) {
         m_checker->deleteLater();
         m_checker.clear();  // a new check may start before the deferred delete runs
-        QWidget *parent = guard ? guard.data() : m_window.data();
+        const bool manual = m_manual;
+        QWidget *parent = m_parent ? m_parent.data() : m_window.data();
+        // A manual answer replaces a startup question still waiting for a free moment.
+        if (manual) ++m_answers;
         if (ok) {
             Updates::Settings settings = Updates::Settings::load();
             settings.lastCheck = QDateTime::currentDateTime();
@@ -57,7 +69,7 @@ void UpdatePrompt::check(bool manual, QWidget *parent) {
         } else if (Updates::isNewer(release.version, Updates::currentVersion())
                    && (manual || release.version != Updates::Settings::load().skippedVersion)) {
             if (manual) propose(release, parent);
-            else proposeWhenFree(release);
+            else proposeWhenFree(release, m_answers);
         } else if (manual) {
             ModalDialog::inform(parent, tr("Updates"), tr("Mentis is up to date."));
         }
@@ -67,10 +79,10 @@ void UpdatePrompt::check(bool manual, QWidget *parent) {
 }
 
 // The startup question waits while another modal or a menu is open (a file dialog, Settings).
-void UpdatePrompt::proposeWhenFree(const Updates::Release &release) {
-    if (!m_window) return;
+void UpdatePrompt::proposeWhenFree(const Updates::Release &release, int answers) {
+    if (!m_window || answers != m_answers) return;
     if (QApplication::activeModalWidget() || QApplication::activePopupWidget()) {
-        QTimer::singleShot(10000, this, [this, release] { proposeWhenFree(release); });
+        QTimer::singleShot(10000, this, [this, release, answers] { proposeWhenFree(release, answers); });
         return;
     }
     // Meanwhile "Check now" may have skipped this version.
@@ -83,7 +95,7 @@ void UpdatePrompt::propose(const Updates::Release &release, QWidget *parent) {
     const QString text = tr("Mentis %1 is available. You have version %2.").arg(release.version, Updates::currentVersion());
     const ModalDialog::Choice choice =
         ModalDialog::ask(parent, tr("Update available"), text, installable ? tr("Update") : tr("Open release page"),
-                         tr("Skip this version"), tr("Later"));
+                         tr("Skip this version"));
     if (choice == ModalDialog::Choice::Secondary) {
         Updates::Settings settings = Updates::Settings::load();
         settings.skippedVersion = release.version;
@@ -144,9 +156,14 @@ void UpdatePrompt::install(const QString &installerPath, const QString &version,
     const ModalDialog::Choice choice = ModalDialog::ask(
         parent, tr("Update ready"),
         tr("Mentis will close, install version %1 and open again. Your maps are saved as when you quit.").arg(version),
-        tr("Restart and install"), QString(), tr("Later"));
+        tr("Restart and install"));
     if (choice != ModalDialog::Choice::Primary) {
         QFile::remove(installerPath);
+        return;
+    }
+    // Another Mentis starting meanwhile empties updates/: say so before any window closes.
+    if (!QFileInfo::exists(installerPath)) {
+        ModalDialog::inform(parent, tr("Updates"), tr("The downloaded update is no longer there. Try again."));
         return;
     }
     // The app must not quit with the last window: the installer starts after the windows closed.

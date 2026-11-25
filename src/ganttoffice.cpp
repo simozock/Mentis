@@ -43,12 +43,12 @@ QColor tint(const QColor &color, double amount) {
     return onWhite(see);
 }
 
-// The light Gantt's colours (GanttColors::light) and the PDF pages' table lines (GanttPages).
+// The light Gantt's colours (GanttPalette::light) and the PDF pages' table lines (GanttPages).
 struct Palette {
     QColor text, muted, rowLine, headerLine, band, summary, shade;
 };
 Palette palette() {
-    const GanttColors light = GanttColors::light();
+    const GanttPalette light = GanttPalette::light();
     return {light.text, light.muted, onWhite(light.grid), QColor(0xe5, 0xe7, 0xeb), light.page, QColor(0xf4, 0xf5, 0xf7),
             onWhite(light.shade)};
 }
@@ -64,6 +64,8 @@ struct CostData {
     GanttCosts costs;
     QVector<const GanttResource *> people;  // with hours, in the Resources list's order
     QHash<QString, const GanttResource *> byId;
+    // FEAT-128: the listed people's currencies, by their text (as GanttMoney); the source's when none.
+    QVector<GanttCurrency> currencies;
     QString taskPeople(const GanttExportSource &source, const GanttExportSource::Row &row) const {
         if (row.summary) return {};
         QStringList names;
@@ -80,12 +82,18 @@ CostData costData(const GanttExportSource &source) {
         data.byId.insert(person.id, &person);
         if (data.costs.people.contains(person.id)) data.people.append(&person);
     }
+    QMap<QString, GanttCurrency> currencies;
+    for (const GanttResource *person : std::as_const(data.people)) {
+        const GanttCurrency currency = person->currency.normalized();
+        currencies.insert(currency.text(), currency);
+    }
+    data.currencies = currencies.isEmpty() ? QVector<GanttCurrency>{source.currency.normalized()} : currencies.values();
     return data;
 }
 
 QString taskName(const GanttExportSource &source, const GanttExportSource::Row &row) {
     const GanttTask *task = source.plan.task(row.id);
-    return task ? task->name.simplified() : QString();
+    return task ? task->shownName() : QString();
 }
 
 // Direct children of each row (the rows are in the tree's order with their depth).
@@ -526,17 +534,17 @@ QByteArray Sheet::part(bool selected) const {
 struct Period {
     QDate first, last;
 };
-QVector<Period> periods(QDate first, QDate last, GanttChart::Scale unit) {
+QVector<Period> periods(QDate first, QDate last, GanttCanvas::Scale unit) {
     QVector<Period> list;
     if (!first.isValid() || !last.isValid()) return list;
     switch (unit) {
-    case GanttChart::Scale::Days:
+    case GanttCanvas::Scale::Days:
         for (QDate day = first; day <= last; day = day.addDays(1)) list.append({day, day});
         break;
-    case GanttChart::Scale::Weeks:
+    case GanttCanvas::Scale::Weeks:
         for (QDate monday = first.addDays(1 - first.dayOfWeek()); monday <= last; monday = monday.addDays(7)) list.append({monday, monday.addDays(6)});
         break;
-    case GanttChart::Scale::Months:
+    case GanttCanvas::Scale::Months:
         for (QDate month(first.year(), first.month(), 1); month <= last; month = month.addMonths(1))
             list.append({month, month.addDays(month.daysInMonth() - 1)});
         break;
@@ -571,16 +579,16 @@ struct Looks {
 
 // The calendar header (band of months or years, then the periods, then a hidden row of their last
 // days): the Gantt's and the Per week sheet's.
-void calendar(Sheet &sheet, Looks &looks, int firstColumn, int bandRow, const QVector<Period> &list, GanttChart::Scale unit, bool endRow) {
-    const QString periodFormat = unit == GanttChart::Scale::Days ? QStringLiteral("d") : unit == GanttChart::Scale::Weeks ? QStringLiteral("dd.mm")
+void calendar(Sheet &sheet, Looks &looks, int firstColumn, int bandRow, const QVector<Period> &list, GanttCanvas::Scale unit, bool endRow) {
+    const QString periodFormat = unit == GanttCanvas::Scale::Days ? QStringLiteral("d") : unit == GanttCanvas::Scale::Weeks ? QStringLiteral("dd.mm")
                                                                                                                        : QStringLiteral("mmm");
-    const QString bandFormat = unit == GanttChart::Scale::Months ? QStringLiteral("yyyy") : QStringLiteral("mmmm yyyy");
-    const auto bandOf = [unit](const QDate &date) { return unit == GanttChart::Scale::Months ? date.year() : date.year() * 12 + date.month(); };
+    const QString bandFormat = unit == GanttCanvas::Scale::Months ? QStringLiteral("yyyy") : QStringLiteral("mmmm yyyy");
+    const auto bandOf = [unit](const QDate &date) { return unit == GanttCanvas::Scale::Months ? date.year() : date.year() * 12 + date.month(); };
     for (int i = 0; i < list.size();) {
         int j = i;
         while (j + 1 < list.size() && bandOf(list.at(j + 1).first) == bandOf(list.at(i).first)) ++j;
         // Alternate the months' (years') fills, as the template does.
-        const bool odd = (unit == GanttChart::Scale::Months ? list.at(i).first.year() : list.at(i).first.month()) % 2;
+        const bool odd = (unit == GanttCanvas::Scale::Months ? list.at(i).first.year() : list.at(i).first.month()) % 2;
         const int band = looks.styles.of({.bold = true, .size = 9, .fill = odd ? looks.colors.band : looks.colors.summary,
                                           .format = bandFormat, .align = QStringLiteral("left")});
         for (int c = i; c <= j; ++c) sheet.blank(firstColumn + c, bandRow, band);
@@ -599,7 +607,7 @@ void calendar(Sheet &sheet, Looks &looks, int firstColumn, int bandRow, const QV
     if (endRow) sheet.height(bandRow + 2, 0, true);
 }
 
-double periodWidth(GanttChart::Scale unit) { return unit == GanttChart::Scale::Days ? 3.6 : unit == GanttChart::Scale::Weeks ? 6.5 : 6.0; }
+double periodWidth(GanttCanvas::Scale unit) { return unit == GanttCanvas::Scale::Days ? 3.6 : unit == GanttCanvas::Scale::Weeks ? 6.5 : 6.0; }
 
 // The currency's number format: the symbol where the locale puts it, two decimals.
 QString currencyFormat(const QString &currency) {
@@ -649,7 +657,7 @@ struct Workbook {
 
 // --- the Gantt sheet ---
 
-void ganttSheet(Workbook &book, Looks &looks, const GanttExportSource &source, GanttChart::Scale unit, const QDate &today) {
+void ganttSheet(Workbook &book, Looks &looks, const GanttExportSource &source, GanttCanvas::Scale unit, const QDate &today) {
     using Kind = GanttExportSource::Column::Kind;
     Sheet sheet;
     const Palette &colors = looks.colors;
@@ -663,17 +671,17 @@ void ganttSheet(Workbook &book, Looks &looks, const GanttExportSource &source, G
                 last = last.isValid() ? std::max(last, task.end) : task.end;
             }
     QVector<Period> list = periods(first, last, unit);
-    while (list.size() > kMaxPeriods && unit != GanttChart::Scale::Months) {
-        unit = GanttChart::Scale(int(unit) + 1);
+    while (list.size() > kMaxPeriods && unit != GanttCanvas::Scale::Months) {
+        unit = GanttCanvas::Scale(int(unit) + 1);
         list = periods(first, last, unit);
     }
     const int columns = int(source.columns.size());
     const int timeline = 1 + columns;  // the first period's column (A is a margin)
-    const QColor critical = GanttChart::criticalColor();
-    const QColor todayColor = GanttChart::todayColor();
+    const QColor critical = GanttCanvas::criticalColor();
+    const QColor todayColor = GanttCanvas::todayColor();
     const auto paintOf = [&](const GanttExportSource::Row &row) {
         const auto look = source.looks.constFind(row.id);
-        GanttBarPaint paint = GanttChart::barPaint(source.plan, row.id, look != source.looks.cend() ? &*look : nullptr, row.summary);
+        GanttBarPaint paint = GanttCanvas::barPaint(source.plan, row.id, look != source.looks.cend() ? &*look : nullptr, row.summary);
         // A topic without fill: the bar light, its done part stronger (on white, not the card).
         const bool filled = paint.fill.alpha() > 0;
         paint.fill = filled ? onWhite(paint.fill) : tint(paint.border, 0.3);
@@ -712,7 +720,7 @@ void ganttSheet(Workbook &book, Looks &looks, const GanttExportSource &source, G
                             QStringLiteral("◆")});
         if (taskSample || summarySample) entries.append({looks.styles.of({.fill = (taskSample ? taskSample : summarySample)->done}), tr("Done"), {}});
         if (source.baseline)
-            entries.append({looks.styles.of({.fill = GanttChart::baselineColor(), .pattern = QStringLiteral("lightUp")}),
+            entries.append({looks.styles.of({.fill = GanttCanvas::baselineColor(), .pattern = QStringLiteral("lightUp")}),
                             tr("Baseline: %1").arg(source.baseline->name), {}});
         if (anyCritical) entries.append({looks.styles.of({.top = critical, .bottom = critical}), tr("Critical path"), {}});
         entries.append({looks.styles.of({.fill = tint(todayColor, 0.12)}), tr("Highlighted period"), {}});
@@ -816,7 +824,7 @@ void ganttSheet(Workbook &book, Looks &looks, const GanttExportSource &source, G
         const int plain = looks.styles.of({.bottom = colors.rowLine});
         const int shaded = looks.styles.of({.fill = colors.shade, .bottom = colors.rowLine});
         for (int c = 0; c < list.size(); ++c) {
-            const bool off = unit == GanttChart::Scale::Days && !source.plan.calendar().isWorkingDay(list.at(c).first);
+            const bool off = unit == GanttCanvas::Scale::Days && !source.plan.calendar().isWorkingDay(list.at(c).first);
             sheet.blank(timeline + c, r, off ? shaded : plain);
             if (milestone && scheduled.dated && list.at(c).first <= scheduled.start && list.at(c).last >= scheduled.start)
                 sheet.text(timeline + c, r, QStringLiteral("◆"),
@@ -892,7 +900,7 @@ void ganttSheet(Workbook &book, Looks &looks, const GanttExportSource &source, G
             sheet.conditional(body, QStringLiteral("AND(%1=1,%2>0,%3)").arg(helper(hCritical), lookCell, runs), looks.styles.dxf({.top = critical, .bottom = critical}));
         if (source.baseline)
             sheet.conditional(body, QStringLiteral("AND(ISNUMBER(%1),%2)").arg(helper(hBaseStart), inPeriod.arg(helper(hBaseStart), periodEnd, helper(hBaseEnd), periodStart)),
-                              looks.styles.dxf({.fill = GanttChart::baselineColor(), .pattern = QStringLiteral("lightUp")}));
+                              looks.styles.dxf({.fill = GanttCanvas::baselineColor(), .pattern = QStringLiteral("lightUp")}));
         const QString highlighted = QStringLiteral("AND(%1<=%2,%3>=%2)").arg(periodStart, highlightCell, periodEnd);
         sheet.conditional(body, highlighted, looks.styles.dxf({.fill = tint(todayColor, 0.12)}));
         sheet.conditional(ref(timeline, kPeriodRow) + QLatin1Char(':') + ref(timeline + int(list.size()) - 1, kPeriodRow), highlighted,
@@ -915,9 +923,25 @@ void ganttSheet(Workbook &book, Looks &looks, const GanttExportSource &source, G
 
 // --- the cost sheets, laid out as the Gantt sheet: the same title, header and row lines ---
 
+// FEAT-128: with people paid in several currencies, a cost column (or row) per currency, so every
+// cell stays a number that sums with its column; one currency: a single "Cost" as before.
 void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
     const CostData data = costData(source);
-    const QString money = currencyFormat(source.currency);
+    const int currencyCount = int(data.currencies.size());
+    QStringList formats, costWords;
+    QHash<QString, int> codes;  // two currencies of one code ("USD $", "USD US$"): headed by their text
+    for (const GanttCurrency &currency : data.currencies) ++codes[currency.code];
+    for (const GanttCurrency &currency : data.currencies) {
+        formats.append(currencyFormat(currency.displaySymbol()));
+        const QString name = codes.value(currency.code) > 1 ? currency.text() : currency.code;
+        // "Cost EUR": a direct call, so lupdate finds the new text (pagesTr is a wrapper it does not read).
+        costWords.append(currencyCount > 1 ? QCoreApplication::translate("GanttPages", "Cost %1").arg(name) : pagesTr("Cost"));
+    }
+    const auto formatOf = [&](const GanttCurrency &currency) {
+        const qsizetype at = data.currencies.indexOf(currency.normalized());
+        return formats.at(std::max<qsizetype>(0, at));
+    };
+    const auto centsIn = [&](const GanttMoney &money, int k) { return money.cents.value(data.currencies.at(k).text()); };
     const QString right = QStringLiteral("right");
     constexpr int kTitleRow = 1, kHeaderRow = 3, kFirstRow = 4;
     const auto begin = [&](Sheet &sheet, const QString &title, const QStringList &headers, const QList<double> &widths, const QList<bool> &rightAligned) {
@@ -939,8 +963,15 @@ void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
         Sheet sheet;
         double nameWidth = 30;
         for (const GanttExportSource::Row &row : source.rows) nameWidth = std::max(nameWidth, taskName(source, row).size() + 2.0 + row.depth * 2);
-        begin(sheet, pagesTr("Costs — %1").arg(source.sheetName), {pagesTr("Task"), pagesTr("People"), pagesTr("Hours"), pagesTr("Cost")},
-              {std::min(nameWidth, 60.0), 36, 12, 16}, {false, false, true, true});
+        QStringList headers{pagesTr("Task"), pagesTr("People"), pagesTr("Hours")};
+        QList<double> widths{std::min(nameWidth, 60.0), 36, 12};
+        QList<bool> rightAligned{false, false, true};
+        for (const QString &word : std::as_const(costWords)) {
+            headers.append(word);
+            widths.append(16);
+            rightAligned.append(true);
+        }
+        begin(sheet, pagesTr("Costs — %1").arg(source.sheetName), headers, widths, rightAligned);
         const QVector<QVector<int>> children = childrenOf(source.rows);
         QList<int> topLevel;
         for (int i = 0; i < source.rows.size(); ++i) {
@@ -951,15 +982,15 @@ void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
             sheet.height(r, 20);
             sheet.text(1, r, taskName(source, row), looks.cell(row.summary, row.depth));
             sheet.text(2, r, data.taskPeople(source, row), looks.cell(row.summary));
-            const int hours = looks.cell(row.summary, 0, right, 0, kHoursFormat), cost = looks.cell(row.summary, 0, right, 0, money);
-            if (row.summary) {
-                QList<int> rows;
-                for (int child : children.at(i)) rows.append(kFirstRow + child);
-                sheet.formula(3, r, refs(3, rows), hoursValue(amount.minutes), hours);
-                sheet.formula(4, r, refs(4, rows), amountValue(amount.cents), cost);
-            } else {
-                sheet.number(3, r, hoursValue(amount.minutes), hours);
-                sheet.number(4, r, amountValue(amount.cents), cost);
+            const int hours = looks.cell(row.summary, 0, right, 0, kHoursFormat);
+            QList<int> rows;
+            for (int child : children.at(i)) rows.append(kFirstRow + child);
+            if (row.summary) sheet.formula(3, r, refs(3, rows), hoursValue(amount.minutes), hours);
+            else sheet.number(3, r, hoursValue(amount.minutes), hours);
+            for (int k = 0; k < currencyCount; ++k) {
+                const int cost = looks.cell(row.summary, 0, right, 0, formats.at(k));
+                if (row.summary) sheet.formula(4 + k, r, refs(4 + k, rows), amountValue(centsIn(amount.cost, k)), cost);
+                else sheet.number(4 + k, r, amountValue(centsIn(amount.cost, k)), cost);
             }
         }
         const int total = kFirstRow + int(source.rows.size());
@@ -967,7 +998,8 @@ void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
         sheet.text(1, total, pagesTr("Total"), looks.total());
         sheet.blank(2, total, looks.total());
         sheet.formula(3, total, refs(3, topLevel), hoursValue(data.costs.total.minutes), looks.total(right, kHoursFormat));
-        sheet.formula(4, total, refs(4, topLevel), amountValue(data.costs.total.cents), looks.total(right, money));
+        for (int k = 0; k < currencyCount; ++k)
+            sheet.formula(4 + k, total, refs(4 + k, topLevel), amountValue(centsIn(data.costs.total.cost, k)), looks.total(right, formats.at(k)));
         book.names.append(pagesTr("Costs"));
         book.parts.append(sheet.part(book.parts.isEmpty()));
         book.printTitles.append(QStringLiteral("$%1:$%1").arg(kHeaderRow));
@@ -975,8 +1007,15 @@ void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
     // People: rate, hours and cost of each, then the total.
     {
         Sheet sheet;
-        begin(sheet, pagesTr("People"), {pagesTr("Person"), pagesTr("Role"), pagesTr("Hourly cost"), pagesTr("Hours"), pagesTr("Cost")},
-              {28, 22, 14, 12, 16}, {false, false, true, true, true});
+        QStringList headers{pagesTr("Person"), pagesTr("Role"), pagesTr("Hourly cost"), pagesTr("Hours")};
+        QList<double> widths{28, 22, 14, 12};
+        QList<bool> rightAligned{false, false, true, true};
+        for (const QString &word : std::as_const(costWords)) {
+            headers.append(word);
+            widths.append(16);
+            rightAligned.append(true);
+        }
+        begin(sheet, pagesTr("People"), headers, widths, rightAligned);
         for (int i = 0; i < data.people.size(); ++i) {
             const GanttResource &person = *data.people.at(i);
             const int r = kFirstRow + i;
@@ -984,9 +1023,14 @@ void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
             sheet.height(r, 20);
             sheet.text(1, r, personName(person), looks.cell());
             sheet.text(2, r, person.role, looks.cell());
-            sheet.number(3, r, amountValue(person.hourlyCostCents), looks.cell(false, 0, right, 0, money));
+            sheet.number(3, r, amountValue(person.hourlyCostCents), looks.cell(false, 0, right, 0, formatOf(person.currency)));
             sheet.number(4, r, hoursValue(amount.minutes), looks.cell(false, 0, right, 0, kHoursFormat));
-            sheet.number(5, r, amountValue(amount.cents), looks.cell(false, 0, right, 0, money));
+            // The person's cost in their currency's column; the others blank.
+            for (int k = 0; k < currencyCount; ++k) {
+                const int cost = looks.cell(false, 0, right, 0, formats.at(k));
+                if (data.currencies.at(k) == person.currency.normalized()) sheet.number(5 + k, r, amountValue(centsIn(amount.cost, k)), cost);
+                else sheet.blank(5 + k, r, cost);
+            }
         }
         const int total = kFirstRow + int(data.people.size());
         const auto range = [&](int column) {
@@ -997,7 +1041,8 @@ void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
         sheet.blank(2, total, looks.total());
         sheet.blank(3, total, looks.total());
         sheet.formula(4, total, range(4), hoursValue(data.costs.total.minutes), looks.total(right, kHoursFormat));
-        sheet.formula(5, total, range(5), amountValue(data.costs.total.cents), looks.total(right, money));
+        for (int k = 0; k < currencyCount; ++k)
+            sheet.formula(5 + k, total, range(5 + k), amountValue(centsIn(data.costs.total.cost, k)), looks.total(right, formats.at(k)));
         book.names.append(pagesTr("People"));
         book.parts.append(sheet.part(false));
         book.printTitles.append(QStringLiteral("$%1:$%1").arg(kHeaderRow));
@@ -1012,7 +1057,7 @@ void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
         sheet.footer(footer(source.sheetName));
         const QDate first = data.costs.weeks.isEmpty() ? QDate() : data.costs.weeks.firstKey();
         const QDate last = data.costs.weeks.isEmpty() ? QDate() : data.costs.weeks.lastKey();
-        const QVector<Period> weeks = periods(first, last, GanttChart::Scale::Weeks);
+        const QVector<Period> weeks = periods(first, last, GanttCanvas::Scale::Weeks);
         constexpr int kBandRow = 3, kWeekRow = 4, kRows = 5, kWeeks = 3;
         const int totalColumn = kWeeks + int(weeks.size());
         sheet.width(1, 26);
@@ -1027,22 +1072,24 @@ void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
         if (weeks.isEmpty()) {
             sheet.text(1, kRows, tr("No dated tasks with people."), looks.styles.of({.color = looks.colors.muted}));
         } else {
-            calendar(sheet, looks, kWeeks, kBandRow, weeks, GanttChart::Scale::Weeks, false);
+            calendar(sheet, looks, kWeeks, kBandRow, weeks, GanttCanvas::Scale::Weeks, false);
             for (int c = 0; c < weeks.size(); ++c) sheet.width(kWeeks + c, 11);
             sheet.width(totalColumn, 15);
             sheet.text(totalColumn, kBandRow, pagesTr("Total"), headerRight);
             sheet.blank(totalColumn, kWeekRow, headerRight);
             sheet.merge(totalColumn, kBandRow, totalColumn, kWeekRow);
             const QString hoursWord = pagesTr("Hours"), costWord = pagesTr("Cost");
-            QList<int> hourRows, costRows;
+            QList<int> hourRows;
+            QVector<QList<int>> costRows(currencyCount);  // by currency
             const auto rowSum = [&](int r) {
                 return QStringLiteral("SUM(%1:%2)").arg(ref(kWeeks, r), ref(totalColumn - 1, r));
             };
             for (int i = 0; i < data.people.size(); ++i) {
                 const GanttResource &person = *data.people.at(i);
                 const int r = kRows + 2 * i;
+                const QString money = formatOf(person.currency);
                 hourRows.append(r);
-                costRows.append(r + 1);
+                costRows[std::max<qsizetype>(0, data.currencies.indexOf(person.currency.normalized()))].append(r + 1);
                 sheet.text(1, r, personName(person), looks.cell(false, 0, QString()));
                 sheet.blank(1, r + 1, looks.cell());
                 sheet.merge(1, r, 1, r + 1);
@@ -1052,33 +1099,34 @@ void costSheets(Workbook &book, Looks &looks, const GanttExportSource &source) {
                 for (int c = 0; c < weeks.size(); ++c) {
                     const GanttCosts::Amount amount = data.costs.weeks.value(weeks.at(c).first).value(person.id);
                     minutes += amount.minutes;
-                    cents += amount.cents;
+                    const qint64 weekCents = amount.cost.cents.value(person.currency.normalized().text());
+                    cents += weekCents;
                     const int hours = looks.cell(false, 0, right, 0, kHoursFormat), cost = looks.cell(false, 0, right, 0, money);
                     if (amount.minutes) sheet.number(kWeeks + c, r, hoursValue(amount.minutes), hours);
                     else sheet.blank(kWeeks + c, r, hours);
-                    if (amount.cents) sheet.number(kWeeks + c, r + 1, amountValue(amount.cents), cost);
+                    if (weekCents) sheet.number(kWeeks + c, r + 1, amountValue(weekCents), cost);
                     else sheet.blank(kWeeks + c, r + 1, cost);
                 }
                 sheet.formula(totalColumn, r, rowSum(r), hoursValue(minutes), looks.cell(true, 0, right, 0, kHoursFormat));
                 sheet.formula(totalColumn, r + 1, rowSum(r + 1), amountValue(cents), looks.cell(true, 0, right, 0, money));
             }
-            // The totals of each week: hours, then cost.
+            // The totals of each week: hours, then a cost row per currency.
             const int totalRow = kRows + 2 * int(data.people.size());
+            const int lastTotalRow = totalRow + currencyCount;
             sheet.text(1, totalRow, pagesTr("Total"), looks.total());
-            sheet.blank(1, totalRow + 1, looks.total());
-            sheet.merge(1, totalRow, 1, totalRow + 1);
+            for (int k = 1; k <= currencyCount; ++k) sheet.blank(1, totalRow + k, looks.total());
+            sheet.merge(1, totalRow, 1, lastTotalRow);
             sheet.text(2, totalRow, hoursWord, looks.total());
-            sheet.text(2, totalRow + 1, costWord, looks.styles.of({.bold = true}));
+            for (int k = 0; k < currencyCount; ++k) sheet.text(2, totalRow + 1 + k, costWords.at(k), looks.styles.of({.bold = true}));
             for (int c = kWeeks; c <= totalColumn; ++c) {
-                qint64 minutes = 0, cents = 0;
-                for (const GanttResource *person : data.people) {
-                    const GanttCosts::Amount amount = c == totalColumn ? data.costs.people.value(person->id)
-                                                                       : data.costs.weeks.value(weeks.at(c - kWeeks).first).value(person->id);
-                    minutes += amount.minutes;
-                    cents += amount.cents;
-                }
-                sheet.formula(c, totalRow, refs(c, hourRows), hoursValue(minutes), looks.total(right, kHoursFormat));
-                sheet.formula(c, totalRow + 1, refs(c, costRows), amountValue(cents), looks.styles.of({.bold = true, .format = money, .align = right}));
+                GanttCosts::Amount sum;
+                for (const GanttResource *person : data.people)
+                    sum += c == totalColumn ? data.costs.people.value(person->id)
+                                            : data.costs.weeks.value(weeks.at(c - kWeeks).first).value(person->id);
+                sheet.formula(c, totalRow, refs(c, hourRows), hoursValue(sum.minutes), looks.total(right, kHoursFormat));
+                for (int k = 0; k < currencyCount; ++k)
+                    sheet.formula(c, totalRow + 1 + k, refs(c, costRows.at(k)), amountValue(centsIn(sum.cost, k)),
+                                  looks.styles.of({.bold = true, .format = formats.at(k), .align = right}));
             }
             sheet.freeze(kWeeks, kWeekRow);
         }
@@ -1206,7 +1254,7 @@ QString indented(const QString &text, int depth) {
 
 }  // namespace
 
-QByteArray xlsx(const GanttExportSource &source, GanttPages::Content content, GanttChart::Scale unit, const QString &title, const QDate &today) {
+QByteArray xlsx(const GanttExportSource &source, GanttPages::Content content, GanttCanvas::Scale unit, const QString &title, const QDate &today) {
     Looks looks(palette());
     Workbook book;
     if (content != GanttPages::Content::Costs) ganttSheet(book, looks, source, unit, today);
@@ -1257,7 +1305,7 @@ QByteArray xlsx(const GanttExportSource &source, GanttPages::Content content, Ga
     return zip.archive();
 }
 
-QByteArray docx(const GanttExportSource &source, GanttPages::Content content, GanttChart::Scale unit, const QString &title, QString *error) {
+QByteArray docx(const GanttExportSource &source, GanttPages::Content content, GanttCanvas::Scale unit, const QString &title, QString *error) {
     const Palette colors = palette();
     // The chart's pages as the PDF lays them out (landscape A4, fit width), cut at their margins.
     QList<QImage> pictures;
@@ -1304,16 +1352,17 @@ QByteArray docx(const GanttExportSource &source, GanttPages::Content content, Ga
         if (content != GanttPages::Content::Gantt) {
             wordParagraph(xml, QStringLiteral("Heading1"), !pictures.isEmpty(),
                           [&] { wordRun(xml, pagesTr("Costs — %1").arg(source.sheetName), false, QColor(), 0); });
-            const int hours = 1500, amount = 2100, flexible = kWordText - hours - amount;
+            // FEAT-128: costs in several currencies are written one after the other: a wider column.
+            const int hours = 1500, amount = data.currencies.size() > 1 ? 3600 : 2100, flexible = kWordText - hours - amount;
             QList<WordRow> tasks{{{pagesTr("Task"), pagesTr("People"), pagesTr("Hours"), pagesTr("Cost")}, true}};
             for (const GanttExportSource::Row &row : source.rows) {
                 const GanttCosts::Amount sum = data.costs.tasks.value(row.id);
                 tasks.append({{taskName(source, row), data.taskPeople(source, row), GanttPages::hoursText(sum.minutes),
-                               GanttPages::amountText(sum.cents, source.currency)},
+                               GanttPages::amountText(sum.cost, source.currency)},
                               false, row.summary, false, row.depth * 240});
             }
             tasks.append({{pagesTr("Total"), QString(), GanttPages::hoursText(data.costs.total.minutes),
-                           GanttPages::amountText(data.costs.total.cents, source.currency)},
+                           GanttPages::amountText(data.costs.total.cost, source.currency)},
                           false, false, true});
             const int name = flexible * 55 / 100;
             wordTable(xml, {name, flexible - name, hours, amount}, {false, false, true, true}, tasks, colors);
@@ -1321,11 +1370,11 @@ QByteArray docx(const GanttExportSource &source, GanttPages::Content content, Ga
             QList<WordRow> people{{{pagesTr("Person"), pagesTr("Role"), pagesTr("Hourly cost"), pagesTr("Hours"), pagesTr("Cost")}, true}};
             for (const GanttResource *person : data.people) {
                 const GanttCosts::Amount sum = data.costs.people.value(person->id);
-                people.append({{personName(*person), person->role, pagesTr("%1 / h").arg(GanttPages::amountText(person->hourlyCostCents, source.currency)),
-                                GanttPages::hoursText(sum.minutes), GanttPages::amountText(sum.cents, source.currency)}});
+                people.append({{personName(*person), person->role, pagesTr("%1 / h").arg(GanttPages::amountText(person->hourlyCostCents, person->currency.normalized().displaySymbol())),
+                                GanttPages::hoursText(sum.minutes), GanttPages::amountText(sum.cost, person->currency)}});
             }
             people.append({{pagesTr("Total"), QString(), QString(), GanttPages::hoursText(data.costs.total.minutes),
-                            GanttPages::amountText(data.costs.total.cents, source.currency)},
+                            GanttPages::amountText(data.costs.total.cost, source.currency)},
                            false, false, true});
             const int third = flexible * 30 / 100;
             wordTable(xml, {flexible - 2 * third, third, third, hours, amount}, {false, false, true, true, true}, people, colors);
@@ -1379,28 +1428,28 @@ QString markdown(const GanttExportSource &source, GanttPages::Content content) {
         for (const GanttExportSource::Row &row : source.rows) {
             const GanttCosts::Amount sum = data.costs.tasks.value(row.id);
             QStringList cells{markdownCell(taskName(source, row)), markdownCell(data.taskPeople(source, row)), GanttPages::hoursText(sum.minutes),
-                              markdownCell(GanttPages::amountText(sum.cents, source.currency))};
+                              markdownCell(GanttPages::amountText(sum.cost, source.currency))};
             if (row.summary) for (QString &cell : cells) cell = bold(cell);
             cells[0] = indented(cells[0], row.depth);
             lines << markdownRow(cells);
         }
         const QString hours = bold(GanttPages::hoursText(data.costs.total.minutes));
-        const QString cost = bold(markdownCell(GanttPages::amountText(data.costs.total.cents, source.currency)));
+        const QString cost = bold(markdownCell(GanttPages::amountText(data.costs.total.cost, source.currency)));
         lines << markdownRow({bold(pagesTr("Total")), QString(), hours, cost}) << QString();
         lines << markdownRow({pagesTr("Person"), pagesTr("Role"), pagesTr("Hourly cost"), pagesTr("Hours"), pagesTr("Cost")})
               << markdownRule({false, false, true, true, true});
         for (const GanttResource *person : data.people) {
             const GanttCosts::Amount sum = data.costs.people.value(person->id);
             lines << markdownRow({markdownCell(personName(*person)), markdownCell(person->role),
-                                  markdownCell(pagesTr("%1 / h").arg(GanttPages::amountText(person->hourlyCostCents, source.currency))),
-                                  GanttPages::hoursText(sum.minutes), markdownCell(GanttPages::amountText(sum.cents, source.currency))});
+                                  markdownCell(pagesTr("%1 / h").arg(GanttPages::amountText(person->hourlyCostCents, person->currency.normalized().displaySymbol()))),
+                                  GanttPages::hoursText(sum.minutes), markdownCell(GanttPages::amountText(sum.cost, person->currency))});
         }
         lines << markdownRow({bold(pagesTr("Total")), QString(), QString(), hours, cost}) << QString();
     }
     return lines.join(QLatin1Char('\n'));
 }
 
-QString write(Format format, const QString &path, const GanttExportSource &source, GanttPages::Content content, GanttChart::Scale unit,
+QString write(Format format, const QString &path, const GanttExportSource &source, GanttPages::Content content, GanttCanvas::Scale unit,
               const QString &title) {
     QByteArray bytes;
     switch (format) {

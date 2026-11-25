@@ -17,8 +17,6 @@ QString profileName(Profile profile);
 
 // Ritardo del salvataggio automatico dopo l'ultima modifica: su dischi lenti meno scritture.
 int autoSaveDelayMs();
-// Sotto questo zoom i nodi si disegnano senza testo (NodeItem::paint).
-double detailZoomThreshold();
 // Risoluzione delle immagini dei nodi rispetto alla misura mostrata (NodeItem, loadScaledPixmap).
 double imageScaleFactor();
 // Dimensione della QPixmapCache in KB (predefinito di Qt: 10240).

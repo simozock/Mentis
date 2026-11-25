@@ -38,11 +38,16 @@ signals:
 
 private:
     void check(bool manual, QWidget *parent);
-    void proposeWhenFree(const Updates::Release &release);
+    void proposeWhenFree(const Updates::Release &release, int answers);
     void propose(const Updates::Release &release, QWidget *parent);
     void download(const Updates::Release &release, QWidget *parent);
     void install(const QString &installerPath, const QString &version, QWidget *parent);
 
     QPointer<QWidget> m_window;
     QPointer<UpdateChecker> m_checker;
+    // The running check: whether its answers are shown as for "Check now", and over which widget.
+    bool m_manual = false;
+    QPointer<QWidget> m_parent;
+    // Manual answers so far: a deferred startup question made before a newer one is dropped.
+    int m_answers = 0;
 };

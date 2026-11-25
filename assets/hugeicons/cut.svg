@@ -1,0 +1,7 @@
+<!-- Drawn for Mentis (FEAT-121 B), Hugeicons Stroke Rounded style: scissors for Cut in the phone's outliner -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <circle cx="6.5" cy="17.5" r="3" stroke="#27303b" stroke-width="1.5" />
+  <circle cx="17.5" cy="17.5" r="3" stroke="#27303b" stroke-width="1.5" />
+  <path d="M8.5 15.2L18 3.5" stroke="#27303b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M15.5 15.2L6 3.5" stroke="#27303b" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

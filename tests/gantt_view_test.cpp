@@ -2,7 +2,9 @@
 // bars, history and saving, critical path painting, performance).
 #include "datepicker.h"
 #include "ganttbaselinemenu.h"
+#include "ganttcolumns.h"
 #include "ganttexport.h"
+#include "ganttnamefield.h"
 #include "ganttoffice.h"
 #include "officeexportdialog.h"
 #include "ooxmltest.h"
@@ -22,6 +24,7 @@
 #include "nodestyle.h"
 #include "stylecontrols.h"
 #include "noteeditor.h"
+#include "peoplechartspanel.h"
 #include "resourcesdialog.h"
 #include "shortcuts.h"
 #include "uitheme.h"
@@ -44,6 +47,8 @@
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QMouseEvent>
+#include <QScopeGuard>
 #include <QSettings>
 #include <QSignalSpy>
 #include <QSpinBox>
@@ -56,6 +61,8 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTextCursor>
+#include <QTextDocument>
 #include <QTimer>
 #include <QTreeView>
 
@@ -66,9 +73,12 @@ private slots:
     void init();
     void cleanup();
     void viewButtons();
+    void panelEdgeIsDragged();
     void namesFollowTheInterfaceLanguage();
     void emptyPlan();
     void tableEdits();
+    void formattedNames();  // FEAT-124
+    void typingReplacesName();  // FEAT-002
     void keys();
     void mouse();
     void chainAndStartLink();
@@ -105,6 +115,8 @@ private slots:
     void exportShapes();
     void selectedSummaryArrow();
     void sheetColours();
+    void borderColour();
+    void linkColour();
     void relationStyle();
     void milestoneStyle();
     void arrowKeys();
@@ -127,6 +139,7 @@ private slots:
     void panelRemove();
     void moveRows();
     void resourcesDialog();
+    void resourceCharts();  // FEAT-127
     void resourcesButton();
     void copyAndPasteStyleOfTasks();  // FEAT-085
 
@@ -183,6 +196,7 @@ void GanttViewTest::init() {
     QSettings().remove(QStringLiteral("gantt/columns"));  // default columns in every test
     QSettings().remove(QStringLiteral("gantt/numberHidden"));
     QSettings().remove(QStringLiteral("gantt/columnOrder"));
+    QSettings().remove(QStringLiteral("gantt/columnWidths"));
     QSettings().remove(QStringLiteral("gantt/critical"));
     QSettings().remove(QStringLiteral("gantt/currencies"));
     QSettings().remove(QStringLiteral("gantt/resourceColumns"));
@@ -472,6 +486,40 @@ void GanttViewTest::panelStyleWaitsUntilShown() {
     QVERIFY(hidden.styleSheet().contains(GanttColors::dark().card.name()));
 }
 
+// User's request 2026-11-22: the task panel's right edge (the gap to the table) is dragged, from
+// 300 px to half the view; kept in the settings.
+void GanttViewTest::panelEdgeIsDragged() {
+    setPlan({task("A", kMonday, 3)});
+    m_view->openPanel("A");
+    GanttTaskPanel *panel = m_view->panel();
+    auto *handle = m_view->findChild<QWidget *>(QStringLiteral("GanttTaskPanelResizeHandle"));
+    QVERIFY(handle);
+    QTRY_VERIFY(handle->isVisible());
+    QCOMPARE(panel->width(), GanttTaskPanel::kWidth);
+    QCOMPARE(handle->geometry().left(), panel->geometry().right() + 1 - 4);
+    const auto drag = [handle](int dx) {
+        const QPointF at = QPointF(handle->rect().center());
+        const QPointF global = handle->mapToGlobal(at);
+        QMouseEvent press(QEvent::MouseButtonPress, at, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(handle, &press);
+        QMouseEvent move(QEvent::MouseMove, at + QPointF(dx, 0), global + QPointF(dx, 0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(handle, &move);
+        QMouseEvent release(QEvent::MouseButtonRelease, at + QPointF(dx, 0), global + QPointF(dx, 0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(handle, &release);
+        QApplication::processEvents();
+    };
+    drag(120);
+    QCOMPARE(panel->width(), GanttTaskPanel::kWidth + 120);
+    QCOMPARE(QSettings().value(QStringLiteral("gantt/panelWidth")).toInt(), GanttTaskPanel::kWidth + 120);
+    QCOMPARE(panel->findChild<QWidget *>(QStringLiteral("GanttTaskPanelContent"))->maximumWidth(), GanttTaskPanel::kWidth + 120);
+    QTRY_COMPARE(handle->geometry().left(), panel->geometry().right() + 1 - 4);  // the handle follows the edge
+    drag(5000);
+    QCOMPARE(panel->width(), m_view->width() / 2);
+    drag(-5000);
+    QCOMPARE(panel->width(), GanttTaskPanel::kWidth);
+    QSettings().remove(QStringLiteral("gantt/panelWidth"));
+}
+
 void GanttViewTest::peoplePercent() {
     // FEAT-083: a person's share of a task, 1-100 % (step 5), in the panel's Resources table; one
     // step; saved as {"id", "percent"} when not 100 %, an id alone otherwise.
@@ -722,7 +770,7 @@ void GanttViewTest::officeFiles() {
     const QString document = QString::fromUtf8(word.value("word/document.xml"));
     QVERIFY(document.contains("w:orient=\"landscape\"") && document.contains("<w:tblHeader/>"));
     QVERIFY(document.contains("F4F5F7"));  // the summaries' row
-    QVERIFY(document.contains(GanttPages::amountText(294000, source.currency).toHtmlEscaped()));
+    QVERIFY(document.contains(GanttPages::amountText(294000, source.currency.displaySymbol()).toHtmlEscaped()));
 
     // Markdown: the shown columns, summaries bold, tasks indented; the cost tables with their totals.
     const QString markdown = GanttOffice::markdown(source, GanttPages::Content::GanttAndCosts);
@@ -938,7 +986,9 @@ void GanttViewTest::viewButtons() {
     const QPoint margin = gantt->mapTo(&window, QPoint(4, gantt->height() - 4));
     QCOMPARE(window.grab().toImage().pixelColor(margin), UiTheme::color(UiTheme::Token::SurfaceSunken));
     // The task panel's pages on the dark card too, not white (user's picture, 2026-10-30).
-    gantt->togglePanel();
+    // Entering the Gantt opened it (user, 2026-11-23), its button pressed.
+    QVERIFY(!gantt->panel()->isHidden());
+    QVERIFY(window.findChild<QToolButton *>(QStringLiteral("ganttPanelButton"))->isChecked());
     for (const auto page : {GanttTaskPanel::Page::Task, GanttTaskPanel::Page::Gantt}) {
         gantt->panel()->showPage(page);
         const QPoint inside = gantt->panel()->mapTo(&window, QPoint(4, gantt->panel()->height() / 2));
@@ -950,7 +1000,9 @@ void GanttViewTest::viewButtons() {
     QCOMPARE(texts(), QStringList({"Mind map", "Outliner"}));
     QVERIFY(click("Outliner"));
     QCOMPARE(texts(), QStringList({"Mind map", "Gantt"}));
+    QVERIFY(gantt->panel()->isHidden());  // closed, it stays so on the Gantt
     QVERIFY(click("Gantt"));
+    QVERIFY(!gantt->panel()->isHidden());  // entered again: open again
     QVERIFY(click("Mind map"));
     QVERIFY(!criticalButton->isVisibleTo(&window));
     // FEAT-079: the Resources button sits next to it, on the Gantt page only.
@@ -978,7 +1030,7 @@ void GanttViewTest::emptyPlan() {
     QVERIFY(!m_view->showsEmptyState());
     // The name is open for editing; a new name confirmed by the commit (found in the table: tests
     // running at the same time can take the focus).
-    auto *editor = m_view->table()->viewport()->findChild<QLineEdit *>();
+    auto *editor = m_view->table()->viewport()->findChild<GanttNameField *>();
     QVERIFY(editor);
     editor->setText("Design");
     m_view->commitPendingEdit();
@@ -1011,6 +1063,163 @@ void GanttViewTest::tableEdits() {
     QCOMPARE(model->data(summary.siblingAtColumn(2), Qt::EditRole).toDate(), m_document->model()->gantt().schedule().tasks["S"].end);
 }
 
+// FEAT-002: a printable key on the single selected task opens its name and replaces it; Esc keeps
+// the old name, Enter the typed one; with two rows selected nothing opens.
+void GanttViewTest::typingReplacesName() {
+    setPlan({task("A", kMonday, 1), task("B", kMonday, 2)});
+    QTreeView *table = m_view->table();
+    QAbstractItemModel *model = table->model();
+    const QModelIndex b = model->index(1, 0);
+    const auto openEditor = [&]() -> GanttNameField * {
+        for (GanttNameField *field : table->viewport()->findChildren<GanttNameField *>())
+            if (field->isVisible()) return field;
+        return nullptr;
+    };
+    table->setCurrentIndex(b.siblingAtColumn(1));  // on Start: the key still types the name
+    QTest::keyClick(table, 'x');
+    GanttNameField *editor = openEditor();
+    QVERIFY(editor);
+    QCOMPARE(table->currentIndex(), b);
+    QTest::keyClick(editor, '7');
+    QCOMPARE(editor->text(), QString("x7"));
+    // User 2026-11-23: the bar and the panel's Name follow the typing; the topic keeps its name.
+    GanttCanvas &canvas = m_view->chart()->canvas();
+    QCOMPARE(canvas.shownName("B", *canvas.taskOf("B")), QString("x7"));
+    QCOMPARE(m_document->model()->nodeById("B")->title, QString("B"));
+    QTest::keyClick(editor, Qt::Key_Escape);
+    QTRY_VERIFY(!openEditor());
+    QCOMPARE(m_document->model()->nodeById("B")->title, QString("B"));
+    QCOMPARE(canvas.shownName("B", *canvas.taskOf("B")), QString("B"));
+    QTest::keyClick(table, 'z');
+    editor = openEditor();
+    QVERIFY(editor);
+    QTest::keyClick(editor, Qt::Key_Return);
+    QTRY_VERIFY(!openEditor());
+    QCOMPARE(m_document->model()->nodeById("B")->title, QString("z"));
+    table->selectAll();
+    QTest::keyClick(table, 'q');
+    QVERIFY(!openEditor());
+}
+
+// FEAT-124: the names keep and show the map's formats; typed in the table or the panel, the
+// Markdown shortcuts and the format keys work as in the outliner.
+void GanttViewTest::formattedNames() {
+    m_shortcuts->add("bold", ShortcutRegistry::Area::General, "Bold", {QKeySequence("Ctrl+B")});
+    m_shortcuts->add("italic", ShortcutRegistry::Area::General, "Italic", {QKeySequence("Ctrl+I")});
+    setPlan({task("A", kMonday, 2), task("B", kMonday, 2)});
+    MindNode *a = m_document->model()->nodeById("A");
+    {
+        QTextDocument title;
+        QTextCursor cursor(&title);
+        cursor.insertText(QStringLiteral("Alpha "));
+        QTextCharFormat bold;
+        bold.setFontWeight(QFont::Bold);
+        cursor.insertText(QStringLiteral("beta"), bold);
+        QVERIFY(m_document->setFormattedTitle(a, title.toPlainText(), title.toHtml()));
+        m_document->flushPendingStep();
+    }
+    m_view->refresh();
+    QAbstractItemModel *model = m_view->table()->model();
+    const QModelIndex nameA = model->index(0, 0);
+    QCOMPARE(model->data(nameA).toString(), QString("Alpha beta"));
+    // The column's formats (kNameFormatsRole): "beta" bold.
+    const auto formats = model->data(nameA, Qt::UserRole + 4).value<QList<QTextLayout::FormatRange>>();
+    QCOMPARE(formats.size(), 1);
+    QCOMPARE(formats.front().start, 6);
+    QCOMPARE(formats.front().length, 4);
+    QVERIFY(formats.front().format.fontWeight() >= QFont::Bold);
+    QVERIFY(model->data(model->index(1, 0), Qt::UserRole + 4).value<QList<QTextLayout::FormatRange>>().isEmpty());
+    const auto boldAt = [](const MindNode *node, int position) {
+        QTextDocument saved;
+        saved.setHtml(node->titleHtml);
+        QTextCursor cursor(&saved);
+        cursor.setPosition(position + 1);
+        return cursor.charFormat().fontWeight() >= QFont::Bold;
+    };
+
+    // The table's editor: the name with its bold; "**x**" typed becomes bold; renaming keeps "beta".
+    m_view->table()->edit(nameA);
+    auto *editor = m_view->table()->viewport()->findChild<GanttNameField *>();
+    QVERIFY(editor);
+    QCOMPARE(editor->text(), QString("Alpha beta"));
+    {
+        QTextCursor cursor(editor->document());
+        cursor.setPosition(8);
+        QVERIFY(cursor.charFormat().fontWeight() >= QFont::Bold);
+    }
+    editor->moveCursor(QTextCursor::End);
+    QTest::keyClicks(editor, QStringLiteral(" **x**"));
+    QCOMPARE(editor->text(), QString("Alpha beta x"));
+    if (const QString dir = qEnvironmentVariable("MENTIS_SNAPSHOT_DIR"); !dir.isEmpty())  // a look by eye
+        m_view->grab().save(dir + QStringLiteral("/feat124-gantt-editor.png"));
+    m_view->commitPendingEdit();
+    QCOMPARE(a->title, QString("Alpha beta x"));
+    QVERIFY(boldAt(a, 7));
+    QVERIFY(boldAt(a, 11));
+    QVERIFY(!boldAt(a, 2));
+    m_document->undo();
+    QCOMPARE(a->title, QString("Alpha beta"));
+
+    // Ctrl+B on a selection in the editor formats only it; Enter confirms.
+    m_view->table()->edit(model->index(1, 0));
+    editor = nullptr;  // the visible one (the closed editor is deleted later)
+    for (GanttNameField *field : m_view->table()->viewport()->findChildren<GanttNameField *>())
+        if (field->isVisible()) editor = field;
+    QVERIFY(editor);
+    QCOMPARE(editor->text(), QString("B"));
+    editor->selectAll();
+    QTest::keyClick(editor, Qt::Key_B, Qt::ControlModifier);
+    QTest::keyClick(editor, Qt::Key_Return);
+    MindNode *b = m_document->model()->nodeById("B");
+    QTRY_VERIFY(!b->titleHtml.isEmpty());
+    QCOMPARE(b->title, QString("B"));
+    QVERIFY(boldAt(b, 0));
+    m_document->undo();
+
+    const auto visibleEditor = [&]() -> GanttNameField * {
+        for (GanttNameField *field : m_view->table()->viewport()->findChildren<GanttNameField *>())
+            if (field->isVisible()) return field;
+        return nullptr;
+    };
+    // "- [ ] " typed at the start stays text: no checkbox (user, 2026-11-17).
+    m_view->table()->edit(model->index(1, 0));
+    QVERIFY((editor = visibleEditor()));
+    editor->moveCursor(QTextCursor::Start);
+    QTest::keyClicks(editor, QStringLiteral("- [ ] "));
+    QCOMPARE(editor->text(), QString("- [ ] B"));
+    QTest::keyClick(editor, Qt::Key_Return);
+    QTRY_COMPARE(b->title, QString("- [ ] B"));
+    QCOMPARE(b->task, MindNode::Task::None);
+    m_document->undo();
+    // A title holding a formula takes no format: Ctrl+B and "**" leave it as it is.
+    QVERIFY(m_document->setFormattedTitle(b, QStringLiteral("Area $x$ m"), QString()));
+    m_document->flushPendingStep();
+    m_view->refresh();
+    m_view->table()->edit(model->index(1, 0));
+    QVERIFY((editor = visibleEditor()));
+    editor->selectAll();
+    QTest::keyClick(editor, Qt::Key_B, Qt::ControlModifier);
+    QTest::keyClick(editor, Qt::Key_Return);
+    QCoreApplication::processEvents();
+    QCOMPARE(b->title, QString("Area $x$ m"));
+    QVERIFY(b->titleHtml.isEmpty());
+
+    // The task panel's name field: the same formats; renamed there, the bold stays.
+    m_view->selectTask("A");
+    m_view->togglePanel();
+    GanttNameField *name = m_view->panel()->nameField();
+    QCOMPARE(name->text(), QString("Alpha beta"));
+    name->setFocus();
+    name->moveCursor(QTextCursor::Start);
+    QTest::keyClicks(name, QStringLiteral("New "));
+    QTest::keyClick(name, Qt::Key_Return);
+    QCOMPARE(a->title, QString("New Alpha beta"));
+    if (const QString dir = qEnvironmentVariable("MENTIS_SNAPSHOT_DIR"); !dir.isEmpty())
+        m_view->grab().save(dir + QStringLiteral("/feat124-gantt-panel.png"));
+    QVERIFY(boldAt(a, 11));
+    QVERIFY(!boldAt(a, 1));
+}
+
 void GanttViewTest::keys() {
     setPlan({task("A", kMonday, 2), task("B", kMonday, 2)});
     QTreeView *table = m_view->table();
@@ -1020,12 +1229,29 @@ void GanttViewTest::keys() {
     QCOMPARE(m_document->model()->gantt().task("B")->parentId, QString("A"));
     QTest::keyClick(table, Qt::Key_Backtab);
     QVERIFY(m_document->model()->gantt().task("B")->parentId.isEmpty());
+    // The same keys in the name being typed: the name is kept and the task moves one level.
+    const auto typeName = [&](const QString &text) {
+        m_view->selectTask("B");
+        table->edit(table->currentIndex().siblingAtColumn(0));
+        auto *name = qobject_cast<GanttNameField *>(QApplication::focusWidget());
+        QVERIFY(name);
+        name->moveCursor(QTextCursor::End);
+        QTest::keyClicks(name, text);
+    };
+    typeName(QStringLiteral("1"));
+    QTest::keyClick(QApplication::focusWidget(), Qt::Key_Tab);
+    QTRY_COMPARE(m_document->model()->gantt().task("B")->parentId, QString("A"));
+    QCOMPARE(m_document->model()->nodeById("B")->title, QString("B1"));
+    typeName(QStringLiteral("2"));
+    QTest::keyClick(QApplication::focusWidget(), Qt::Key_Backtab, Qt::ShiftModifier);
+    QTRY_VERIFY(m_document->model()->gantt().task("B")->parentId.isEmpty());
+    QCOMPARE(m_document->model()->nodeById("B")->title, QString("B12"));
     QCOMPARE(m_document->model()->gantt().children({}), QStringList({"A", "B"}));
     m_view->selectTask("A");
     QTest::keyClick(table, Qt::Key_Return);  // new task after A, name open
     QCOMPARE(m_document->model()->gantt().children({}).size(), 3);
     QCOMPARE(m_document->model()->gantt().children({}).at(2), QString("B"));
-    QVERIFY(qobject_cast<QLineEdit *>(QApplication::focusWidget()));
+    QVERIFY(qobject_cast<GanttNameField *>(QApplication::focusWidget()));
     QTest::keyClick(QApplication::focusWidget(), Qt::Key_Escape);
     // A name confirmed with Enter keeps the focus in the table: the next Enter adds another task.
     QTest::keyClick(table, Qt::Key_Return);
@@ -1236,6 +1462,20 @@ void GanttViewTest::columns() {
     GanttView other(m_document.get(), m_shortcuts.get());
     QVERIFY(other.table()->header()->isSectionHidden(1));
     QVERIFY(!other.table()->header()->isSectionHidden(2));
+    // A dragged width (user's request 2026-11-23): kept as an app setting, never under 48 px, the
+    // minimum width following it; a hidden column keeps its width.
+    const int wide = m_view->table()->minimumWidth();
+    header->resizeSection(2, 150);
+    QCOMPARE(m_view->table()->minimumWidth(), wide + 150 - 96);
+    QCOMPARE(GanttColumns::width(GanttColumns::Field::End), 150);
+    header->resizeSection(4, 10);
+    QCOMPARE(header->sectionSize(4), GanttColumns::kMinWidth);
+    QCOMPARE(GanttColumns::width(GanttColumns::Field::Progress), GanttColumns::kMinWidth);
+    m_view->setColumnShown(2, false);
+    QCOMPARE(GanttColumns::width(GanttColumns::Field::End), 150);
+    m_view->setColumnShown(2, true);
+    GanttView third(m_document.get(), m_shortcuts.get());
+    QCOMPARE(third.table()->header()->sectionSize(2), 150);
 }
 
 // FEAT-078: the columns after Name can be dragged; No., Name and Extras stay first (user, 2026-10-29).
@@ -1507,7 +1747,7 @@ void GanttViewTest::panelTheme() {
     m_view->refresh();
     GanttTaskPanel *panel = m_view->panel();
     m_view->togglePanel();
-    QLineEdit *name = panel->nameField();
+    GanttNameField *name = panel->nameField();
     for (const bool dark : {true, false, true}) {
         m_view->setDark(dark);
         const GanttColors colors = dark ? GanttColors::dark() : GanttColors::light();
@@ -2338,6 +2578,160 @@ void GanttViewTest::sheetColours() {
     QVERIFY(!GanttPlan().toJson().contains("taskColor"));
 }
 
+void GanttViewTest::borderColour() {
+    // FEAT-080: the border's colour, the sheet's by kind and the task's own (user, 2026-11-22).
+    setPlan({task("A", kMonday, 3), task("B", kMonday, 3), task("M", kMonday, 0)});
+    m_view->refresh();
+    GanttChart *chart = m_view->chart();
+    chart->setCriticalShown(false);
+    // The pixel nearest to colour on the bar's top edge. The 1.5 px border is antialiased, a mix with
+    // the bar and the backdrop: a border drawn in colour comes at least twice as near as another one.
+    const auto distance = [chart](const QString &id, const QColor &colour) {
+        const QRectF bar = chart->barRect(id);
+        const QImage image = chart->viewport()->grab().toImage();
+        int best = 1000;
+        for (int y = int(std::floor(bar.top())) - 2; y <= int(std::ceil(bar.top())) + 2; ++y) {
+            const QColor pixel = image.pixelColor(int(bar.center().x()), y);
+            best = std::min(best, std::abs(pixel.red() - colour.red()) + std::abs(pixel.green() - colour.green())
+                                      + std::abs(pixel.blue() - colour.blue()));
+        }
+        return best;
+    };
+    m_view->openPanel("B");
+    GanttTaskPanel *panel = m_view->panel();
+    panel->showPage(GanttTaskPanel::Page::Gantt);
+    using Kind = GanttPlan::BarKind;
+    ColorField *tasks = panel->defaultBorderColorField(Kind::Task);
+    QVERIFY(panel->findChild<QWidget *>("GanttSectionTasks")->isAncestorOf(tasks));
+    QVERIFY(panel->findChild<QWidget *>("GanttSectionMilestones")->isAncestorOf(panel->defaultBorderColorField(Kind::Milestone)));
+    QCOMPARE(tasks->color(), GanttCanvas::defaultOutlineColor(m_document->model()->gantt(), Kind::Task));  // automatic
+    QVERIFY(tasks->color() != QColor(0xf9, 0xbd, 0x89) && !tasks->isManual());
+    QVERIFY(panel->defaultBorderColorReset(Kind::Task)->isHidden());
+    const QColor blue("#1d4ed8"), red("#dc2626");
+    const int automaticA = distance("A", blue), automaticM = distance("M", blue);
+    emit tasks->colorChosen(blue);
+    m_view->refresh();
+    QCOMPARE(m_document->model()->gantt().defaultBorderColor(Kind::Task), blue);
+    const int blueA = distance("A", blue);
+    QVERIFY(2 * blueA < automaticA);
+    QCOMPARE(distance("B", blue), blueA);
+    QCOMPARE(distance("M", blue), automaticM);  // milestones keep theirs
+    QVERIFY(tasks->isManual() && !panel->defaultBorderColorReset(Kind::Task)->isHidden());
+    QCOMPARE(m_document->model()->gantt().toJson().value("taskBorderColor").toString(), QString("#1d4ed8"));
+
+    // The Task page: the sheet's colour, then B's own, which the sheet's no longer changes.
+    panel->showPage(GanttTaskPanel::Page::Task);
+    QCOMPARE(panel->ownBorderColorField()->color(), blue);
+    QVERIFY(panel->defaultBorderColorButton()->isHidden());
+    emit panel->ownBorderColorField()->colorChosen(red);
+    m_view->refresh();
+    QCOMPARE(m_document->model()->gantt().task("B")->borderColor, red);
+    QCOMPARE(m_document->model()->nodeById("B")->ganttBorderColor, red);  // kept on the topic, saved with it
+    const int redB = distance("B", red);
+    QVERIFY(2 * redB < distance("B", blue));
+    QCOMPARE(distance("A", blue), blueA);
+    QVERIFY(!panel->defaultBorderColorButton()->isHidden());
+    QCOMPARE(m_document->model()->gantt().toJson().value("tasks").toArray().at(1).toObject().value("borderColor").toString(),
+             QString("#dc2626"));
+    const QColor green("#16a34a");
+    const int notGreen = distance("B", green);
+    emit tasks->colorChosen(green);
+    m_view->refresh();
+    QCOMPARE(distance("B", red), redB);
+    // × back to the sheet's, one step; Undo brings the own colour back.
+    panel->defaultBorderColorButton()->click();
+    m_view->refresh();
+    QVERIFY(!m_document->model()->gantt().task("B")->borderColor.isValid());
+    QVERIFY(2 * distance("B", green) < notGreen);
+    m_document->undo();
+    m_view->refresh();
+    QCOMPARE(m_document->model()->gantt().task("B")->borderColor, red);
+    QCOMPARE(panel->ownBorderColorField()->color(), red);
+    // Several tasks: a colour they share, none when they differ; a choice sets it on all of them.
+    QTest::mouseClick(chart->viewport(), Qt::LeftButton, {}, chart->barRect("A").center().toPoint());
+    QTest::mouseClick(chart->viewport(), Qt::LeftButton, Qt::ControlModifier, chart->barRect("B").center().toPoint());
+    QCOMPARE(panel->targets().size(), 2);
+    QVERIFY(panel->ownBorderColorField()->isMixed());
+    QVERIFY(!panel->defaultBorderColorButton()->isHidden());
+    emit panel->ownBorderColorField()->colorChosen(blue);
+    QCOMPARE(m_document->model()->gantt().task("A")->borderColor, blue);
+    QCOMPARE(m_document->model()->gantt().task("B")->borderColor, blue);
+    // The sheet's × back to automatic.
+    panel->showPage(GanttTaskPanel::Page::Gantt);
+    panel->defaultBorderColorReset(Kind::Task)->click();
+    QVERIFY(!m_document->model()->gantt().defaultBorderColor(Kind::Task).isValid());
+    QVERIFY(!m_document->model()->gantt().toJson().contains("taskBorderColor"));
+    // File: invalid or translucent colours are dropped, one repair each.
+    int repairs = 0;
+    const GanttPlan read = GanttPlan::fromJson(
+        QJsonObject{{"summaryBorderColor", "nope"},
+                    {"milestoneBorderColor", "#80ff0000"},
+                    {"tasks", QJsonArray{QJsonObject{{"id", "T"}, {"name", "T"}, {"borderColor", "#80ff0000"}}}}},
+        &repairs);
+    QCOMPARE(repairs, 3);
+    QVERIFY(!read.defaultBorderColor(Kind::Summary).isValid() && !read.task("T")->borderColor.isValid());
+    QCOMPARE(GanttPlan::fromJson(m_document->model()->gantt().toJson()).task("A")->borderColor, blue);
+}
+
+void GanttViewTest::linkColour() {
+    // FEAT-080: the colour of every arrow of the sheet (user, 2026-11-22); critical ones stay red.
+    GanttDependency late = dependency("A", "B");
+    late.lag = 3;  // a long last segment on B's row, still in view
+    setPlan({task("A", kMonday, 1), task("B", kMonday, 1)}, {late});
+    m_view->refresh();
+    GanttChart *chart = m_view->chart();
+    chart->setCriticalShown(false);
+    m_view->togglePanel();
+    GanttTaskPanel *panel = m_view->panel();
+    panel->showPage(GanttTaskPanel::Page::Gantt);
+    ColorField *field = panel->linkColorField();
+    QVERIFY(panel->findChild<QWidget *>("GanttSectionRelations")->isAncestorOf(field));
+    QCOMPARE(field->color(), GanttCanvas::linkColor(GanttPlan()));  // the view's grey
+    QVERIFY(!field->isManual() && panel->linkColorReset()->isHidden());
+    // The pixel in the middle of the last segment, nearest to colour across the line.
+    const auto distance = [chart](const QColor &colour) {
+        const QPolygonF path = chart->arrowPath(0);
+        const int x = qRound((path.last().x() + path.at(path.size() - 2).x()) / 2), y = qRound(path.last().y());
+        const QImage image = chart->viewport()->grab().toImage();
+        int best = 1000;
+        for (int dy = -1; dy <= 1; ++dy) {
+            const QColor pixel = image.pixelColor(x, y + dy);
+            best = std::min(best, std::abs(pixel.red() - colour.red()) + std::abs(pixel.green() - colour.green())
+                                      + std::abs(pixel.blue() - colour.blue()));
+        }
+        return best;
+    };
+    const QColor blue("#1d4ed8");
+    // Bold, so the line's middle row is not an antialiased mix with the backdrop.
+    QVERIFY(m_document->editGantt([](GanttPlan &plan) { return plan.setLinkWidth(GanttPlan::LinkWidth::Bold); }));
+    m_view->refresh();
+    const int grey = distance(blue);
+    emit field->colorChosen(blue);
+    m_view->refresh();
+    QCOMPARE(m_document->model()->gantt().linkColor(), blue);
+    QVERIFY(4 * distance(blue) < grey);
+    QVERIFY(field->isManual() && !panel->linkColorReset()->isHidden());
+    QCOMPARE(m_document->model()->gantt().toJson().value("linkColor").toString(), QString("#1d4ed8"));
+    QCOMPARE(GanttPlan::fromJson(m_document->model()->gantt().toJson()).linkColor(), blue);
+    // Critical arrows keep their red.
+    chart->setCriticalShown(true);
+    m_view->refresh();
+    QVERIFY(distance(GanttCanvas::criticalColor()) < distance(blue));
+    chart->setCriticalShown(false);
+    // × back to grey, one step; Undo brings the colour back.
+    panel->linkColorReset()->click();
+    QVERIFY(!m_document->model()->gantt().linkColor().isValid());
+    QVERIFY(!m_document->model()->gantt().toJson().contains("linkColor"));
+    QVERIFY(panel->linkColorReset()->isHidden());
+    m_document->undo();
+    QCOMPARE(m_document->model()->gantt().linkColor(), blue);
+    QCOMPARE(field->color(), blue);
+    // File: an invalid or translucent colour is dropped.
+    int repairs = 0;
+    QVERIFY(!GanttPlan::fromJson(QJsonObject{{"linkColor", "#80ff0000"}}, &repairs).linkColor().isValid());
+    QCOMPARE(repairs, 1);
+}
+
 void GanttViewTest::linkedMove() {
     // Start to start: B starts with A; dragging B or typing its start changes the lag (user, 2026-10-27).
     GanttDependency link = dependency("A", "B");
@@ -2514,6 +2908,9 @@ void GanttViewTest::taskPanel() {
     QCOMPARE(panel->priorityField()->itemText(1), QString("Very low"));
     QCOMPARE(panel->priorityField()->itemText(5), QString("Very high"));
     // The select opens the app's list (FloatingListPopup) below it; a click on a level applies it.
+    // The Style section closed, so the field is high enough on the test's screen for the list to fit below.
+    panel->setSectionOpen(QStringLiteral("GanttSectionStyle"), false);
+    QApplication::sendPostedEvents();  // the panel laid out again
     panel->priorityField()->showPopup();
     auto *list = QApplication::activePopupWidget() ? QApplication::activePopupWidget()->findChild<QListWidget *>() : nullptr;
     QVERIFY(list);
@@ -3071,7 +3468,7 @@ void GanttViewTest::numberCells() {
     QTRY_VERIFY(!table->viewport()->findChild<NumberField *>());
     m_document->undo();
     QCOMPARE(m_document->model()->gantt().task("A")->duration, 3);
-    // % is 52 px wide: the editor grows so −, + and "100" fit; a typed value is kept in range.
+    // Progress: −, + and "100" fit in the editor; a typed value is kept in range.
     m_view->refresh();
     table->header()->showSection(4);  // hidden by default
     const QModelIndex progress = table->model()->index(0, 4);
@@ -3079,7 +3476,7 @@ void GanttViewTest::numberCells() {
     table->edit(progress);
     field = table->viewport()->findChild<NumberField *>();
     QVERIFY(field);
-    QVERIFY(field->width() > table->visualRect(progress).width());
+    QVERIFY(field->width() >= table->visualRect(progress).width());
     QVERIFY(field->width() >= 2 * NumberField::kButtonPx + field->fontMetrics().horizontalAdvance("100"));
     QTest::keyClicks(field, "250");
     QTest::keyClick(field, Qt::Key_Return);
@@ -3531,7 +3928,7 @@ void GanttViewTest::panelRemove() {
         QTimer::singleShot(0, [confirm] {
             auto *modal = qobject_cast<ModalDialog *>(QApplication::activeModalWidget());
             QVERIFY(modal);
-            (confirm ? modal->acceptButton() : modal->cancelButton())->click();
+            (confirm ? modal->acceptButton() : modal->closeButton())->click();
         });
     };
     answer(false);  // Cancel: nothing deleted
@@ -3550,10 +3947,10 @@ void GanttViewTest::panelRemove() {
 void GanttViewTest::resourcesDialog() {
     const QLocale locale;
     QLocale::setDefault(QLocale(QLocale::Italian, QLocale::Italy));
-    QCOMPARE(ResourcesDialog::formatCost(4500, "€").remove(QChar(0x00a0)).remove(' '), QString("45,00€"));
+    QCOMPARE(GanttResources::formatCost(4500, "€").remove(QChar(0x00a0)).remove(' '), QString("45,00€"));
     QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
-    QCOMPARE(ResourcesDialog::formatCost(4500, "€"), QString("€45.00"));
-    QVERIFY(ResourcesDialog::formatCost(4500, "CHF").contains("CHF"));
+    QCOMPARE(GanttResources::formatCost(4500, "€"), QString("€45.00"));
+    QVERIFY(GanttResources::formatCost(4500, "CHF").contains("CHF"));
 
     GanttResources start;
     start.people = {{"id-1", "Anna", "Rossi", "anna@example.com", "Developer", 4500}};
@@ -3563,6 +3960,13 @@ void GanttViewTest::resourcesDialog() {
     dialog.resize(1200, 900);
     dialog.show();
     QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+    // BUG-058: the scrolled column paints no ground of its own: the modal's dark surface shows.
+    {
+        auto *scroll = dialog.findChild<QScrollArea *>(QStringLiteral("ResourcesScroll"));
+        QVERIFY(scroll && scroll->widget());
+        QVERIFY(!scroll->widget()->autoFillBackground());
+        QVERIFY(!scroll->viewport()->autoFillBackground());
+    }
     QTableWidget *table = dialog.table();
     // The open cell editor (a closed one waits for its deferred delete, hidden).
     const auto cellEditor = [table]() -> QLineEdit * {
@@ -3575,7 +3979,8 @@ void GanttViewTest::resourcesDialog() {
     QCOMPARE(table->viewport()->height(), ResourcesDialog::kMinVisibleRows * ResourcesDialog::kRowHeightPx);
     QCOMPARE(table->model()->index(0, ResourcesDialog::HourlyCost).data(Qt::DisplayRole).toLongLong(), 4500);
     QVERIFY(dialog.saturdaySwitch()->isChecked() && dialog.sundaySwitch()->isChecked());
-    QCOMPARE(dialog.hoursField()->value(), 8.0);
+    QCOMPARE(dialog.dayLengthField()->value(), 480.0);
+    QCOMPARE(dialog.dayLengthField()->text(), QString("8.00"));
     QCOMPARE(dialog.resources(), start);  // nothing changed: the same list, the same id
     QCOMPARE(dialog.calendar(), calendar);
 
@@ -3620,16 +4025,21 @@ void GanttViewTest::resourcesDialog() {
     QTest::keyClicks(editor, "38.5");
     QTest::keyClick(editor, Qt::Key_Tab);
     QCOMPARE(table->item(1, ResourcesDialog::HourlyCost)->data(Qt::EditRole).toLongLong(), 3850);
-    // The currency: the four listed, then "+ Add currency..." (resourcesButton adds one).
-    QComboBox *currency = dialog.currencySelect();
-    QVERIFY(!currency->isEditable());
+    // FEAT-128: each row's currency: the four listed, then "+ Add currency..." (resourcesButton adds one).
+    QCOMPARE(table->horizontalHeaderItem(ResourcesDialog::Currency)->text(), QString("Currency"));
+    QComboBox *currency = dialog.currencySelect(1);
+    QVERIFY(currency && !currency->isEditable());
+    for (QComboBox *select : dialog.findChildren<QComboBox *>(QStringLiteral("ResourcesCurrency")))
+        QVERIFY(table->isAncestorOf(select));  // none by the title any more
     QCOMPARE(currency->currentText(), QString("EUR €"));
     QCOMPARE(currency->count(), 5);
     QCOMPARE(currency->itemText(3), QString("CHF"));
-    QCOMPARE(dialog.addCurrencyItem(), 4);
+    QCOMPARE(dialog.addCurrencyItem(1), 4);
     QCOMPARE(currency->itemText(4), QString("+ Add currency…"));
     currency->setCurrentIndex(1);
     QCOMPARE(currency->currentText(), QString("USD $"));
+    QCOMPARE(dialog.currencySelect(0)->currentText(), QString("EUR €"));  // Anna's unchanged
+    QVERIFY(!dialog.currencySelect(5));
     QVERIFY(table->model()->index(1, ResourcesDialog::HourlyCost).data(Qt::DisplayRole).isValid());
 
     // An empty row is dropped and does not disable Save; the × removes a row.
@@ -3639,8 +4049,10 @@ void GanttViewTest::resourcesDialog() {
     QCOMPARE(table->rowCount(), 3);
     QVERIFY(dialog.acceptButton()->isEnabled());
     QVERIFY(table->item(2, ResourcesDialog::FirstName)->toolTip().isEmpty());
+    QCOMPARE(dialog.currencySelect(2)->currentText(), QString("USD $"));  // the last person's
     GanttResources result = dialog.resources();
-    QCOMPARE(result.currency, QString("USD"));
+    QCOMPARE(result.people[0].currency, GanttCurrency());
+    QCOMPARE(result.people[1].currency, (GanttCurrency{"USD", "$"}));
     QCOMPARE(result.people.size(), 2);
     QCOMPARE(result.people[0].id, QString("id-1"));
     QCOMPARE(result.people[1].firstName, QString("Marco"));
@@ -3657,6 +4069,7 @@ void GanttViewTest::resourcesDialog() {
     QCOMPARE(table->item(1, ResourcesDialog::FirstName)->text(), QString("Anna"));
     QCOMPARE(dialog.resources().people.value(1).id, QString("id-1"));
     QCOMPARE(dialog.resources().people.value(0).hourlyCostCents, 3850);
+    QCOMPARE(dialog.currencySelect(0)->currentText(), QString("USD $"));  // moved with Marco
     QVERIFY(table->cellWidget(0, ResourcesDialog::Remove)->findChild<QToolButton *>(QStringLiteral("ResourcesRemove")));
     QVERIFY(dialog.acceptButton()->isEnabled());
     dialog.movePerson(0, 1);
@@ -3676,22 +4089,142 @@ void GanttViewTest::resourcesDialog() {
     // Working week: Saturday and Sunday off, 6 h 30; the holiday stays.
     dialog.saturdaySwitch()->click();
     dialog.sundaySwitch()->click();
-    dialog.hoursField()->setValue(6);
-    dialog.minutesSelect()->setCurrentIndex(dialog.minutesSelect()->findData(30));
+    NumberField *length = dialog.dayLengthField();
+    length->setText("6.3");  // one digit after the point: tens of minutes
+    emit length->editingFinished();
     GanttCalendar week = dialog.calendar();
     QCOMPARE(week.workingDays, QSet<int>({1, 2, 3, 4, 5}));
     QCOMPARE(week.minutesPerDay, 6 * 60 + 30);
-    dialog.hoursField()->setValue(24);  // 24 h 30 is cut to 24 h, 0 h 00 raised to a quarter hour
+    QCOMPARE(length->text(), QString("6.30"));
+    // − and + by a quarter hour, across the hour.
+    QTest::mouseClick(length, Qt::LeftButton, {}, length->plusRect().center());
+    QTest::mouseClick(length, Qt::LeftButton, {}, length->plusRect().center());
+    QCOMPARE(length->text(), QString("7.00"));
+    QTest::mouseClick(length, Qt::LeftButton, {}, length->minusRect().center());
+    QCOMPARE(length->text(), QString("6.45"));
+    QCOMPARE(dialog.calendar().minutesPerDay, 6 * 60 + 45);
+    length->setText("8.10");  // to the nearest quarter hour
+    emit length->editingFinished();
+    QCOMPARE(dialog.calendar().minutesPerDay, 8 * 60 + 15);
+    length->setText("8.70");  // not a minute: the value of before
+    emit length->editingFinished();
+    QCOMPARE(length->text(), QString("8.15"));
+    length->setText("30");  // cut to 24 h, 0 raised to a quarter hour
+    emit length->editingFinished();
     QCOMPARE(dialog.calendar().minutesPerDay, 1440);
-    dialog.hoursField()->setValue(0);
-    dialog.minutesSelect()->setCurrentIndex(0);
+    length->setText("0");
+    emit length->editingFinished();
     QCOMPARE(dialog.calendar().minutesPerDay, 15);
+    QCOMPARE(length->text(), QString("0.15"));
     week = dialog.calendar();
     QCOMPARE(week.holidays, calendar.holidays);
     QLocale::setDefault(locale);
 }
 
 // FEAT-079: the button opens the modal; Save is one step that Undo takes back, Cancel changes nothing.
+void GanttViewTest::resourceCharts() {
+    // FEAT-127: the charts beside the people when the window holds 1060 px, under them otherwise;
+    // the summary, a person chosen by a click, back by their number or an empty part; live; hidden
+    // and kept; the empty text.
+    const QLocale locale;
+    QLocale::setDefault(QLocale(QLocale::English, QLocale::UnitedStates));
+    const auto restore = qScopeGuard([locale] {
+        QLocale::setDefault(locale);
+        QSettings().remove(QLatin1String(ResourcesDialog::kChartsSetting));
+    });
+    QSettings().remove(QLatin1String(ResourcesDialog::kChartsSetting));
+    GanttCalendar calendar;
+    calendar.workingDays = {1, 2, 3, 4, 5};
+    GanttPlan plan;
+    QVERIFY(plan.setCalendar(calendar));
+    plan.addTask(task("A", kMonday, 3));
+    plan.addTask(task("B", kMonday, 2));
+    GanttResources resources;
+    resources.people = {{"p1", "Anna", "Rossi", {}, "Dev", 6000}, {"p2", "Marco", "Bianchi", {}, "Design", 3000}};
+    const GanttAssignments assignments{{"A", {{"p1", 100}, {"p2", 100}}}, {"B", {{"p1", 100}}}};
+    ResourcesDialog dialog(nullptr, resources, calendar, plan, assignments, GanttCanvas::Scale::Days);
+    dialog.resize(1200, 900);
+    dialog.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+    PeopleChartsPanel *charts = dialog.charts();
+    QVERIFY(dialog.chartsShown());
+    QVERIFY(dialog.chartsBeside());
+    QCOMPARE(dialog.surfaceRect().width(), ResourcesDialog::kWideSurfaceWidthPx);
+    QCOMPARE(charts->width(), PeopleChartsPanel::kWidthPx);
+    // The summary: p1 5 days x 8 h x 60.00 + p2 3 days x 8 h x 30.00.
+    QVERIFY(charts->summaryPage()->isVisible());
+    QVERIFY(!charts->personPage()->isVisible());
+    QCOMPARE(charts->costLabel()->text(), QString("€3,120"));
+    QCOMPARE(charts->personDaysLabel()->text(), QString("8.0"));
+    QCOMPARE(charts->charts().days.size(), 2);
+    QCOMPARE(charts->charts().roleBars.size(), 1);
+    QCOMPARE(charts->charts().roleBars.at(0).roles.size(), 2);
+
+    // A click on Anna's row shows her; on her number again, the summary.
+    QTableWidget *table = dialog.table();
+    QTest::mouseClick(table->viewport(), Qt::LeftButton, {}, table->visualItemRect(table->item(0, ResourcesDialog::Role)).center());
+    QCOMPARE(dialog.chartRow(), 0);
+    QVERIFY(charts->personPage()->isVisible());
+    QCOMPARE(charts->nameLabel()->text(), QString("Anna Rossi"));
+    QCOMPARE(charts->personLineLabel()->text(), QString("2 tasks · 5 days · €2,400"));
+    QCOMPARE(charts->charts().people.at(0).load.size(), 3);
+    QVERIFY(charts->charts().people.at(0).load.at(0).overloaded());  // A and B on Monday
+    QHeaderView *numbers = table->verticalHeader();
+    QTest::mousePress(numbers->viewport(), Qt::LeftButton, {}, QPoint(numbers->width() / 2, numbers->sectionViewportPosition(0) + 4));
+    QTest::mouseRelease(numbers->viewport(), Qt::LeftButton, {}, QPoint(numbers->width() / 2, numbers->sectionViewportPosition(0) + 4));
+    QCOMPARE(dialog.chartRow(), -1);
+    QVERIFY(charts->summaryPage()->isVisible());
+    QTest::mouseClick(table->viewport(), Qt::LeftButton, {}, table->visualItemRect(table->item(1, ResourcesDialog::Role)).center());
+    QCOMPARE(dialog.chartRow(), 1);
+    QTest::mouseClick(table->viewport(), Qt::LeftButton, {}, QPoint(10, table->viewport()->height() - 4));  // under the rows
+    QCOMPARE(dialog.chartRow(), -1);
+
+    // Live: Marco's cost changed in the modal.
+    table->item(1, ResourcesDialog::HourlyCost)->setData(Qt::EditRole, qint64(6000));
+    QCOMPARE(charts->costLabel()->text(), QString("€3,840"));
+    dialog.sundaySwitch()->setChecked(true);  // the working week too: nothing on Sunday here
+    QCOMPARE(charts->costLabel()->text(), QString("€3,840"));
+    // FEAT-128: Marco paid in dollars: a line and a role bar per currency.
+    dialog.currencySelect(1)->setCurrentIndex(1);
+    QCOMPARE(charts->costLabel()->text(), QString("€2,400\n$1,440"));
+    QCOMPARE(charts->charts().roleBars.size(), 2);
+    dialog.currencySelect(1)->setCurrentIndex(0);
+    QCOMPARE(charts->costLabel()->text(), QString("€3,840"));
+
+    // Narrower: under the people, the modal at 760 px.
+    dialog.resize(900, 900);
+    QTRY_VERIFY(!dialog.chartsBeside());
+    QCOMPARE(dialog.surfaceRect().width(), 760);
+    QVERIFY(charts->isVisible());
+
+    // Hidden, and kept for the next modal.
+    dialog.chartsButton()->click();
+    QVERIFY(!dialog.chartsShown());
+    QVERIFY(!charts->isVisible());
+    QCOMPARE(dialog.chartsButton()->toolTip(), QString("Show charts"));
+    QCOMPARE(QSettings().value(QLatin1String(ResourcesDialog::kChartsSetting)).toBool(), false);
+    dialog.resize(1200, 900);
+    QTRY_COMPARE(dialog.surfaceRect().width(), 760);
+    {
+        ResourcesDialog again(nullptr, resources, calendar, plan, assignments);
+        QVERIFY(!again.chartsShown());
+        QVERIFY(!again.chartsButton()->isChecked());
+    }
+    dialog.chartsButton()->click();
+    QVERIFY(dialog.chartsShown());
+    QCOMPARE(dialog.chartsButton()->toolTip(), QString("Hide charts"));
+    QTRY_VERIFY(dialog.chartsBeside());
+
+    // Nobody on a task: the empty text.
+    ResourcesDialog empty(nullptr, resources, calendar, plan, {});
+    empty.resize(1200, 900);
+    empty.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&empty));
+    QVERIFY(empty.charts()->emptyLabel()->isVisible());
+    QCOMPARE(empty.charts()->emptyLabel()->text(), QString("Assign people to tasks to see their charts"));
+    QVERIFY(!empty.charts()->summaryPage()->isVisible());
+}
+
 void GanttViewTest::resourcesButton() {
     MainWindow window;
     window.resize(1400, 800);
@@ -3715,7 +4248,7 @@ void GanttViewTest::resourcesButton() {
     // "+ Add currency..." opens the Add currency modal (after the list has closed).
     const auto addCurrency = [](ResourcesDialog *dialog, const std::function<void(ModalDialog *)> &act) {
         bool seen = false;
-        dialog->currencySelect()->setCurrentIndex(dialog->addCurrencyItem());
+        dialog->currencySelect(0)->setCurrentIndex(dialog->addCurrencyItem(0));
         QTimer::singleShot(0, [&] {
             auto *add = qobject_cast<ModalDialog *>(QApplication::activeModalWidget());
             QVERIFY(add && add != dialog);
@@ -3749,14 +4282,14 @@ void GanttViewTest::resourcesButton() {
         QTRY_COMPARE(dialog->table()->item(0, ResourcesDialog::Role)->text(), QString("Developer"));
         QVERIFY(dialog->acceptButton()->isEnabled());
         dialog->sundaySwitch()->click();
-        QComboBox *select = dialog->currencySelect();
-        // Cancelled: the shown currency stays, nothing saved.
+        QComboBox *select = dialog->currencySelect(0);
+        // Cancelled: the person's currency stays, nothing saved.
         addCurrency(dialog, [](ModalDialog *add) {
             QVERIFY(!add->acceptButton()->isEnabled());  // no code yet
             add->reject();
         });
         QCOMPARE(select->currentText(), QString("EUR €"));
-        QCOMPARE(dialog->resources().currency, QString("EUR"));
+        QCOMPARE(dialog->resources().people.value(0).currency, GanttCurrency());
         // A listed one is not added: the note says so and Add is off. Spaces are not typed.
         addCurrency(dialog, [&](ModalDialog *add) {
             typeCurrency(add, "USD", "US $");
@@ -3771,23 +4304,33 @@ void GanttViewTest::resourcesButton() {
             QVERIFY(add->acceptButton()->isEnabled());
             add->accept();
         });
-        // Added: saved on the computer at once, chosen, before "+ Add currency...".
+        // Added: saved on the computer at once, chosen for the row, before "+ Add currency...".
         QCOMPARE(GanttResources::savedCurrencies(), QStringList{"RON lei"});
         QCOMPARE(select->count(), 6);
         QCOMPARE(select->currentText(), QString("RON lei"));
-        QCOMPARE(dialog->addCurrencyItem(), 5);
-        // Removed while chosen, not the document's: its row goes at once, back to the document's.
-        dialog->removeSavedCurrency(4);
+        QCOMPARE(dialog->addCurrencyItem(0), 5);
+        QVERIFY(select->itemData(4, Qt::ToolTipRole).isValid());  // its ×
+        // Removed while chosen: off the computer, the person keeps it (offered without ×).
+        dialog->removeSavedCurrency(0, 4);
         QVERIFY(GanttResources::savedCurrencies().isEmpty());
-        QCOMPARE(select->count(), 5);
-        QCOMPARE(select->currentText(), QString("EUR €"));
+        QCOMPARE(select->count(), 6);
+        QCOMPARE(select->currentText(), QString("RON lei"));
+        QVERIFY(!select->itemData(4, Qt::ToolTipRole).isValid());
         QCoreApplication::processEvents();
         QCOMPARE(QApplication::activeModalWidget(), dialog);  // the Add currency modal not opened
+        // Added again: its row becomes the saved one, not a second row.
         addCurrency(dialog, [&](ModalDialog *add) {
             typeCurrency(add, "RON", "lei");
             add->accept();
         });
-        QCOMPARE(dialog->resources().currencySymbol, QString("lei"));
+        QCOMPARE(select->count(), 6);
+        QVERIFY(select->itemData(4, Qt::ToolTipRole).isValid());
+        // A second person takes the first one's currency; every row offers the saved one.
+        dialog->addPerson();
+        QCOMPARE(dialog->currencySelect(1)->currentText(), QString("RON lei"));
+        QCOMPARE(dialog->currencySelect(1)->count(), 6);
+        dialog->table()->cellWidget(1, ResourcesDialog::Remove)->findChild<QToolButton *>()->click();
+        QCOMPARE(dialog->resources().people.value(0).currency, (GanttCurrency{"RON", "lei"}));
         dialog->accept();
     });
     QCOMPARE(document->resources().people.value(0).firstName, QString("Anna"));
@@ -3797,42 +4340,29 @@ void GanttViewTest::resourcesButton() {
     QVERIFY(document->resources().people.isEmpty());
     QVERIFY(document->model()->gantt().calendar().workingDays.contains(Qt::Sunday));
     QCOMPARE(document->redo().outcome, Document::StepOutcome::Applied);
-    QCOMPARE(document->resources().currencyText(), QString("RON lei"));
+    QCOMPARE(document->resources().people.value(0).currency.text(), QString("RON lei"));
     QCOMPARE(GanttResources::savedCurrencies(), QStringList{"RON lei"});
 
-    // The document's own currency removed from the computer: its row stays, without the ×.
+    // A person's currency removed from the computer: still offered, without the ×.
     int rows = 0, rowsHeight = 0;
     openAnd([&](ResourcesDialog *dialog) {
-        QComboBox *select = dialog->currencySelect();
+        QComboBox *select = dialog->currencySelect(0);
         QCOMPARE(select->currentText(), QString("RON lei"));  // read from the document
         QCOMPARE(select->count(), 6);
         // In the main window's style too: three whole rows with Anna alone (user's picture, 2026-10-30).
         rows = dialog->table()->rowCount();
         rowsHeight = dialog->table()->viewport()->height();
-        dialog->removeSavedCurrency(4);
-        QVERIFY(GanttResources::savedCurrencies().isEmpty());
-        QCOMPARE(select->count(), 6);
-        QVERIFY(!select->itemData(4, Qt::ToolTipRole).isValid());
-        // Added again while chosen: its row becomes the saved one, not a second row.
-        addCurrency(dialog, [&](ModalDialog *add) {
-            typeCurrency(add, "RON", "lei");
-            add->accept();
-        });
-        QCOMPARE(GanttResources::savedCurrencies(), QStringList{"RON lei"});
-        QCOMPARE(select->count(), 6);
-        QCOMPARE(select->currentText(), QString("RON lei"));
-        QVERIFY(select->itemData(4, Qt::ToolTipRole).isValid());  // its ×
-        QCoreApplication::processEvents();
-        QCOMPARE(QApplication::activeModalWidget(), dialog);  // the Add currency modal not opened again
-        // A click on the × removes it from the computer and does not choose it; the document's row stays.
+        // A click on the × removes it from the computer and does not choose it.
         select->setCurrentIndex(0);
+        QCOMPARE(dialog->resources().people.value(0).currency, GanttCurrency());
         select->showPopup();
         QAbstractItemView *list = select->view();
         QTRY_VERIFY(list->isVisible());
         const QRect row = list->visualRect(list->model()->index(4, 0));
         QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, QPoint(row.right() - 12, row.center().y()));
-        QCOMPARE(select->count(), 6);
+        QCOMPARE(select->count(), 6);  // the currency the modal opened with
         QCOMPARE(select->currentText(), QString("EUR €"));
+        QVERIFY(!select->itemData(4, Qt::ToolTipRole).isValid());
         QVERIFY(GanttResources::savedCurrencies().isEmpty());
         select->hidePopup();
         dialog->reject();  // removing a currency does not wait for the modal's Save
@@ -3841,10 +4371,10 @@ void GanttViewTest::resourcesButton() {
     QCOMPARE(rowsHeight, ResourcesDialog::kMinVisibleRows * ResourcesDialog::kRowHeightPx);
     QVERIFY(GanttResources::savedCurrencies().isEmpty());
 
-    // Another currency removed with the × while chosen: its row goes, the choice back to the document's.
+    // Another currency removed with the × while chosen: the person keeps it.
     openAnd([&](ResourcesDialog *dialog) {
-        QComboBox *select = dialog->currencySelect();
-        QCOMPARE(select->count(), 6);  // the document's row
+        QComboBox *select = dialog->currencySelect(0);
+        QCOMPARE(select->count(), 6);  // the person's RON lei
         addCurrency(dialog, [&](ModalDialog *add) {
             typeCurrency(add, "SEK", "kr");
             add->accept();
@@ -3854,10 +4384,11 @@ void GanttViewTest::resourcesButton() {
         select->showPopup();
         QAbstractItemView *list = select->view();
         QTRY_VERIFY(list->isVisible());
-        const QRect row = list->visualRect(list->model()->index(5, 0));
+        const QRect row = list->visualRect(list->model()->index(4, 0));  // the saved ones first
+        QCOMPARE(list->model()->index(4, 0).data().toString(), QString("SEK kr"));
         QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, QPoint(row.right() - 12, row.center().y()));
-        QCOMPARE(select->count(), 6);
-        QCOMPARE(select->currentText(), QString("RON lei"));
+        QCOMPARE(select->count(), 7);
+        QCOMPARE(select->currentText(), QString("SEK kr"));
         QVERIFY(GanttResources::savedCurrencies().isEmpty());
         select->hidePopup();
         QCoreApplication::processEvents();
@@ -3865,18 +4396,16 @@ void GanttViewTest::resourcesButton() {
         dialog->reject();
     });
 
-    GanttResources typed;
     for (int number = 0; number < GanttResources::kMaxSavedCurrencies + 1; ++number) {
-        typed.setCurrencyText(QStringLiteral("C%1 ¤").arg(number));
-        typed.saveCurrency();
-        typed.saveCurrency();  // already saved: once
+        const GanttCurrency typed = GanttCurrency::fromText(QStringLiteral("C%1 ¤").arg(number));
+        typed.save();
+        typed.save();  // already saved: once
     }
     const QStringList saved = GanttResources::savedCurrencies();
     QCOMPARE(saved.size(), GanttResources::kMaxSavedCurrencies);  // the oldest dropped
     QCOMPARE(saved.front(), QString("C1 ¤"));
     QCOMPARE(saved.back(), QStringLiteral("C%1 ¤").arg(GanttResources::kMaxSavedCurrencies));
-    typed.setCurrencyText("USD");
-    QVERIFY(!typed.canSaveCurrency());  // listed
+    QVERIFY(!GanttCurrency::fromText("USD").canSave());  // listed
 }
 
 // User, 2026-10-29: a sheet opens with today three days from the chart's left edge, or the last

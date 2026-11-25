@@ -107,6 +107,13 @@ public:
     };
     // Moves a map into targetDirectory with a free name; the folder it is already in = nothing.
     Move moveMap(const QString &mapPath, const QString &targetDirectory) const;
+    // Deletes a map of this folder for good, with the files SQLite leaves beside it. Refused while the
+    // map is open (its lock is held) or outside the folder; false with the reason in error.
+    bool removeMap(const QString &mapPath, QString *error) const;
+    // Gives a map of this folder a new file name (its title on the Home), free like a new map's, the
+    // SQLite files beside it following. Refused while the map is open; the new path, or empty with the
+    // reason in error. Only the case changed: renamed through a free temporary name.
+    QString renameMapFile(const QString &mapPath, const QString &name, QString *error) const;
     // The deferred moves whose maps are closed now are done: (old path, new path) pairs, for the
     // recent list. A map still open keeps waiting; one whose file or target vanished is forgotten.
     static QList<QPair<QString, QString>> runPendingMoves();

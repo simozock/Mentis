@@ -104,11 +104,6 @@ public:
     std::function<bool(const NodeItem *item)> reorderDrag;
     // FEAT-015: Esc durante un trascinamento strutturale; falso se non ce n'e' uno.
     bool cancelReorder();
-    // P6 (2026-10-13): sotto questo livello di zoom (0.4 = 40%) il nodo si disegna senza testo
-    // e formule, che a quella scala sono comunque illeggibili.
-    // 2026-10-14: il valore dipende dal profilo di prestazioni (Performance::detailZoomThreshold):
-    // 0.4 con il profilo Standard, 0.6 con quello Leggero. Questa costante resta il valore Standard.
-    static constexpr qreal kDetailZoomThreshold = 0.4;
     // Riallinea l'item ai dati del nodo (posizione, testo, colori, immagine) senza
     // distruggerlo: sostituisce la ricostruzione completa della scena per le modifiche
     // a un singolo argomento.
@@ -160,7 +155,7 @@ public:
         QColor frameBorder;
         bool operator==(const TableCell &) const = default;
     };
-    static constexpr qreal kTableBorderPx = 1.5;  // measured live 2026-10-25
+    static constexpr qreal kTableBorderPx = NodeGeometry::kTableBorderPx;
     static constexpr qreal kHoldingCellDepth = 2;  // the lines are in [-1, 0)
     void setTableCell(const std::optional<TableCell> &cell);
     const std::optional<TableCell> &tableCell() const { return m_cell; }
@@ -296,7 +291,6 @@ signals:
     // FEAT-060: clic su una pillola (riquadro delle etichette) e tasto destro (menu dell'etichetta).
     void labelActivated(NodeItem *item);
     // FEAT-068: "- [ ] " (1) o "- [x] " (2) scritto a inizio titolo, alla conferma.
-    void taskTyped(NodeItem *item, int task);
     void labelMenuRequested(NodeItem *item, const QString &label, const QPoint &screenPos);
     void taskMenuRequested(NodeItem *item, const QPoint &screenPos);
     void nodeMenuRequested(NodeItem *item, const QPoint &screenPos);  // FEAT-042: right-click elsewhere on the topic
@@ -428,6 +422,7 @@ private:
     QSizeF m_loadedImageSize;
     bool m_loadedOutline = false;  // FEAT-051: contorno dell'adesivo nei pixel caricati
     int m_loadedRotation = 0;      // rotazione dei pixel caricati (ImageStyle::rotation)
+    ImageEffect m_loadedEffect = ImageEffect::None;  // FEAT-131: effect in the loaded pixels
     int m_growSide = 0;            // FEAT-034
     qreal m_halfBeforeEditing = -1;  // FEAT-034: meta' larghezza prima del campo di modifica
     bool stickerOutline() const;

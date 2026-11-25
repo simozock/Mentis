@@ -95,6 +95,33 @@ Direction directionOf(const MindNode *node) {
     return Direction::BothSides;
 }
 
+QList<Direction> effectiveDirections(const MindNode *node, Type type) {
+    QList<Direction> list = directions(type);
+    if (!node || !node->parent) return list;
+    if (node->floating) return {};
+    // MapLayout::layoutBlock places this node when an ancestor is laid out as a block: the central topic
+    // of a block type, or a branch with a block type of its own. A floating topic's branch is laid out
+    // beside it (layoutSubtree), whatever is above.
+    bool inBlock = laysOutAsBlock(type);
+    for (const MindNode *at = node->parent; at && !inBlock; at = at->parent) {
+        if (at->floating) break;
+        if (!at->parent) inBlock = laysOutAsBlock(typeOf(at));
+        else if (!at->structure.isEmpty()) inBlock = laysOutAsBlock(typeFromKey(at->structure));
+    }
+    if (!inBlock) return {};
+    list.removeAll(Direction::BothSides);  // only the central topic splits its branches between two sides
+    // The main topics of a timeline or a fishbone are placed by it (MapLayout::layoutTimeline and
+    // layoutFishbone), not by their own type: their direction is only the side of their children. Off
+    // the axis is the side the parent gives, the right except under a fishbone with its head on the right.
+    const MindNode *parent = node->parent;
+    const Type parentType = typeOf(parent);
+    if ((parentType == Type::Timeline || parentType == Type::Fishbone)
+        && (!parent->parent || typeFromKey(parent->structure) == parentType)
+        && !(parentType == Type::Fishbone && directionOf(parent) == Direction::Left))
+        list.removeAll(Direction::OffAxis);
+    return list;
+}
+
 QList<int> balancedSides(const QList<double> &weights, const QList<int> &fixed) {
     QList<int> sides(weights.size(), 0);
     double first = 0, second = 0;

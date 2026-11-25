@@ -2031,6 +2031,41 @@ void NodeOperationsTest::boundaryTitleStyleRoomAndRelation() {
     wait();
     QCOMPARE(m_model->boundaries.front().shape, Boundary::Shape::RoundedRectangle);
     QCOMPARE(m_model->boundaries.front().title, QStringLiteral("Group"));
+    // FEAT-130: the new shapes, "None", the title's size and bold, one step each; a larger title
+    // makes the tab and the room above taller.
+    const auto choose = [&](QComboBox *field, const QVariant &value) {
+        const int index = field->findData(value);
+        QVERIFY(index >= 0);
+        field->setCurrentIndex(index);
+        emit field->activated(index);
+        wait();
+    };
+    m_scene->selectBoundary(id);  // Undo leaves nothing selected
+    wait();
+    item = m_scene->boundaryItem(id);
+    choose(page->shapeField(), static_cast<int>(Boundary::Shape::Ellipse));
+    QCOMPARE(m_model->boundaries.front().shape, Boundary::Shape::Ellipse);
+    QCOMPARE(item->titleRect().center().x(), item->strokeRect().center().x());
+    choose(page->patternField(), int(Qt::NoPen));
+    QCOMPARE(m_model->boundaries.front().linePattern, std::optional<int>(Qt::NoPen));
+    choose(page->shapeField(), static_cast<int>(Boundary::Shape::RoundedRectangle));
+    choose(page->titleSizeField(), qreal(24));
+    QCOMPARE(m_model->boundaries.front().titleSize, std::optional<qreal>(24));
+    QCOMPARE(item->titleRect().height(), 28.0);
+    QCOMPARE(shape(b).top() - shape(a).bottom(), gapAbove + room + 28);
+    page->titleBoldButton()->click();
+    wait();
+    QVERIFY(m_model->boundaries.front().titleBold);
+    QVERIFY(page->titleBoldButton()->isChecked());
+    // FEAT-134: the fill style, one step.
+    choose(page->fillStyleField(), int(NodeFillStyle::PennellateDiagonali));
+    QCOMPARE(m_model->boundaries.front().fillStyle, NodeFillStyle::PennellateDiagonali);
+    QCOMPARE(page->fillStyleField()->currentData().toInt(), int(NodeFillStyle::PennellateDiagonali));
+    for (int i = 0; i < 6; ++i) action(QStringLiteral("Undo"))->trigger();
+    wait();
+    QCOMPARE(m_model->boundaries.front().fillStyle, NodeFillStyle::Pieno);
+    QCOMPARE(m_model->boundaries.front().shape, Boundary::Shape::RoundedRectangle);
+    QVERIFY(!m_model->boundaries.front().linePattern && !m_model->boundaries.front().titleSize && !m_model->boundaries.front().titleBold);
 
     // A relationship from the boundary to a topic ends on the boundary's outline.
     m_scene->selectBoundary(id);

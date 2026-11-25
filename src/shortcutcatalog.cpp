@@ -44,7 +44,8 @@ void ShortcutCatalog::addAll(ShortcutRegistry &registry) {
     // F2 selects the whole title; Space opens it with the cursor at the end (2026-11-04, user request).
     registry.add(QStringLiteral("edit"), Area::Map, tr("Edit text"), keys({QKeySequence(Qt::Key_F2)}));
     registry.add(QStringLiteral("editAtEnd"), Area::Map, tr("Edit text at the end"), keys({QKeySequence(Qt::Key_Space)}));
-    registry.add(QStringLiteral("remove"), Area::Map, tr("Remove"), keys({QKeySequence(QKeySequence::Delete)}));
+    // Delete and Backspace (the Mac's "delete" key) both remove, on every system (user 2026-11-18).
+    registry.add(QStringLiteral("remove"), Area::Map, tr("Remove"), keys({QKeySequence(Qt::Key_Delete), QKeySequence(Qt::Key_Backspace)}));
     // FEAT-057: no default keys since FEAT-041 stage B: Ctrl+Shift+[ / ] go to the sheets and Ctrl+]
     // to the Style panel.
     registry.add(QStringLiteral("bringToFront"), Area::Map, tr("Bring to front"), {});
@@ -83,8 +84,7 @@ void ShortcutCatalog::addAll(ShortcutRegistry &registry) {
     registry.add(QStringLiteral("summary"), Area::Map, tr("Summary"), {});
     registry.add(QStringLiteral("note"), Area::Map, tr("Note"), key("Ctrl+Shift+N"));
     registry.add(QStringLiteral("labels"), Area::Map, tr("Label"), key("Ctrl+Shift+L"));
-    registry.add(QStringLiteral("webLink"), Area::Map, tr("Link to a web page"), key("Ctrl+K"));
-    registry.add(QStringLiteral("topicLink"), Area::Map, tr("Link to a topic"), {});
+    registry.add(QStringLiteral("link"), Area::Map, tr("Link"), key("Ctrl+K"));  // FEAT-117
     registry.add(QStringLiteral("attachFiles"), Area::Map, tr("Attach files"), {});
     registry.add(QStringLiteral("mapCopy"), Area::Map, tr("Copy"), {QKeySequence(QKeySequence::Copy)});
     registry.add(QStringLiteral("mapCut"), Area::Map, tr("Cut"), {QKeySequence(QKeySequence::Cut)});
@@ -128,19 +128,24 @@ void ShortcutCatalog::addAll(ShortcutRegistry &registry) {
     registry.add(QStringLiteral("mapSelectRight"), Area::Map, tr("Select the node to the right"), keys({QKeySequence(Qt::Key_Right)}));
     registry.add(QStringLiteral("mapSelectUp"), Area::Map, tr("Select the node above"), keys({QKeySequence(Qt::Key_Up)}));
     registry.add(QStringLiteral("mapSelectDown"), Area::Map, tr("Select the node below"), keys({QKeySequence(Qt::Key_Down)}));
+    // FEAT-126: Ctrl+arrows add the topic that way to the selection (user's request 2026-11-19).
+    registry.add(QStringLiteral("mapAddLeft"), Area::Map, tr("Add the node to the left to the selection"), key("Ctrl+Left"));
+    registry.add(QStringLiteral("mapAddRight"), Area::Map, tr("Add the node to the right to the selection"), key("Ctrl+Right"));
+    registry.add(QStringLiteral("mapAddUp"), Area::Map, tr("Add the node above to the selection"), key("Ctrl+Up"));
+    registry.add(QStringLiteral("mapAddDown"), Area::Map, tr("Add the node below to the selection"), key("Ctrl+Down"));
     // Outliner keys.
     registry.add(QStringLiteral("outlineNewItem"), Area::Outliner, tr("New item"), keys({QKeySequence(Qt::Key_Return)}));
     registry.add(QStringLiteral("outlineIndent"), Area::Outliner, tr("Indent"), keys({QKeySequence(Qt::Key_Tab)}));
-    registry.add(QStringLiteral("outlineOutdent"), Area::Outliner, tr("Outdent"), keys({QKeySequence("Shift+Tab"), QKeySequence(Qt::Key_Backspace)}));
+    registry.add(QStringLiteral("outlineOutdent"), Area::Outliner, tr("Outdent"), key("Shift+Tab"));
     registry.add(QStringLiteral("outlineCopy"), Area::Outliner, tr("Copy"), keys({QKeySequence(QKeySequence::Copy)}));
     registry.add(QStringLiteral("outlineCut"), Area::Outliner, tr("Cut"), keys({QKeySequence(QKeySequence::Cut)}));
     registry.add(QStringLiteral("outlinePaste"), Area::Outliner, tr("Paste"), keys({QKeySequence(QKeySequence::Paste)}));
     registry.add(QStringLiteral("outlineDuplicate"), Area::Outliner, tr("Duplicate"), keys({QKeySequence("Ctrl+D")}));
-    registry.add(QStringLiteral("outlineDelete"), Area::Outliner, tr("Delete"), keys({QKeySequence(Qt::Key_Delete)}));
+    registry.add(QStringLiteral("outlineDelete"), Area::Outliner, tr("Delete"), keys({QKeySequence(Qt::Key_Delete), QKeySequence(Qt::Key_Backspace)}));
     // FEAT-075: keys of the Gantt table, handled by GanttView.
     registry.add(QStringLiteral("ganttAddTask"), Area::Gantt, tr("Add task"), keys({QKeySequence(Qt::Key_Return)}));
     registry.add(QStringLiteral("ganttIndent"), Area::Gantt, tr("Make subtask"), keys({QKeySequence(Qt::Key_Tab)}));
     registry.add(QStringLiteral("ganttOutdent"), Area::Gantt, tr("Move up a level"), keys({QKeySequence("Shift+Tab")}));
-    registry.add(QStringLiteral("ganttDelete"), Area::Gantt, tr("Delete tasks"), keys({QKeySequence(Qt::Key_Delete)}));
+    registry.add(QStringLiteral("ganttDelete"), Area::Gantt, tr("Delete tasks"), keys({QKeySequence(Qt::Key_Delete), QKeySequence(Qt::Key_Backspace)}));
     registry.add(QStringLiteral("ganttChain"), Area::Gantt, tr("Link in a chain"), keys({QKeySequence("Ctrl+Shift+L")}));
 }

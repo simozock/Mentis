@@ -3,7 +3,11 @@
 #include "branchpath.h"  // the map's end marks
 #include "datepicker.h"
 #include "floatingui.h"   // FloatingListPopup
-#include "ganttview.h"     // GanttChart::typeName
+#include "ganttcommands.h"
+#include "ganttnamefield.h"
+#include "ganttstylechoices.h"
+#include "gantttaskedits.h"
+#include "ganttview.h"     // GanttCanvas::typeName
 #include "mindmapmodel.h"  // MindNode::kMaxPriority
 #include "modaldialog.h"
 #include "nodesketch.h"    // the Fill selects' pictures
@@ -51,14 +55,6 @@ constexpr int kLinkLine = 220;   // a link's task name and its summary on one li
 constexpr int kLagWidth = 80;    // "-3650" between − and +
 
 int side(bool predecessors) { return predecessors ? 1 : 0; }
-
-// The link between the task shown and another one, in the direction of the list.
-GanttDependency linkWith(const QString &id, bool predecessors, const QString &other) {
-    GanttDependency link;
-    link.from = predecessors ? other : id;
-    link.to = predecessors ? id : other;
-    return link;
-}
 
 // Whole numbers within the plan's limits; the unit is in the caption.
 NumberField *numberField(int low, int high) {
@@ -231,6 +227,12 @@ void showRow(QWidget *field, bool shown) {
 
 }  // namespace
 
+void GanttTaskPanel::setPanelWidth(int width) {
+    if (width == this->width() && minimumWidth() == width) return;
+    setFixedWidth(width);
+    for (QWidget *content : std::as_const(m_pageContents)) content->setMaximumWidth(width);
+}
+
 GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
     setObjectName(QStringLiteral("GanttTaskPanel"));
     setFixedWidth(kWidth);
@@ -262,6 +264,7 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
         // Never wider than the panel: a link card added after the panel opened asked for more on the
         // first layout and pushed the fields and buttons out (seen on a picture of the panel).
         content->setMaximumWidth(kWidth);
+        m_pageContents.append(content);
         m_pages->addWidget(scroll);
         auto *layout = new QVBoxLayout(content);
         layout->setContentsMargins(16, 12, 16, 16);
@@ -285,7 +288,7 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
     QGridLayout *taskGrid = fieldGrid();
     QGridLayout *datesGrid = fieldGrid();
     QGridLayout *detailsGrid = fieldGrid();
-    m_name = new QLineEdit;
+    m_name = new GanttNameField;  // FEAT-124: with the name's formats
     m_name->setFixedWidth(kFieldWidth);
     addField(taskGrid, tr("Name"), m_name);
     // On, the topic gets a checkbox (FEAT-048) and the task is a diamond on its start day; its
@@ -340,6 +343,13 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
     m_defaultFill = styleRow(tr("Fill"), {m_ownFill}, tr("Default fill"));
     m_ownBorder = ownSelect(QStringLiteral("GanttTaskBorder"), 2);
     m_defaultBorder = styleRow(tr("Border"), {m_ownBorder}, tr("Default border"));
+    // The border's own colour (user, 2026-11-22), × back to the sheet's.
+    m_ownBorderColor = new ColorField;
+    m_ownBorderColor->setObjectName(QStringLiteral("GanttTaskBorderColor"));
+    m_ownBorderColor->setAccessibleName(tr("Border colour"));
+    m_ownBorderColor->allowOpacity = false;
+    m_ownBorderColor->setFixedWidth(kNarrowFieldWidth);
+    m_defaultBorderColor = styleRow(tr("Border colour"), {m_ownBorderColor}, tr("Default border colour"));
     m_styleSection = section(QStringLiteral("GanttSectionStyle"), tr("Style"), styleGrid);
     layout->addWidget(m_styleSection);
 
@@ -374,7 +384,7 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
     m_priority = new PanelSelect;
     m_priority->setFixedWidth(kFieldWidth);
     m_priority->addItem(tr("None"));
-    for (int p = 1; p <= MindNode::kMaxPriority; ++p) m_priority->addItem(priorityName(p));
+    for (int p = 1; p <= MindNode::kMaxPriority; ++p) m_priority->addItem(GanttCommands::priorityName(p));
     addField(detailsGrid, tr("Priority"), m_priority);
     m_detailsSection = section(QStringLiteral("GanttSectionDetails"), tr("Details"), detailsGrid);
     layout->addWidget(m_detailsSection);
@@ -492,6 +502,26 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
     const QString sectionNames[GanttPlan::kBarKinds]{QStringLiteral("GanttSectionTasks"), QStringLiteral("GanttSectionSummaries"),
                                                  QStringLiteral("GanttSectionMilestones")};
     QComboBox *const shapes[GanttPlan::kBarKinds]{m_barShape, m_summaryShape, m_milestoneShape};
+    // A colour field with a × shown when the sheet has its own colour.
+    const auto colorRow = [](QGridLayout *grid, const QString &label, const QString &accessibleName, const QString &resetTip,
+                             ColorField *&field, QToolButton *&reset) {
+        auto *box = new QWidget;
+        auto *row = new QHBoxLayout(box);
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(4);
+        field = new ColorField;
+        field->setAccessibleName(accessibleName);
+        field->allowOpacity = false;
+        field->setFixedWidth(kNarrowFieldWidth);
+        reset = new QToolButton;
+        reset->setText(QStringLiteral("×"));
+        reset->setToolTip(resetTip);
+        reset->setAccessibleName(resetTip);
+        reset->hide();
+        row->addWidget(field);
+        row->addWidget(reset);
+        addField(grid, label, box);
+    };
     for (int i = 0; i < GanttPlan::kBarKinds; ++i) {
         const auto kind = GanttPlan::BarKind(i);
         QGridLayout *grid = fieldGrid();
@@ -501,34 +531,26 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
         connect(fill, &QComboBox::activated, this, [this, kind, fill](int index) {
             if (setFillStyle) setFillStyle(kind, NodeFillStyle(fill->itemData(index).toInt()));
         });
-        if (QComboBox *border = m_borderStyle[i]) {
-            addField(grid, tr("Border"), border);
-            connect(border, &QComboBox::activated, this, [this, kind, border](int index) {
-                if (setBorderStyle) setBorderStyle(kind, GanttPlan::BorderStyle(border->itemData(index).toInt()));
-            });
-        }
-        auto *box = new QWidget;
-        auto *row = new QHBoxLayout(box);
-        row->setContentsMargins(0, 0, 0, 0);
-        row->setSpacing(4);
-        ColorField *field = m_sheetColor[i] = new ColorField;
-        field->setAccessibleName(names[i]);
-        field->allowOpacity = false;
-        field->setFixedWidth(kNarrowFieldWidth);
-        QToolButton *reset = m_sheetColorReset[i] = new QToolButton;
-        reset->setText(QStringLiteral("×"));
-        reset->setToolTip(tr("Default colour"));
-        reset->setAccessibleName(tr("Default colour"));
-        reset->hide();
-        row->addWidget(field);
-        row->addWidget(reset);
-        addField(grid, tr("Colour"), box);
+        QComboBox *border = m_borderStyle[i];
+        addField(grid, tr("Border"), border);
+        connect(border, &QComboBox::activated, this, [this, kind, border](int index) {
+            if (setBorderStyle) setBorderStyle(kind, GanttPlan::BorderStyle(border->itemData(index).toInt()));
+        });
+        // The border's colour (user, 2026-11-22); × back to automatic.
+        colorRow(grid, tr("Border colour"), tr("Border colour"), tr("Default border colour"), m_sheetBorderColor[i], m_sheetBorderColorReset[i]);
+        colorRow(grid, tr("Colour"), names[i], tr("Default colour"), m_sheetColor[i], m_sheetColorReset[i]);
         styleLayout->addWidget(section(sectionNames[i], names[i], grid));
-        connect(field, &ColorField::colorChosen, this, [this, kind](const QColor &color) {
+        connect(m_sheetColor[i], &ColorField::colorChosen, this, [this, kind](const QColor &color) {
             if (setDefaultColor) setDefaultColor(kind, color);
         });
-        connect(reset, &QToolButton::clicked, this, [this, kind] {
+        connect(m_sheetColorReset[i], &QToolButton::clicked, this, [this, kind] {
             if (setDefaultColor) setDefaultColor(kind, std::nullopt);
+        });
+        connect(m_sheetBorderColor[i], &ColorField::colorChosen, this, [this, kind](const QColor &color) {
+            if (setDefaultBorderColor) setDefaultBorderColor(kind, color);
+        });
+        connect(m_sheetBorderColorReset[i], &QToolButton::clicked, this, [this, kind] {
+            if (setDefaultBorderColor) setDefaultBorderColor(kind, std::nullopt);
         });
     }
     // The arrows' look, the map relationships' Line selects (user, 2026-10-29): only the end has a mark.
@@ -537,6 +559,14 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
     addField(relationsGrid, tr("End"), m_linkEnd);
     addField(relationsGrid, tr("Thickness"), m_linkWidth);  // user, 2026-11-01
     addField(relationsGrid, tr("End size"), m_linkEndSize);
+    // Their colour (user, 2026-11-22); × back to the view's grey.
+    colorRow(relationsGrid, tr("Colour"), tr("Relations"), tr("Default colour"), m_linkColor, m_linkColorReset);
+    connect(m_linkColor, &ColorField::colorChosen, this, [this](const QColor &color) {
+        if (setLinkColor) setLinkColor(color);
+    });
+    connect(m_linkColorReset, &QToolButton::clicked, this, [this] {
+        if (setLinkColor) setLinkColor(std::nullopt);
+    });
     styleLayout->addWidget(section(QStringLiteral("GanttSectionRelations"), tr("Relations"), relationsGrid));
     styleLayout->addStretch();
     connect(m_barShape, &QComboBox::activated, this, [this](int index) {
@@ -603,60 +633,53 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
         const GanttTask *task = m_plan.task(m_id);
         if (!task || !remove) return;
         const QString question = m_targets.size() == 1
-                                     ? tr("Delete \"%1\" and its topic on the map?").arg(task->name.simplified())
+                                     ? tr("Delete \"%1\" and its topic on the map?").arg(task->shownName())
                                      : tr("Delete %n task(s) and their topics on the map?", nullptr, int(m_targets.size()));
         if (ModalDialog::ask(window(), tr("Delete task"), question, tr("Delete")) == ModalDialog::Choice::Primary)
             remove(m_targets);
     });
 
-    connect(m_name, &QLineEdit::editingFinished, this, [this] {
+    // Loads are signal-blocked: a change here is the user's typing.
+    connect(m_name, &QTextEdit::textChanged, this, [this] {
+        if (nameTyped && !m_id.isEmpty()) nameTyped(m_id, m_name->text());
+    });
+    connect(m_name, &GanttNameField::editingFinished, this, [this] {
         const GanttTask *task = m_plan.task(m_id);
-        const QString name = m_name->text().simplified();
-        if (!task || name.isEmpty() || name == task->name.simplified()) {
-            if (task) m_name->setText(task->name.simplified());  // an empty name is refused
+        const MindNode *topic = topicOf ? topicOf(m_id) : nullptr;
+        QString name, html;
+        if (!task || !topic || !m_name->result(topic, &name, &html)) {
+            if (topic) m_name->load(topic, m_plan.hasChildren(m_id));  // an empty name is refused
             return;
         }
-        if (rename) rename(m_id, name);
+        if (rename) rename(m_id, name, html);
     });
-    // Every field below edits all the targets (the selected tasks) in one step.
+    // Every field below edits all the targets (the selected tasks) in one step (GanttTaskEdits).
     connect(m_progress, &NumberField::valueChosen, this, [this](double value) {
-        editLeaves([&](GanttPlan &plan, const QString &id) { return plan.setProgress(id, int(value)); });
+        editPlan([&](GanttPlan &plan) { return GanttTaskEdits::setProgress(plan, m_targets, int(value)); });
     });
     connect(m_progress, &NumberField::valueStepped, this, [this](double delta) {  // different values
-        editLeaves([&](GanttPlan &plan, const QString &id) {
-            return plan.setProgress(id, std::clamp(plan.task(id)->progress + int(delta), 0, GanttPlan::kMaxProgress));
-        });
+        editPlan([&](GanttPlan &plan) { return GanttTaskEdits::stepProgress(plan, m_targets, int(delta)); });
     });
     connect(m_priority, &QComboBox::activated, this, [this](int index) {
         if (setInfo) setInfo(m_targets, index);
     });
     connect(m_start, &QDateEdit::dateChanged, this, [this](const QDate &date) {
-        // A task placed by a dependency changes its lag (FEAT-074).
-        editLeaves([&](GanttPlan &plan, const QString &id) { return plan.moveTo(id, date); });
+        editPlan([&](GanttPlan &plan) { return GanttTaskEdits::moveStart(plan, m_targets, date); });
     });
     connect(m_clearStart, &QToolButton::clicked, this, [this] {
-        editLeaves([&](GanttPlan &plan, const QString &id) { return plan.setStart(id, QDate()); });
+        editPlan([&](GanttPlan &plan) { return GanttTaskEdits::clearStart(plan, m_targets); });
     });
     connect(m_addStart, &QPushButton::clicked, this, [this] {
-        editLeaves([&](GanttPlan &plan, const QString &id) {
-            return !m_schedule.tasks.value(id).dated && plan.setStart(id, GanttToday::date());
-        });
+        editPlan([&](GanttPlan &plan) { return GanttTaskEdits::addStart(plan, m_schedule, m_targets); });
     });
     connect(m_duration, &NumberField::valueChosen, this, [this](double value) {
-        editLeaves([&](GanttPlan &plan, const QString &id) { return plan.setDuration(id, int(value)); }, true);
+        editPlan([&](GanttPlan &plan) { return GanttTaskEdits::setDuration(plan, m_targets, int(value)); });
     });
     connect(m_duration, &NumberField::valueStepped, this, [this](double delta) {  // different values
-        editLeaves([&](GanttPlan &plan, const QString &id) {
-            return plan.setDuration(id, std::clamp(plan.task(id)->duration + int(delta), GanttPlan::kMinDuration, GanttPlan::kMaxDuration));
-        }, true);
+        editPlan([&](GanttPlan &plan) { return GanttTaskEdits::stepDuration(plan, m_targets, int(delta)); });
     });
     connect(m_end, &QDateEdit::dateChanged, this, [this](const QDate &date) {
-        // As the table's End: the duration in working days from each task's start, at least one.
-        editLeaves([&](GanttPlan &plan, const QString &id) {
-            const GanttScheduledTask scheduled = m_schedule.tasks.value(id);
-            if (!scheduled.dated) return false;
-            return plan.setDuration(id, std::clamp(m_plan.workingDaysBetween(scheduled.start, date), 1, GanttPlan::kMaxDuration));
-        }, true);
+        editPlan([&](GanttPlan &plan) { return GanttTaskEdits::setEnd(plan, m_schedule, m_targets, date); });
     });
     connect(m_milestone, &ToggleSwitch::toggled, this, [this](bool milestone) {
         if (!m_id.isEmpty() && setMilestone) setMilestone(m_targets, milestone);
@@ -666,6 +689,12 @@ GanttTaskPanel::GanttTaskPanel(QWidget *parent) : QWidget(parent) {
     });
     connect(m_defaultColor, &QToolButton::clicked, this, [this] {
         if (setBarColor) setBarColor(m_targets, std::nullopt);
+    });
+    connect(m_ownBorderColor, &ColorField::colorChosen, this, [this](const QColor &color) {
+        if (setTaskBorderColor) setTaskBorderColor(m_targets, color);
+    });
+    connect(m_defaultBorderColor, &QToolButton::clicked, this, [this] {
+        if (setTaskBorderColor) setTaskBorderColor(m_targets, std::nullopt);
     });
     connect(m_label, &ToggleSwitch::toggled, this, [this](bool shown) {
         if (setLabel) setLabel(m_targets, shown);
@@ -715,6 +744,18 @@ QWidget *GanttTaskPanel::section(const QString &name, const QString &title, QLay
     return box;
 }
 
+void GanttTaskPanel::showTypedName(const QString &id, const QString &name) {
+    if (id != m_id || m_targets.size() != 1) return;
+    const QSignalBlocker blocker(m_name);
+    m_name->setText(name);
+}
+
+void GanttTaskPanel::reloadName() {
+    if (m_id.isEmpty() || m_targets.size() != 1) return;
+    const QSignalBlocker blocker(m_name);
+    if (const MindNode *topic = topicOf ? topicOf(m_id) : nullptr) m_name->load(topic, m_plan.hasChildren(m_id));
+}
+
 void GanttTaskPanel::showBarColor(const QColor &color, bool manual) {
     NodeStyle::Reading reading;
     reading.empty = false;
@@ -725,21 +766,20 @@ void GanttTaskPanel::showBarColor(const QColor &color, bool manual) {
     m_defaultColor->setVisible(manual);
 }
 
+void GanttTaskPanel::showBorderColor(const QColor &color, bool own) {
+    NodeStyle::Reading reading;
+    reading.empty = false;
+    reading.mixed = !color.isValid();
+    reading.value = color;
+    reading.allManual = own;
+    m_ownBorderColor->setReading(reading);
+    m_defaultBorderColor->setVisible(own);
+}
+
 bool GanttTaskPanel::editPlan(const std::function<bool(GanttPlan &)> &change) {
     return !m_id.isEmpty() && edit && edit(change);
 }
 
-bool GanttTaskPanel::editLeaves(const std::function<bool(GanttPlan &, const QString &)> &change, bool skipMilestones) {
-    return editPlan([&](GanttPlan &plan) {
-        bool changed = false;
-        for (const QString &id : std::as_const(m_targets)) {
-            const GanttTask *task = plan.task(id);
-            if (!task || plan.hasChildren(id) || (skipMilestones && task->milestone)) continue;
-            changed = change(plan, id) || changed;
-        }
-        return changed;
-    });
-}
 
 void GanttTaskPanel::load(const QString &id, const GanttPlan &plan, const GanttSchedule &schedule, int priority,
                           const QHash<QString, QStringList> &people, bool labelled, const QStringList &targets) {
@@ -764,7 +804,10 @@ void GanttTaskPanel::load(const QString &id, const GanttPlan &plan, const GanttS
         const QSignalBlocker blocker(field);
         apply(field);
     };
-    set(m_name, [&](QLineEdit *f) { f->setText(task->name.simplified()); });
+    set(m_name, [&](GanttNameField *f) {
+        if (const MindNode *topic = topicOf ? topicOf(id) : nullptr) f->load(topic, summary);
+        else f->setText(task->shownName());
+    });
     set(m_progress, [&](NumberField *f) { f->setValue(summary ? scheduled.progress : task->progress); });
     set(m_priority, [&](QComboBox *f) { f->setCurrentIndex(std::clamp(priority, 0, MindNode::kMaxPriority)); });
     set(m_start, [&](QDateEdit *f) { if (scheduled.dated) f->setDate(scheduled.start); });
@@ -810,75 +853,34 @@ void GanttTaskPanel::load(const QString &id, const GanttPlan &plan, const GanttS
 }
 
 void GanttTaskPanel::loadStyle() {
-    // The values the tasks shown share, empty when they differ; × when one of them has its own (a
-    // shape key of another kind is not its own). The shape only for tasks of one kind.
+    // The values the tasks shown share, empty when they differ; × when one of them has its own. The
+    // shape only for tasks of one kind (GanttTaskEdits::ownStyle).
     using Kind = GanttPlan::BarKind;
-    QList<int> shapes, fills, borders;
-    QSet<int> kinds;
-    bool ownShape = false, ownFill = false, ownBorder = false;
-    for (const QString &id : std::as_const(m_targets)) {
-        const GanttTask *task = m_plan.task(id);
-        if (!task) continue;
-        const Kind kind = m_plan.barKind(id);
-        kinds.insert(int(kind));
-        QString shapeKey;
-        switch (kind) {
-        case Kind::Task:
-            shapes.append(int(m_plan.barShape(*task)));
-            shapeKey = GanttPlan::styleKey(m_plan.barShape(*task));
-            break;
-        case Kind::Summary:
-            shapes.append(int(m_plan.summaryShape(*task)));
-            shapeKey = GanttPlan::styleKey(m_plan.summaryShape(*task));
-            break;
-        case Kind::Milestone:
-            shapes.append(int(m_plan.milestoneShape(*task)));
-            shapeKey = GanttPlan::styleKey(m_plan.milestoneShape(*task));
-            break;
-        }
-        const NodeFillStyle fill = m_plan.fillStyle(*task, kind);
-        const GanttPlan::BorderStyle border = m_plan.borderStyle(*task, kind);
-        fills.append(int(fill));
-        borders.append(int(border));
-        ownShape = ownShape || (!task->shape.isEmpty() && task->shape == shapeKey);
-        ownFill = ownFill || (!task->fill.isEmpty() && task->fill == GanttPlan::styleKey(fill));
-        ownBorder = ownBorder || (!task->border.isEmpty() && task->border == GanttPlan::styleKey(border));
-    }
-    const auto show = [](QComboBox *select, const QList<int> &values) {
+    const GanttTaskEdits::OwnStyle style = GanttTaskEdits::ownStyle(m_plan, m_targets);
+    const auto show = [](QComboBox *select, int value) {
         const QSignalBlocker blocker(select);
-        select->setCurrentIndex(!values.isEmpty() && values.count(values.first()) == values.size() ? select->findData(values.first()) : -1);
+        select->setCurrentIndex(value < 0 ? -1 : select->findData(value));
     };
-    const bool oneKind = kinds.size() == 1;
+    const bool oneKind = style.kind >= 0;
     showRow(m_defaultShape->parentWidget(), oneKind);
     if (oneKind) {
-        const auto kind = Kind(*kinds.cbegin());
+        const auto kind = Kind(style.kind);
         QComboBox *select = kind == Kind::Task ? m_ownBarShape : kind == Kind::Summary ? m_ownSummaryShape : m_ownMilestoneShape;
         for (QComboBox *other : {m_ownBarShape, m_ownSummaryShape, m_ownMilestoneShape}) other->setVisible(other == select);
-        show(select, shapes);
-        m_defaultShape->setVisible(ownShape);
+        show(select, style.shape);
+        m_defaultShape->setVisible(style.ownShape);
     }
-    show(m_ownFill, fills);
-    m_defaultFill->setVisible(ownFill);
-    show(m_ownBorder, borders);
-    m_defaultBorder->setVisible(ownBorder);
+    show(m_ownFill, style.fill);
+    m_defaultFill->setVisible(style.ownFill);
+    show(m_ownBorder, style.border);
+    m_defaultBorder->setVisible(style.ownBorder);
 }
 
 // Several tasks: a value they share, or none ("—"); a field is enabled when one of them can change.
 void GanttTaskPanel::loadSeveral(bool same) {
-    QList<const GanttTask *> leaves;
-    for (const QString &id : std::as_const(m_targets))
-        if (const GanttTask *task = m_plan.task(id); task && !m_plan.hasChildren(id)) leaves.append(task);
-    QList<int> progress, durations;
-    bool dated = false, undated = false, stored = false, lengths = false;
-    for (const GanttTask *task : std::as_const(leaves)) {
-        progress.append(task->progress);
-        const bool hasDate = m_schedule.tasks.value(task->id).dated;
-        if (!task->milestone) durations.append(task->duration);
-        dated = dated || hasDate;
-        undated = undated || !hasDate;
-        stored = stored || task->start.isValid();
-        lengths = lengths || (!task->milestone && hasDate);
-    }
+    const GanttTaskEdits::Several several = GanttTaskEdits::several(m_plan, m_schedule, m_targets);
+    const QStringList &leaves = several.leaves;
+    const bool dated = several.dated, undated = several.undated, stored = several.stored, lengths = several.lengths;
     // A field being edited keeps its text while the same tasks are shown.
     const QWidget *focus = QApplication::focusWidget();
     const auto shared = [&](NumberField *field, const QList<int> &values) {
@@ -888,26 +890,24 @@ void GanttTaskPanel::loadSeveral(bool same) {
         if (!values.isEmpty() && values.count(values.first()) == values.size()) field->setValue(values.first());
         else field->clearValue();
     };
-    shared(m_progress, progress);
-    shared(m_duration, durations);
+    shared(m_progress, several.progress);
+    shared(m_duration, several.durations);
     m_progress->setStep(1);
     if (m_priorityValue < 0) {
         const QSignalBlocker blocker(m_priority);
         m_priority->setCurrentIndex(-1);
     }
-    const bool allMilestones = !leaves.isEmpty()
-        && std::all_of(leaves.cbegin(), leaves.cend(), [](const GanttTask *task) { return task->milestone; });
     {
         const QSignalBlocker blocker(m_milestone);
-        m_milestone->setChecked(allMilestones);
+        m_milestone->setChecked(several.allMilestones);
     }
     m_title->setText(tr("%n task(s)", nullptr, int(m_targets.size())));
     m_name->setEnabled(false);  // a name, and the links, are one task's
     // A field is hidden when no selected task has it: summaries only, or milestones and summaries.
     showRow(m_milestone, !leaves.isEmpty());
     showRow(m_start->parentWidget(), !leaves.isEmpty());
-    showRow(m_duration, !durations.isEmpty());
-    showRow(m_end, !durations.isEmpty());
+    showRow(m_duration, !several.durations.isEmpty());
+    showRow(m_end, !several.durations.isEmpty());
     m_resourcesSection->setVisible(!leaves.isEmpty());
     m_datesSection->setVisible(!leaves.isEmpty());
     m_detailsSection->setVisible(!leaves.isEmpty());  // priority set on the tasks, not the summaries
@@ -915,14 +915,11 @@ void GanttTaskPanel::loadSeveral(bool same) {
     m_duration->setEnabled(true);
     m_milestone->setEnabled(true);
     // Start and End show the shown task's dates, or the first dated task's when it has none.
-    if (!m_schedule.tasks.value(m_id).dated)
-        for (const GanttTask *task : std::as_const(leaves))
-            if (const GanttScheduledTask scheduled = m_schedule.tasks.value(task->id); scheduled.dated) {
-                const QSignalBlocker startBlocker(m_start), endBlocker(m_end);
-                m_start->setDate(scheduled.start);
-                m_end->setDate(scheduled.end);
-                break;
-            }
+    if (!m_schedule.tasks.value(m_id).dated && several.firstStart.isValid()) {
+        const QSignalBlocker startBlocker(m_start), endBlocker(m_end);
+        m_start->setDate(several.firstStart);
+        m_end->setDate(several.firstEnd);
+    }
     m_start->setVisible(dated);
     m_start->setEnabled(dated);
     m_clearStart->setVisible(stored);
@@ -931,21 +928,9 @@ void GanttTaskPanel::loadSeveral(bool same) {
     m_linkSections->setVisible(false);
 }
 
-QList<GanttDependency> GanttTaskPanel::links(bool predecessors) const {
-    QList<GanttDependency> result;
-    for (const GanttDependency &link : m_plan.dependencies())
-        if ((predecessors ? link.to : link.from) == m_id && m_plan.task(predecessors ? link.from : link.to)) result.append(link);
-    return result;
-}
+QList<GanttDependency> GanttTaskPanel::links(bool predecessors) const { return GanttTaskEdits::links(m_plan, m_id, predecessors); }
 
-QStringList GanttTaskPanel::linkCandidates(bool predecessors) const {
-    QStringList ids;
-    for (const GanttTask &task : m_plan.tasks()) {
-        GanttPlan trial = m_plan;  // addDependency refuses summaries, itself, existing links, cycles
-        if (trial.addDependency(linkWith(m_id, predecessors, task.id))) ids.append(task.id);
-    }
-    return ids;
-}
+QStringList GanttTaskPanel::linkCandidates(bool predecessors) const { return GanttTaskEdits::linkCandidates(m_plan, m_id, predecessors); }
 
 void GanttTaskPanel::setSectionOpen(const QString &name, bool open) {
     const auto parts = m_sectionParts.value(name);
@@ -961,14 +946,14 @@ void GanttTaskPanel::setSectionOpen(const QString &name, bool open) {
 
 bool GanttTaskPanel::addLink(bool predecessors, const QString &other) {
     setSectionOpen(predecessors ? QStringLiteral("GanttSectionPredecessors") : QStringLiteral("GanttSectionSuccessors"), true);
-    const GanttDependency link = linkWith(m_id, predecessors, other);
+    const GanttDependency link = GanttTaskEdits::linkWith(m_id, predecessors, other);
     return editPlan([&](GanttPlan &plan) { return plan.addDependency(link); });
 }
 
 QString GanttTaskPanel::parentName(const QString &id) const {
     const GanttTask *task = m_plan.task(id);
     const GanttTask *parent = task ? m_plan.task(task->parentId) : nullptr;
-    return parent ? parent->name.simplified() : QString();
+    return parent ? parent->shownName() : QString();
 }
 
 void GanttTaskPanel::showAddMenu(bool predecessors) {
@@ -977,7 +962,7 @@ void GanttTaskPanel::showAddMenu(bool predecessors) {
     // Topics often share a name ("Subtopic 1"): the summary they belong to tells them apart.
     for (const QString &id : linkCandidates(predecessors)) {
         const QString parent = parentName(id);
-        const QString name = m_plan.task(id)->name.simplified();
+        const QString name = m_plan.task(id)->shownName();
         QAction *action = menu.addAction(parent.isEmpty() ? name : tr("%1 · in %2").arg(name, parent));
         connect(action, &QAction::triggered, this, [this, predecessors, id] { addLink(predecessors, id); });
     }
@@ -1162,17 +1147,6 @@ void GanttTaskPanel::fillPersonMenu(QMenu *menu) {
     }
 }
 
-QString GanttTaskPanel::priorityName(int priority) {
-    switch (priority) {
-    case 1: return tr("Very low");
-    case 2: return tr("Low");
-    case 3: return tr("Medium");
-    case 4: return tr("High");
-    case 5: return tr("Very high");
-    default: return {};
-    }
-}
-
 QString GanttTaskPanel::sentence(const GanttDependency &link, bool predecessors, const QString &otherName) {
     QString text;
     // From the task shown: its predecessors say when it may start or finish; its successors say
@@ -1228,7 +1202,7 @@ GanttTaskPanel::LinkRow GanttTaskPanel::makeLinkRow(bool predecessors, const QSt
     auto *type = new PanelSelect;
     type->colors = m_listColors;
     row.type = type;
-    for (const auto type : kTypes) row.type->addItem(GanttChart::typeName(type), int(type));
+    for (const auto type : kTypes) row.type->addItem(GanttCanvas::typeName(type), int(type));
     // The select shows its whole value: the longest name, its padding and the arrow.
     QFont typeFont = row.type->font();
     typeFont.setPixelSize(UiTheme::fontPx(12));
@@ -1246,7 +1220,7 @@ GanttTaskPanel::LinkRow GanttTaskPanel::makeLinkRow(bool predecessors, const QSt
     bottom->addWidget(row.lag);
     layout->addLayout(bottom);
     const auto current = [this, predecessors, other] {
-        const GanttDependency wanted = linkWith(m_id, predecessors, other);
+        const GanttDependency wanted = GanttTaskEdits::linkWith(m_id, predecessors, other);
         for (const GanttDependency &link : m_plan.dependencies())
             if (link.from == wanted.from && link.to == wanted.to) return link;
         return wanted;
@@ -1287,7 +1261,7 @@ void GanttTaskPanel::loadLinks(bool predecessors) {
         LinkRow &row = rows[other];
         m_linkLists[side(predecessors)]->insertWidget(i, row.row);  // the plan's order
         row.row->show();
-        const QString name = m_plan.task(other)->name.simplified();
+        const QString name = m_plan.task(other)->shownName();
         const QString parent = parentName(other);
         const QString inParent = parent.isEmpty() ? QString() : tr("in %1").arg(parent);
         // One line: a short name leaves its room to the summary, the summary takes at most half.
@@ -1336,7 +1310,8 @@ QToolButton *GanttTaskPanel::linkRemove(bool predecessors, const QString &other)
 
 void GanttTaskPanel::setColors(const GanttColors &c) {
     // The colour field paints itself: the same thin border as the other fields (user, 2026-10-28).
-    for (ColorField *field : {m_color, m_sheetColor[0], m_sheetColor[1], m_sheetColor[2]}) {
+    for (ColorField *field : {m_color, m_ownBorderColor, m_sheetColor[0], m_sheetColor[1], m_sheetColor[2], m_sheetBorderColor[0],
+                              m_sheetBorderColor[1], m_sheetBorderColor[2], m_linkColor}) {
         field->borderColor = c.line;
         field->hoverBorderColor = c.muted;
         field->mixedFill = c.card;
@@ -1373,11 +1348,11 @@ void GanttTaskPanel::setColors(const GanttColors &c) {
         "QLabel#SectionTitle{font-size:13px;font-weight:600;}"
         "QLabel#GanttLinkName{font-weight:600;}"
         "QLabel#GanttLinkParent{color:@caption;}"
-        "QLineEdit,QDateEdit,QComboBox{color:@text;background:transparent;border:1px solid @line;border-radius:4px;"
+        "QLineEdit,GanttNameField,QDateEdit,QComboBox{color:@text;background:transparent;border:1px solid @line;border-radius:4px;"
         "padding:0 8px;font-size:12px;min-height:22px;max-height:22px;selection-background-color:@selected;selection-color:@text;}"
-        "QLineEdit{placeholder-text-color:@muted;}"
-        "QLineEdit:focus,QDateEdit:focus,QComboBox:focus{border-color:@accent;}"
-        "QLineEdit:disabled,QDateEdit:disabled,QComboBox:disabled{color:@muted;}"
+        "QLineEdit,GanttNameField{placeholder-text-color:@muted;}"
+        "QLineEdit:focus,GanttNameField:focus,QDateEdit:focus,QComboBox:focus{border-color:@accent;}"
+        "QLineEdit:disabled,GanttNameField:disabled,QDateEdit:disabled,QComboBox:disabled{color:@muted;}"
         "QComboBox:hover{background:@selected;}"
         "QDateEdit::drop-down,QComboBox::drop-down{border:0;width:24px;}"
         "QDateEdit::down-arrow,QComboBox::down-arrow{image:none;width:0;height:0;}"
@@ -1430,222 +1405,39 @@ void GanttTaskPanel::setColors(const GanttColors &c) {
 }
 
 void GanttTaskPanel::fillBarShapes(const QColor &text) {
-    // The bar pictures in the card's text colour, in the Gantt page's selects and in the Task
-    // page's Style section (which may show none).
-    using Bar = GanttPlan::BarShape;
-    const QList<std::pair<Bar, QString>> bars{{Bar::Pill, tr("Pill")},
-                                              {Bar::Rounded, tr("Rounded rectangle")},
-                                              {Bar::Rectangle, tr("Rectangle")},
-                                              {Bar::Arrow, tr("Arrow")},
-                                              {Bar::Hexagon, tr("Hexagon")},
-                                              {Bar::Leaf, tr("Leaf")},
-                                              {Bar::Ticket, tr("Ticket")},
-                                              {Bar::Parallelogram, tr("Parallelogram")}};
-    for (QComboBox *select : {m_barShape, m_ownBarShape}) {
-        const int current = select->currentIndex();
+    // The pictures in the card's text colour, in the Gantt page's selects and in the Task page's
+    // Style section (which may show none). Choices and pictures are the core's (shared with the phone).
+    using List = GanttStyleChoices::List;
+    const auto fill = [&text](QComboBox *select, List list, bool keepNone) {
+        const int current = keepNone ? select->currentIndex() : std::max(0, select->currentIndex());
         select->clear();
-        for (const auto &[value, name] : bars) {
-            addIconSelectItem(select, int(value), name, [value, text](QPainter &painter, const QRectF &box) {
-                painter.setRenderHint(QPainter::Antialiasing);
-                painter.setPen(QPen(text, 1.5));
-                painter.setBrush(Qt::NoBrush);
-                painter.drawPath(GanttChart::taskPath(value, box.adjusted(0, box.height() * 0.15, 0, -box.height() * 0.15)));
+        for (const StyleChoices::Choice &choice : GanttStyleChoices::choices(list))
+            addIconSelectItem(select, choice.value, choice.name, [list, value = choice.value, text](QPainter &painter, const QRectF &box) {
+                GanttStyleChoices::drawIcon(list, value, painter, box, text);
             });
-        }
-        select->setCurrentIndex(select == m_barShape ? std::max(0, current) : current);
-    }
-    // Summaries: a bar as the others, or a thin shape of the chart (GanttChart::summaryPath).
-    using Summary = GanttPlan::SummaryShape;
-    const QList<std::pair<Summary, QString>> summaries{
-        {Summary::Bar, tr("Bar")},        {Summary::Bracket, tr("Bracket")},          {Summary::Brace, tr("Brace")},
-        {Summary::IBeam, tr("Horizontal I")}, {Summary::Hook, tr("Hook")},            {Summary::Dimension, tr("Dimension line")},
-        {Summary::Arrow, tr("Arrow")},    {Summary::Rail, tr("Pinned rail")},           {Summary::Frame, tr("Group frame")}};
-    for (QComboBox *select : {m_summaryShape, m_ownSummaryShape}) {
-        const int current = select->currentIndex();
-        select->clear();
-        for (const auto &[value, name] : summaries) {
-            addIconSelectItem(select, int(value), name, [value, text](QPainter &painter, const QRectF &box) {
-                painter.setPen(QPen(text, 1.5));
-                painter.setBrush(Qt::NoBrush);
-                if (value == Summary::Bar) {
-                    const QRectF bar = box.adjusted(0, box.height() * 0.15, 0, -box.height() * 0.15);
-                    painter.drawRoundedRect(bar, bar.height() / 2, bar.height() / 2);
-                    return;
-                }
-                painter.setRenderHint(QPainter::Antialiasing);
-                if (value == Summary::Frame) {  // the header over a dashed frame, as on the chart
-                    const QRectF frame = box.adjusted(1, box.height() * 0.1, -1, -box.height() * 0.1);
-                    const QRectF header(frame.left(), frame.top(), frame.width(), frame.height() * 0.4);
-                    painter.setPen(QPen(text, 1.2, Qt::DashLine, Qt::FlatCap));
-                    painter.drawRoundedRect(frame, header.height() / 2, header.height() / 2);
-                    painter.setPen(QPen(text, 1.5));
-                    painter.drawPath(GanttChart::summaryPath(value, header));
-                    return;
-                }
-                painter.drawPath(GanttChart::summaryPath(value, box.adjusted(0, box.height() * 0.2, 0, -box.height() * 0.2)));
-            });
-        }
-        select->setCurrentIndex(select == m_summaryShape ? std::max(0, current) : current);
-    }
-    // Milestones: the chart's own outlines (GanttChart::milestonePath), filled as a milestone.
-    using Shape = GanttPlan::MilestoneShape;
-    const QList<std::pair<Shape, QString>> milestones{
-        {Shape::Diamond, tr("Diamond")}, {Shape::Circle, tr("Circle")}, {Shape::Triangle, tr("Triangle")}, {Shape::Star, tr("Star")},
-        {Shape::Hexagon, tr("Hexagon")}, {Shape::Heart, tr("Heart")},   {Shape::Flag, tr("Flag")},         {Shape::Gem, tr("Gem")}};
-    for (QComboBox *select : {m_milestoneShape, m_ownMilestoneShape}) {
-        const int current = select->currentIndex();
-        select->clear();
-        for (const auto &[value, name] : milestones) {
-            addIconSelectItem(select, int(value), name, [value, text](QPainter &painter, const QRectF &box) {
-                painter.setRenderHint(QPainter::Antialiasing);
-                painter.setPen(QPen(text, 1.5));
-                painter.setBrush(Qt::NoBrush);
-                const qreal height = box.height() * 0.8;  // the diamond's 18 x 14 proportions
-                const QRectF place(box.center().x() - height * 9 / 14, box.center().y() - height / 2, height * 18 / 14, height);
-                painter.drawPath(GanttChart::milestonePath(value, place));
-            });
-        }
-        select->setCurrentIndex(select == m_milestoneShape ? std::max(0, current) : current);
-    }
-    // Fills: a bar filled as the map's Fill select draws them (NodeSketch), on a box scaled to the
-    // icon's height so three or four lines of a pattern show; None a faint box crossed out.
-    const QList<std::pair<NodeFillStyle, QString>> fills{
-        {NodeFillStyle::Pieno, tr("Filled")}, {NodeFillStyle::PienoManoLibera, tr("Hand-drawn fill")},
-        {NodeFillStyle::PennellateDiagonali, tr("Diagonal strokes")}, {NodeFillStyle::TratteggioDiagonale, tr("Diagonal hatching")},
-        {NodeFillStyle::PennellateOrizzontali, tr("Horizontal strokes")}, {NodeFillStyle::TratteggioOrizzontale, tr("Horizontal hatching")},
-        {NodeFillStyle::Nessuno, tr("No fill")}};
-    for (QComboBox *select : {m_fillStyle[0], m_fillStyle[1], m_fillStyle[2], m_ownFill}) {
-        const int current = select == m_ownFill ? select->currentIndex() : std::max(0, select->currentIndex());
-        select->clear();
-        for (const auto &[value, name] : fills) {
-            addIconSelectItem(select, int(value), name, [value, text](QPainter &painter, const QRectF &box) {
-                painter.setRenderHint(QPainter::Antialiasing);
-                const qreal scale = box.height() / 28;
-                painter.translate(box.topLeft());
-                painter.scale(scale, scale);
-                const QRectF area = QRectF(QPointF(0, 0), box.size() / scale).adjusted(3, 6, -3, -6);
-                QPainterPath outline;
-                outline.addRoundedRect(area, area.height() / 2, area.height() / 2);
-                constexpr quint64 kIconSeed = 7;  // the map's icons' strokes
-                switch (value) {
-                case NodeFillStyle::Pieno: painter.fillPath(outline, text); break;
-                case NodeFillStyle::PienoManoLibera: painter.fillPath(NodeSketch::roughArea(outline, kIconSeed), text); break;
-                case NodeFillStyle::Nessuno: {
-                    QColor faint = text;
-                    faint.setAlphaF(0.45);
-                    painter.setPen(QPen(faint, 1.5 / scale));
-                    painter.drawPath(outline);
-                    painter.drawLine(area.bottomLeft(), area.topRight());
-                    break;
-                }
-                default: {
-                    const NodeSketch::Pattern pattern = NodeSketch::pattern(value, outline, kIconSeed);
-                    painter.setPen(QPen(text, pattern.penWidth * (scale < 0.5 ? 0.75 : 1.0), Qt::SolidLine, Qt::FlatCap));
-                    painter.drawLines(pattern.lines);
-                }
-                }
-            });
-        }
         select->setCurrentIndex(current);
+        static_cast<PanelSelect *>(select)->gridNone = select->findData(GanttStyleChoices::noneValue(list));
+    };
+    fill(m_barShape, List::BarShape, false);
+    fill(m_ownBarShape, List::BarShape, true);
+    fill(m_summaryShape, List::SummaryShape, false);
+    fill(m_ownSummaryShape, List::SummaryShape, true);
+    fill(m_milestoneShape, List::MilestoneShape, false);
+    fill(m_ownMilestoneShape, List::MilestoneShape, true);
+    for (QComboBox *select : {m_fillStyle[0], m_fillStyle[1], m_fillStyle[2]}) fill(select, List::Fill, false);
+    fill(m_ownFill, List::Fill, true);
+    for (QComboBox *select : {m_borderStyle[0], m_borderStyle[1], m_borderStyle[2]}) fill(select, List::Border, false);
+    fill(m_ownBorder, List::Border, true);
+    fill(m_linkLine, List::LinkLine, false);
+    // The filled arrow before the end is first shown, as the chart's default.
+    if (m_linkEnd->currentIndex() < 0) {
+        fill(m_linkEnd, List::LinkEnd, false);
+        m_linkEnd->setCurrentIndex(m_linkEnd->findData(int(BranchEnd::FilledArrow)));
+    } else {
+        fill(m_linkEnd, List::LinkEnd, false);
     }
-    // Borders: the outline of a bar in each pattern (GanttChart::borderPen), in the order of the
-    // map's line selects (user, 2026-10-29): each line beside its hand-drawn one, then dotted; None
-    // a faint box crossed out, a wide tile at the bottom of the grid.
-    using Border = GanttPlan::BorderStyle;
-    const QList<std::pair<Border, QString>> borders{
-        {Border::Solid, tr("Solid line")},   {Border::HandDrawnSolid, tr("Hand-drawn solid")},
-        {Border::Dashed, tr("Dashed line")}, {Border::HandDrawnDashed, tr("Hand-drawn dashed")},
-        {Border::Dotted, tr("Dotted")},      {Border::None, tr("None")}};
-    for (QComboBox *select : {m_borderStyle[0], m_borderStyle[1], m_borderStyle[2], m_ownBorder}) {
-        const int current = select == m_ownBorder ? select->currentIndex() : std::max(0, select->currentIndex());
-        select->clear();
-        for (const auto &[value, name] : borders) {
-            addIconSelectItem(select, int(value), name, [value, text](QPainter &painter, const QRectF &box) {
-                const QRectF bar = box.adjusted(1, box.height() * 0.2, -1, -box.height() * 0.2);
-                if (value == Border::None) {
-                    QColor faint = text;
-                    faint.setAlphaF(0.45);
-                    painter.setPen(QPen(faint, 1.5));
-                    painter.drawRoundedRect(bar, 3, 3);
-                    painter.drawLine(bar.bottomLeft(), bar.topRight());
-                    return;
-                }
-                painter.setRenderHint(QPainter::Antialiasing);
-                QPainterPath outline;
-                outline.addRoundedRect(bar, bar.height() / 2, bar.height() / 2);
-                constexpr quint64 kIconSeed = 7;  // the map's icons' strokes
-                if (GanttChart::isHandDrawn(value)) outline = NodeSketch::roughOutline(outline, kIconSeed);
-                painter.strokePath(outline, GanttChart::borderPen(value, text, 1.5));
-            });
-        }
-        select->setCurrentIndex(current);
-        static_cast<PanelSelect *>(select)->gridNone = select->findData(int(Border::None));
-    }
-    // Relations: a stroke in each pattern, and the map's end marks (StylePage's line selects).
-    const int line = std::max(0, m_linkLine->currentIndex());
-    m_linkLine->clear();
-    const QList<std::pair<GanttPlan::LinkLine, QString>> lines{
-        {GanttPlan::LinkLine::Solid, tr("Solid line")}, {GanttPlan::LinkLine::Dashed, tr("Dashed line")}, {GanttPlan::LinkLine::Dotted, tr("Dotted")}};
-    for (const auto &[value, name] : lines) {
-        addIconSelectItem(m_linkLine, int(value), name, [value, text](QPainter &painter, const QRectF &box) {
-            const qreal y = box.center().y();
-            painter.setPen(QPen(text, 1.5, GanttChart::linkPenStyle(value), Qt::FlatCap));
-            painter.drawLine(QPointF(box.left() + 3, y), QPointF(box.right() - 3, y));
-        });
-    }
-    m_linkLine->setCurrentIndex(line);
-    const int end = m_linkEnd->currentIndex() < 0 ? int(BranchEnd::FilledArrow) : m_linkEnd->currentIndex();
-    m_linkEnd->clear();
-    const QList<std::pair<BranchEnd, QString>> ends{{BranchEnd::None, tr("None")}, {BranchEnd::OpenArrow, tr("Open arrow")},
-                                                    {BranchEnd::FilledArrow, tr("Filled arrow")}, {BranchEnd::Dot, tr("Dot")},
-                                                    {BranchEnd::Square, tr("Square")}, {BranchEnd::Diamond, tr("Diamond")}};
-    for (const auto &[value, name] : ends) {
-        addIconSelectItem(m_linkEnd, int(value), name, [value, text](QPainter &painter, const QRectF &box) {
-            painter.setRenderHint(QPainter::Antialiasing);
-            const qreal y = box.center().y();
-            const QPointF tip(box.right() - 3, y);
-            painter.setPen(QPen(text, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter.drawLine(QPointF(box.left() + 3, y), tip);
-            if (!BranchPath::endIsStroke(value)) {
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(text);
-            }
-            painter.drawPath(BranchPath::endMark(value, tip, QPointF(1, 0), 2.5));
-        });
-    }
-    m_linkEnd->setCurrentIndex(end);
-    // Thickness: a stroke of each width; end size: the filled arrow at each size, as on the chart.
-    const int width = std::max(0, m_linkWidth->currentIndex());
-    m_linkWidth->clear();
-    using Width = GanttPlan::LinkWidth;
-    const QList<std::pair<Width, QString>> widths{
-        {Width::Thin, tr("Thin")}, {Width::Medium, tr("Medium")}, {Width::Bold, tr("Bold")}, {Width::ExtraBold, tr("Extra bold")}};
-    for (const auto &[value, name] : widths) {
-        addIconSelectItem(m_linkWidth, int(value), name, [value, text](QPainter &painter, const QRectF &box) {
-            painter.setRenderHint(QPainter::Antialiasing);
-            const qreal y = box.center().y();
-            painter.setPen(QPen(text, GanttChart::linkWidthPx(value), Qt::SolidLine, Qt::FlatCap));
-            painter.drawLine(QPointF(box.left() + 3, y), QPointF(box.right() - 3, y));
-        });
-    }
-    m_linkWidth->setCurrentIndex(width);
-    const int size = std::max(0, m_linkEndSize->currentIndex());
-    m_linkEndSize->clear();
-    using Size = GanttPlan::LinkEndSize;
-    const QList<std::pair<Size, QString>> sizes{{Size::Small, tr("Small")}, {Size::Medium, tr("Medium")}, {Size::Large, tr("Large")}};
-    for (const auto &[value, name] : sizes) {
-        addIconSelectItem(m_linkEndSize, int(value), name, [value, text](QPainter &painter, const QRectF &box) {
-            painter.setRenderHint(QPainter::Antialiasing);
-            const qreal y = box.center().y(), length = GanttChart::linkEndSizePx(value) * 5 / 6;  // the large one fits 14 px
-            const QPointF tip(box.right() - 3, y);
-            painter.setPen(QPen(text, 1.5, Qt::SolidLine, Qt::FlatCap));
-            painter.drawLine(QPointF(box.left() + 3, y), QPointF(tip.x() - length, y));
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(text);
-            painter.drawPolygon(QPolygonF{tip, QPointF(tip.x() - length, y - length * 2 / 3), QPointF(tip.x() - length, y + length * 2 / 3)});
-        });
-    }
-    m_linkEndSize->setCurrentIndex(size);
+    fill(m_linkWidth, List::LinkWidth, false);
+    fill(m_linkEndSize, List::LinkEndSize, false);
 }
 
 void GanttTaskPanel::showLinkStyle(const GanttPlan &plan) {
@@ -1653,6 +1445,12 @@ void GanttTaskPanel::showLinkStyle(const GanttPlan &plan) {
     m_linkEnd->setCurrentIndex(m_linkEnd->findData(int(plan.linkEnd())));
     m_linkWidth->setCurrentIndex(m_linkWidth->findData(int(plan.linkWidth())));
     m_linkEndSize->setCurrentIndex(m_linkEndSize->findData(int(plan.linkEndSize())));
+    NodeStyle::Reading reading;
+    reading.empty = false;
+    reading.value = GanttCanvas::linkColor(plan);
+    reading.allManual = plan.linkColor().isValid();
+    m_linkColor->setReading(reading);
+    m_linkColorReset->setVisible(reading.allManual);
 }
 
 GanttTaskPanel::Page GanttTaskPanel::page() const {
@@ -1687,6 +1485,15 @@ void GanttTaskPanel::showDefaultColor(GanttPlan::BarKind kind, const QColor &sho
     reading.allManual = chosen;
     m_sheetColor[int(kind)]->setReading(reading);
     m_sheetColorReset[int(kind)]->setVisible(chosen);
+}
+
+void GanttTaskPanel::showDefaultBorderColor(GanttPlan::BarKind kind, const QColor &shown, bool chosen) {
+    NodeStyle::Reading reading;
+    reading.empty = false;
+    reading.value = shown;
+    reading.allManual = chosen;
+    m_sheetBorderColor[int(kind)]->setReading(reading);
+    m_sheetBorderColorReset[int(kind)]->setVisible(chosen);
 }
 
 void GanttTaskPanel::showSummaryShape(GanttPlan::SummaryShape shape) {

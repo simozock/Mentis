@@ -16,6 +16,9 @@ public:
     void setRange(double minimum, double maximum);
     void setDecimals(int decimals);  // 0 = whole numbers; more digits are rounded away
     void setStep(double step) { m_step = step; }  // Shift and Page Up/Down: ten steps
+    // The value is whole minutes, shown and typed as hours.minutes ("8.15" = 8 h 15 min, "8" = 8 h),
+    // rounded to the step (FEAT-122 working day length, user 2026-11-19).
+    void setClockFormat(bool clock);
     double minimum() const { return m_minimum; }
     double maximum() const { return m_maximum; }
 
@@ -51,6 +54,7 @@ protected:
 
 private:
     QString format(double value) const;
+    bool parse(const QString &text, double *number) const;  // false: empty, a lone sign, bad minutes
     double rounded(double value) const;
     void updateValidator();
     void showValue();     // the value (or none) again, as the text
@@ -63,6 +67,7 @@ private:
     int m_decimals = 0;
     bool m_hasValue = true;
     bool m_stepsEachItem = false;
+    bool m_clock = false;
     int m_hover = 0, m_pressed = 0;
     QTimer m_repeat;  // a held − or + repeats
 };

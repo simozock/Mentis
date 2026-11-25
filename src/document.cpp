@@ -5,7 +5,10 @@
 #include "markers.h"
 #include "richresources.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
+#include <QRegularExpression>
 
 #include "markdownimport.h"
 #include "mapstructure.h"
@@ -912,15 +915,18 @@ bool Document::outdentNode(MindNode *node) {
     return true;
 }
 
-bool Document::moveNode(MindNode *node, MindNode *newParent, int row, int side) {
+bool Document::moveNode(MindNode *node, MindNode *newParent, int row, int side, int fromSide) {
     if (!node || !newParent) return false;
     MindNode *root = m_model->root();
     const MindNode::Side oldSide = node->side;
-    const bool moved = m_model->moveNode(node, newParent, row);
+    // FEAT-052 point 8: a main topic taken to the other side leaves its boundary's run.
+    const bool crossed = node->parent == root && newParent == root && side != 0 && fromSide != 0 && side != fromSide;
+    const bool moved = m_model->moveNode(node, newParent, row, crossed);
     if (!moved && (node->parent != newParent || side == 0)) return false;  // ciclo o stesso posto
     if (newParent != root) node->side = MindNode::Side::Auto;
     else if (side != 0) node->side = side > 0 ? MindNode::Side::Right : MindNode::Side::Left;
     if (!moved && node->side == oldSide) return false;
+    if (!moved && crossed) m_model->refitBoundaries({node}, {node});  // same row, the other side
     markChanged();
     return true;
 }
@@ -934,6 +940,15 @@ bool Document::makeFloating(MindNode *node, const QPointF &position) {
     putOnTop(node);
     node->manualOffset = {};
     node->side = MindNode::Side::Auto;
+    m_model->refitBoundaries({node});  // FEAT-052 point 8: a floating topic leaves its boundaries
+    markChanged();
+    return true;
+}
+
+bool Document::refitBoundaries(const QList<const MindNode *> &placed) {
+    const QList<Boundary> before = m_model->boundaries;
+    m_model->refitBoundaries(placed);
+    if (m_model->boundaries == before) return false;
     markChanged();
     return true;
 }
@@ -1181,6 +1196,7 @@ bool Document::setSticker(MindNode *node, const QString &path, const QSizeF &siz
     if (!setImage(node, path, size)) return false;
     node->imageSticker = true;
     node->imageStyle.outline = true;  // contorno acceso per i nuovi adesivi (si spegne dalla pagina Stile)
+    node->imageStyle.shape = NodeShape::Rettangolo;  // FEAT-129: a sticker keeps its own outline
     return true;
 }
 
@@ -1444,6 +1460,7 @@ bool Document::editGantt(const std::function<bool(GanttPlan &)> &edit) {
             node->ganttShape = task.shape;  // FEAT-080
             node->ganttFill = task.fill;
             node->ganttBorder = task.border;
+            node->ganttBorderColor = task.borderColor;
             if (!task.milestone) {
                 node->ganttProgress = task.progress;
                 continue;
@@ -1731,6 +1748,14 @@ Document::PasteResult Document::replaceMapWithMarkdown(const QString &text) {
     if (parsed.itemCount < 2 || !m_model->fromMarkdown(text)) return {};
     markChanged();  // il reset del modello e' un passo di storico: Ctrl+Z riporta la mappa di prima
     return {m_model->root(), false};
+}
+
+QString Document::exportFileName(const QString &name, const QDateTime &moment) {
+    static const QRegularExpression notAllowed(QStringLiteral("[<>:\"/\\\\|?*\\x00-\\x1f]"));
+    QString cleaned = name.simplified().replace(notAllowed, QStringLiteral("-")).trimmed();
+    static const char *const kUntitled = QT_TRANSLATE_NOOP("MapExporter", "Untitled");
+    if (cleaned.isEmpty()) cleaned = QCoreApplication::translate("MapExporter", kUntitled);
+    return moment.toString(QStringLiteral("yyyyMMdd'T'HHmmss")) + QLatin1Char(' ') + cleaned;
 }
 
 QString Document::exportMarkdownPath(const QString &chosenPath) {

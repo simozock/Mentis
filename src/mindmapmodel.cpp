@@ -1,6 +1,8 @@
 #include "mindmapmodel.h"
 #include "markdownshortcuts.h"
+#include "mapstructure.h"
 #include "markers.h"
+#include "imageframe.h"
 #include "nodeshape.h"
 #include "markdownimport.h"
 #include "pitch.h"
@@ -115,6 +117,7 @@ QJsonObject ganttTopicJson(const MindNode *node) {
     if (!node->ganttShape.isEmpty()) gantt.insert(QLatin1StringView("shape"), node->ganttShape);  // FEAT-080
     if (!node->ganttFill.isEmpty()) gantt.insert(QLatin1StringView("fill"), node->ganttFill);
     if (!node->ganttBorder.isEmpty()) gantt.insert(QLatin1StringView("border"), node->ganttBorder);
+    if (node->ganttBorderColor.isValid()) gantt.insert(QLatin1StringView("borderColor"), node->ganttBorderColor.name());
     return gantt;
 }
 
@@ -146,6 +149,8 @@ struct NodeFieldValues {
     int imageOpacity = ImageStyle::kMaxOpacity;
     bool imageOutline = false;  // FEAT-051
     int imageRotation = 0;
+    QString imageShape;  // FEAT-129: NodeStyle::shapeKey, empty = rectangle
+    QString imageEffect;  // FEAT-131: ImageFrame::effectKey, empty = none
     int task = 0;  // FEAT-048: MindNode::Task
     QStringList labels;  // FEAT-060
     QList<NodeFile> files;  // FEAT-049
@@ -177,6 +182,8 @@ NodeFieldValues fieldValues(const MindNode *node) {
             static_cast<int>(node->imageStyle.border), node->imageStyle.borderWidth,
             node->imageStyle.borderColor.name(QColor::HexArgb), node->imageStyle.shadow, node->imageStyle.opacity,
             node->imageStyle.outline, node->imageStyle.rotation,
+            node->imageStyle.shape == NodeShape::Rettangolo ? QString() : NodeStyle::shapeKey(node->imageStyle.shape),
+            ImageFrame::effectKey(node->imageStyle.effect),
             static_cast<int>(node->task), node->labels, node->files, node->formula,
             node->formula.isEmpty() || node->formulaBackground == QColor(Qt::white) ? QString() : node->formulaBackground.name(QColor::HexArgb),
             node->imageSticker && !node->imagePath.isEmpty(), node->markers,
@@ -256,6 +263,8 @@ void writeFields(QJsonObject &fields, const NodeFieldValues &values, const NodeF
     putIfChanged("imageOpacity", &NodeFieldValues::imageOpacity);
     putIfChanged("imageOutline", &NodeFieldValues::imageOutline);
     putIfChanged("imageRotation", &NodeFieldValues::imageRotation);
+    putIfChanged("imageShape", &NodeFieldValues::imageShape);
+    putIfChanged("imageEffect", &NodeFieldValues::imageEffect);
     // FEAT-051: adesivo e marcatori; assenti = no.
     if (!previous || previous->imageSticker != values.imageSticker) {
         if (values.imageSticker) fields.insert(QLatin1StringView("imageSticker"), true);
@@ -430,6 +439,8 @@ void applyNodeFields(MindNode *node, const QJsonObject &in) {
     look.opacity = std::clamp(in["imageOpacity"].toInt(ImageStyle::kMaxOpacity), ImageStyle::kMinOpacity, ImageStyle::kMaxOpacity);
     look.outline = in["imageOutline"].toBool(false);
     if (const int rotation = in["imageRotation"].toInt(0); rotation == 90 || rotation == 180 || rotation == 270) look.rotation = rotation;
+    look.shape = NodeStyle::shapeFromKey(in["imageShape"].toString()).value_or(NodeShape::Rettangolo);
+    look.effect = ImageFrame::effectFromKey(in["imageEffect"].toString());
     node->imageStyle = look;
     QStringList labels;  // FEAT-060
     for (const QJsonValue &label : in["labels"].toArray()) labels.append(label.toString());
@@ -471,6 +482,8 @@ void applyNodeFields(MindNode *node, const QJsonObject &in) {
     node->ganttShape = gantt["shape"].toString();  // FEAT-080
     node->ganttFill = gantt["fill"].toString();
     node->ganttBorder = gantt["border"].toString();
+    const QColor borderColor = QColor::fromString(gantt["borderColor"].toString());  // opaque only
+    node->ganttBorderColor = borderColor.alpha() == 255 ? borderColor : QColor();
     const QString task = in["task"].toString();  // FEAT-048
     node->task = task == QLatin1String("done") ? MindNode::Task::Done : task == QLatin1String("open") ? MindNode::Task::Open : MindNode::Task::None;
     node->stackOrder = in["stack"].toInt(0);  // FEAT-057
@@ -920,6 +933,7 @@ MindNode *MindMapModel::insertSubtree(MindNode *parentNode, int row, const QJson
     parentNode->children.insert(parentNode->children.begin() + row, std::move(node));
     if (summary) emit summaryBranchChanged(summary);
     else endInsertRows();
+    refitBoundaries({result});
     emit structureChanged();
     return result;
 }
@@ -984,6 +998,11 @@ Boundary boundaryLookReset(Boundary boundary) {
     boundary.lineWidth.reset();
     boundary.linePattern.reset();
     boundary.fillColor.reset();
+    boundary.fillStyle = NodeFillStyle::Pieno;  // FEAT-134
+    boundary.titleFont.clear();  // FEAT-130
+    boundary.titleSize.reset();
+    boundary.titleColor.reset();
+    boundary.titleBold = false;
     return boundary;
 }
 
@@ -1290,6 +1309,7 @@ MindNode *MindMapModel::addChild(MindNode *parentNode, const QString &title) {
     auto *result = parentNode->children.at(row).get();
     if (summary) emit summaryBranchChanged(summary);
     else endInsertRows();
+    refitBoundaries({result});
     emit structureChanged();
     return result;
 }
@@ -1329,6 +1349,7 @@ MindNode *MindMapModel::addSibling(MindNode *node) {
     parentNode->children.insert(parentNode->children.begin() + row, std::move(created));
     if (summary) emit summaryBranchChanged(summary);
     else endInsertRows();
+    refitBoundaries({result});
     emit structureChanged();
     return result;
 }
@@ -1345,18 +1366,21 @@ MindNode *MindMapModel::addSiblingBefore(MindNode *node) {
     parentNode->children.insert(parentNode->children.begin() + row, std::move(created));
     if (summary) emit summaryBranchChanged(summary);
     else endInsertRows();
+    refitBoundaries({result});
     emit structureChanged();
     return result;
 }
 
 MindNode *MindMapModel::insertParent(MindNode *node) {
     if (node && levelOf(node) + branchLevels(node) > kMaxTreeDepth) { emit depthLimitReached(); return nullptr; }  // BUG-046
+    m_boundaryRefitSuspended = true;  // the new parent takes the node's place in its boundaries below
     MindNode *created = addSiblingBefore(node);
-    if (!created) return nullptr;
+    if (!created) { m_boundaryRefitSuspended = false; return nullptr; }
     created->side = node->side;
     created->manualOffset = node->manualOffset;
     node->side = MindNode::Side::Auto;
     moveNode(node, created, 0);  // drops the node's manual position (a new parent)
+    m_boundaryRefitSuspended = false;
     const auto takeOver = [node, created](QStringList &topics) {
         for (QString &id : topics) if (id == node->id) id = created->id;
     };
@@ -1364,6 +1388,112 @@ MindNode *MindMapModel::insertParent(MindNode *node) {
     for (Boundary &boundary : boundaries) takeOver(boundary.topics);
     emit structureChanged();  // again, with the ids moved (the signals above came half-way)
     return created;
+}
+
+void MindMapModel::refitBoundaries(const QList<const MindNode *> &moved, const QList<const MindNode *> &crossed) {
+    if (m_boundaryRefitSuspended || boundaries.isEmpty()) return;
+    QSet<QString> movedIds, crossedIds;
+    for (const MindNode *node : moved) if (node) movedIds.insert(node->id);
+    for (const MindNode *node : crossed) if (node) crossedIds.insert(node->id);
+    if (movedIds.isEmpty()) return;
+    // Out of its run wherever its siblings are: placed by hand, or moved to the other side.
+    const auto leavesRun = [&](const MindNode *node) {
+        return node->floating || !node->manualOffset.isNull() || crossedIds.contains(node->id);
+    };
+    const auto sibling = [](const MindNode *node, int step) -> const MindNode * {
+        if (!node->parent) return nullptr;
+        const int row = rowOf(node) + step;
+        const auto &siblings = node->parent->children;
+        return row >= 0 && row < int(siblings.size()) ? siblings[row].get() : nullptr;
+    };
+    // The runs of siblings among ids, parents in the order of their first topic, each run first to last.
+    const auto runsOf = [this](const QStringList &ids) {
+        QList<const MindNode *> parents;
+        QHash<const MindNode *, QList<std::pair<int, QString>>> rowsOf;
+        for (const QString &id : ids) {
+            const MindNode *node = nodeById(id);
+            if (!node || !node->parent) continue;
+            if (!rowsOf.contains(node->parent)) parents.append(node->parent);
+            rowsOf[node->parent].append({rowOf(node), id});
+        }
+        QList<QStringList> runs;
+        for (const MindNode *parent : std::as_const(parents)) {
+            auto rows = rowsOf.value(parent);
+            std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+            for (qsizetype i = 0; i < rows.size(); ++i) {
+                if (i == 0 || rows[i].first != rows[i - 1].first + 1) runs.append(QStringList());
+                runs.last().append(rows[i].second);
+            }
+        }
+        return runs;
+    };
+    QList<Boundary> added;
+    const auto alreadyBounded = [&](const QStringList &topics) {
+        const auto same = [&](const Boundary &other) { return other.topics == topics; };
+        return std::any_of(boundaries.cbegin(), boundaries.cend(), same) || std::any_of(added.cbegin(), added.cend(), same);
+    };
+    QSet<QString> emptied;
+    for (Boundary &boundary : boundaries) {
+        const QSet<QString> before(boundary.topics.cbegin(), boundary.topics.cend());
+        QSet<QString> covered = before;
+        QStringList splitOff;  // left the run for a place of their own: they get their own boundary
+        const bool follows = std::all_of(boundary.topics.cbegin(), boundary.topics.cend(),
+                                         [&](const QString &id) { return movedIds.contains(id); });
+        const auto isCovered = [&](const MindNode *node) { return node && covered.contains(node->id); };
+        const auto insideCovered = [&](const MindNode *node) {
+            for (const MindNode *up = node->parent; up; up = up->parent) if (covered.contains(up->id)) return true;
+            return false;
+        };
+        bool touched = false;
+        for (const MindNode *node : moved) {
+            if (!node) continue;
+            const bool above = isCovered(sibling(node, -1)), below = isCovered(sibling(node, 1));
+            if (covered.contains(node->id)) {
+                touched = true;  // stays or leaves, the run is listed again first to last
+                if (follows) continue;
+                const bool anotherParent = std::none_of(covered.cbegin(), covered.cend(), [&](const QString &id) {
+                    const MindNode *other = id == node->id ? nullptr : nodeById(id);
+                    return other && other->parent == node->parent;
+                });
+                if (leavesRun(node) || (!above && !below)) {
+                    covered.remove(node->id);
+                    // Past an uncovered sibling, or into a branch the boundary covers: it only leaves.
+                    if (!node->floating && (leavesRun(node) || anotherParent) && !insideCovered(node)) splitOff.append(node->id);
+                }
+            } else if (!leavesRun(node) && above && below) {
+                covered.insert(node->id);
+                touched = true;
+            }
+        }
+        if (!touched) continue;
+        QStringList remaining;
+        for (const QString &id : std::as_const(boundary.topics)) if (covered.contains(id)) remaining.append(id);
+        for (const QString &id : std::as_const(covered)) if (!before.contains(id)) remaining.append(id);
+        QList<QStringList> pieces = runsOf(remaining);
+        // The longest remaining piece keeps the boundary (the first when equal), relationships included.
+        const auto longest = std::max_element(pieces.cbegin(), pieces.cend(),
+                                              [](const QStringList &a, const QStringList &b) { return a.size() < b.size(); });
+        if (longest != pieces.cend() && longest != pieces.cbegin()) pieces.move(longest - pieces.cbegin(), 0);
+        for (const QStringList &run : runsOf(splitOff)) {
+            // Topics that left together and are still siblings side by side share one.
+            if (const MindNode *first = nodeById(run.front()); first && MapStructure::insideTreeTable(first)) continue;
+            pieces.append(run);
+        }
+        const Boundary original = boundary;
+        boundary.topics = pieces.isEmpty() ? QStringList() : pieces.takeFirst();
+        if (boundary.topics.isEmpty()) emptied.insert(boundary.id);
+        for (const QStringList &run : std::as_const(pieces)) {
+            if (alreadyBounded(run)) continue;  // BUG-024: never a second identical one
+            Boundary copy = original;  // the same title and style (user 2026-11-13)
+            copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            copy.topics = run;
+            added.append(copy);
+        }
+    }
+    boundaries.append(added);
+    if (emptied.isEmpty()) return;
+    boundaries.removeIf([&](const Boundary &boundary) { return emptied.contains(boundary.id); });
+    relations.removeIf([&](const Relationship &relation) { return emptied.contains(relation.from) || emptied.contains(relation.to); });
 }
 
 bool MindMapModel::removeNode(MindNode *node, bool pruneAnnotations) {
@@ -1394,8 +1524,11 @@ bool MindMapModel::removeNode(MindNode *node, bool pruneAnnotations) {
     if (summary) emit summaryBranchAboutToChange(summary);
     else beginRemoveRows(indexFromNode(parentNode), row, row);
     parentNode->children.erase(parentNode->children.begin() + row);
-    if (summary) emit summaryBranchChanged(summary);
-    else endRemoveRows();
+    if (summary) {
+        emit summaryBranchChanged(summary);
+    } else {
+        endRemoveRows();
+    }
     emit structureChanged();
     return true;
 }
@@ -1423,6 +1556,7 @@ bool MindMapModel::indentNode(MindNode *node) {
     newParent->children.push_back(std::move(moved));
     if (summary) emit summaryBranchChanged(summary);
     else if (moveSignals) endMoveRows(); else endResetModel();
+    refitBoundaries({node});
     emit structureChanged();
     return true;
 }
@@ -1447,11 +1581,12 @@ bool MindMapModel::outdentNode(MindNode *node) {
     newParent->children.insert(newParent->children.begin() + parentRow + 1, std::move(moved));
     if (summary) emit summaryBranchChanged(summary);
     else if (moveSignals) endMoveRows(); else endResetModel();
+    refitBoundaries({node});
     emit structureChanged();
     return true;
 }
 
-bool MindMapModel::moveNode(MindNode *node, MindNode *newParent, int row) {
+bool MindMapModel::moveNode(MindNode *node, MindNode *newParent, int row, bool crossedSides) {
     if (!node || node == m_root.get() || !node->parent || !newParent || node == newParent) return false;
     // FEAT-052: a summary topic has no row; a topic stays in its tree (the main one, or one summary
     // topic's branch).
@@ -1495,6 +1630,7 @@ bool MindMapModel::moveNode(MindNode *node, MindNode *newParent, int row) {
     newParent->children.insert(newParent->children.begin() + destination, std::move(moved));
     if (summary) emit summaryBranchChanged(summary);
     else if (moveSignals) endMoveRows(); else endResetModel();
+    refitBoundaries({node}, crossedSides ? QList<const MindNode *>{node} : QList<const MindNode *>{});
     emit structureChanged();
     return true;
 }

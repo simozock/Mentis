@@ -1,6 +1,7 @@
 #include "pitch.h"
 
 #include "formulatext.h"
+#include "imageframe.h"
 #include "markers.h"
 #include "mindmapmodel.h"
 #include "formularendering.h"
@@ -94,6 +95,23 @@ constexpr qreal kFigureResolutionPerMapScale = 2;
 constexpr qreal kMaxFigurePx = 1280;
 
 bool hasFigure(const MindNode *node) { return !node->formula.isEmpty() || !node->imagePath.isEmpty(); }
+
+// FEAT-064 on the slides: a title or item with $...$ is laid out and drawn by the formula renderer, as
+// the map's topics (FormulaRendering's hooks); null for plain text or without the hooks. Cached: the
+// layout measures each entry several times and a fade repaints every frame.
+std::shared_ptr<const FormulaRendering::TitleFormula> formulaOf(const QString &text, const QFont &font, const QColor &color, qreal maxWidth) {
+    if (!FormulaRendering::hooks().layoutTitle || !FormulaText::containsMath(text)) return nullptr;
+    struct Entry { std::shared_ptr<const FormulaRendering::TitleFormula> formula; };
+    static QMutex mutex;
+    static QCache<QString, Entry> cache(256);
+    const QString key = font.toString() + QLatin1Char('|') + color.name(QColor::HexArgb) + QLatin1Char('|')
+                        + QString::number(maxWidth, 'g', 10) + QLatin1Char('|') + text;
+    const QMutexLocker lock(&mutex);
+    if (const Entry *entry = cache.object(key)) return entry->formula;
+    std::shared_ptr<const FormulaRendering::TitleFormula> formula = FormulaRendering::hooks().layoutTitle(text, font, color, maxWidth);
+    cache.insert(key, new Entry{formula});
+    return formula;
+}
 }  // namespace
 
 Extras extrasOf(const MindNode *node) {
@@ -116,9 +134,10 @@ Extras extrasOf(const MindNode *node) {
         const QSize target = (upright * resolution).toSize().expandedTo(QSize(1, 1));
         const QSize source = reader.size();
         if (source.isValid() && (source.width() > target.width() || source.height() > target.height())) reader.setScaledSize(target);
-        image = reader.read();
+        image = ImageFrame::withEffect(reader.read(), node->imageStyle.effect);  // FEAT-131, before the outline
         if (!image.isNull() && node->imageSticker && node->imageStyle.outline) image = Stickers::outlined(image);
     }
+    if (!node->formula.isEmpty()) image = ImageFrame::withEffect(image, node->imageStyle.effect);  // FEAT-131
     if (image.isNull()) return extras;  // a missing file: the entry shows no figure, as the spec says
     if (rotation != 0) image = image.transformed(QTransform().rotate(rotation), Qt::SmoothTransformation);
     extras.figure = image;
@@ -153,7 +172,9 @@ EntryLayout layoutEntry(const QRectF &box, int alignment, const QFont &font, con
     const qreal markersWidth = markerCount == 0 ? 0 : markerCount * icon + (markerCount - 1) * icon * kMarkerGap + icon * kMarkerTextGap;
     const qreal gap = line * kFigureGapLines;
     const bool wrap = alignment & Qt::TextWordWrap;
-    const qreal advance = metrics.horizontalAdvance(text);
+    // The size does not depend on the colour: black measures for every theme.
+    const std::shared_ptr<const FormulaRendering::TitleFormula> oneLine = formulaOf(text, font, Qt::black, 0);
+    const qreal advance = oneLine ? oneLine->size().width() : metrics.horizontalAdvance(text);
 
     QSizeF figure;
     if (extras.hasFigure()) {
@@ -175,6 +196,14 @@ EntryLayout layoutEntry(const QRectF &box, int alignment, const QFont &font, con
     result.textFlags = (alignment & Qt::AlignHorizontal_Mask) | Qt::AlignVCenter | (breakWords ? Qt::TextWrapAnywhere : wrap ? Qt::TextWordWrap : 0);
     QSizeF textSize = wrap ? metrics.boundingRect(QRectF(0, 0, textRoom, 1e6), result.textFlags & ~Qt::AlignVertical_Mask, text).size()
                            : QSizeF(std::min(advance, textRoom), line);
+    if (oneLine) {
+        // The renderer wraps between words and whole formulas; one still wider than the room counts
+        // as a broken word, so that fittedFont makes the font smaller first.
+        result.formulaWidth = wrap ? textRoom : 0;
+        const std::shared_ptr<const FormulaRendering::TitleFormula> laid = wrap ? formulaOf(text, font, Qt::black, textRoom) : oneLine;
+        textSize = laid->size();
+        result.textFlags = (alignment & Qt::AlignHorizontal_Mask) | Qt::AlignVCenter | (wrap && textSize.width() > textRoom + 0.5 ? Qt::TextWrapAnywhere : 0);
+    }
     textSize = QSizeF(std::min(textSize.width(), textRoom), std::max(textSize.height(), line));
     // The figure shrinks to the room the box leaves it; too small to read, it is left out.
     if (!figure.isEmpty()) {
@@ -554,39 +583,26 @@ QPainterPath brace(qreal x, qreal width, qreal y0, qreal y1) {
     return path;
 }
 
-// Draws an entry where layoutEntry put its parts. The figure keeps the node's look (FEAT-040):
-// the shadow and the border scale with it, the opacity multiplies the painter's.
+// Draws an entry where layoutEntry put its parts. The figure keeps the node's look (FEAT-040,
+// FEAT-129): the shape, the shadow and the border scale with it, the opacity multiplies the painter's.
 // texts: when given, the text is captured there (as item) instead of drawn.
 void paintEntry(QPainter *painter, const EntryLayout &layout, int alignment, const QFont &font, const QString &text,
                 const Extras &extras, const QColor &textColor, QList<TextRun> *texts = nullptr, int item = -1) {
-    if (!layout.figure.isEmpty()) {
-        const ImageStyle &style = extras.figureStyle;
-        const qreal scale = layout.figure.height() / extras.nodeFigureSize.height();
-        if (style.shadow) {
+    if (!layout.figure.isEmpty())
+        ImageFrame::paint(painter, layout.figure, extras.figure, extras.figureStyle, layout.figure.height() / extras.nodeFigureSize.height());
+    for (qsizetype i = 0; i < layout.markers.size(); ++i) Markers::paint(painter, layout.markers[i], extras.markers.value(i));
+    if (layout.formulaWidth >= 0) {
+        // Formulas are drawn even when the texts are captured: the PowerPoint export keeps them in the
+        // slide's pictures, as it has no LaTeX.
+        if (const auto formula = formulaOf(text, font, textColor, layout.formulaWidth)) {
             painter->save();
-            painter->setPen(Qt::NoPen);
-            const int alphas[] = {10, 8, 6, 4};
-            for (int i = 0; i < 4; ++i) {
-                const qreal grow = (i + 1) * scale;
-                painter->setBrush(QColor(15, 23, 42, alphas[i]));
-                painter->drawRoundedRect(layout.figure.adjusted(-grow, -grow + 2 * scale, grow, grow + 2 * scale), grow, grow);
-            }
+            const qreal margin = QFontMetricsF(font).height();
+            painter->setClipRect(layout.text.adjusted(-1, -margin, 1, margin), Qt::IntersectClip);
+            formula->draw(painter, layout.text, Qt::Alignment(alignment & Qt::AlignHorizontal_Mask));
             painter->restore();
-        }
-        const qreal opacity = painter->opacity();
-        painter->setOpacity(opacity * style.opacity / 100.0);
-        painter->drawImage(layout.figure, extras.figure);
-        painter->setOpacity(opacity);
-        if (style.border != ImageStyle::Border::None) {
-            const Qt::PenStyle pen = style.border == ImageStyle::Border::Dashed ? Qt::DashLine
-                                     : style.border == ImageStyle::Border::Dotted ? Qt::DotLine : Qt::SolidLine;
-            const qreal width = style.borderWidth * scale;
-            painter->setPen(QPen(style.borderColor, width, pen, Qt::FlatCap, Qt::MiterJoin));
-            painter->setBrush(Qt::NoBrush);
-            painter->drawRect(layout.figure.adjusted(width / 2, width / 2, -width / 2, -width / 2));
+            return;
         }
     }
-    for (qsizetype i = 0; i < layout.markers.size(); ++i) Markers::paint(painter, layout.markers[i], extras.markers.value(i));
     painter->setFont(font);
     painter->setPen(textColor);
     const bool wrap = alignment & Qt::TextWordWrap;
@@ -614,7 +630,7 @@ Rows listRows(const Slide &slide, const QFont &font, qreal lineHeight, qreal wid
         for (qsizetype i = 0; i < slide.items.size(); ++i) {
             const Extras extras = slide.itemExtras.value(i);
             qreal height = lineHeight;
-            if (extras.hasFigure()) {
+            if (extras.hasFigure() || FormulaText::containsMath(slide.items[i])) {  // a fraction is taller than a line
                 const EntryLayout entry = layoutEntry(QRectF(0, 0, width, 1e6), Qt::AlignLeft | Qt::AlignTop, font, slide.items[i], extras, figureCap, scale);
                 height = std::max(lineHeight, entry.block.height() + padding);
             }

@@ -63,6 +63,7 @@ private slots:
     void standardRowsHaveTheirDefaults();
     void defaultKeysHaveNoConflicts();
     void standardKeysAct();
+    void backspaceDeletesAsDelete();
     void panelKeysToggle();
     void topicKeysAreMapOnly();
     void menusShowTheKeys();
@@ -255,7 +256,7 @@ void ShortcutsUiTest::conflictAsksAndReplaceMovesTheKey() {
     // Tab in Mappa e nell'outliner convivono: nessuna domanda.
     bool asked = false;
     onNextModal([&](ModalDialog *modal) { asked = true; modal->reject(); });
-    edit(page, QStringLiteral("addChild"), 1)->setKeySequence(QKeySequence(Qt::Key_Backspace));  // usato solo nell'Outliner (Riduci rientro)
+    edit(page, QStringLiteral("addChild"), 1)->setKeySequence(QKeySequence(QStringLiteral("Shift+Tab")));  // used only in the outliner (Outdent)
     QTRY_COMPARE_WITH_TIMEOUT(m_registry->shortcuts(QStringLiteral("addChild")).size(), 2, 2000);
     QVERIFY(!asked);
     // Ripristina tutte.
@@ -365,8 +366,7 @@ void ShortcutsUiTest::standardRowsHaveTheirDefaults() {
         {"summary", Area::Map, {}},
         {"note", Area::Map, keys({"Ctrl+Shift+N"})},
         {"labels", Area::Map, keys({"Ctrl+Shift+L"})},
-        {"webLink", Area::Map, keys({"Ctrl+K"})},
-        {"topicLink", Area::Map, {}},
+        {"link", Area::Map, keys({"Ctrl+K"})},
         {"attachFiles", Area::Map, {}},
         {"markers", Area::Map, {}},
         {"stickers", Area::Map, {}},
@@ -481,6 +481,53 @@ void ShortcutsUiTest::standardKeysAct() {
     QCOMPARE(m_window->findChild<SidePanel *>(QStringLiteral("InspectorSidePanel"))->currentPage(), 0);  // Style
     press(Qt::Key_G, Qt::ControlModifier | Qt::AltModifier);
     QVERIFY(m_window->findChild<GanttView *>()->isVisible());
+}
+
+// FEAT-125: Backspace deletes as Delete, on the map and in the outliner (Outdent is Shift+Tab only).
+void ShortcutsUiTest::backspaceDeletesAsDelete() {
+    for (auto *button : m_window->findChildren<QPushButton *>())  // an earlier test may leave the outliner
+        if (button->text() == QStringLiteral("Mind map")) { button->click(); break; }
+    while (!m_model->root()->children.empty()) m_model->removeNode(m_model->root()->children.front().get());
+    MindNode *node = m_model->addChild(m_model->root(), QStringLiteral("Uno"));
+    auto *view = m_window->findChild<MindMapView *>();
+    auto *scene = qobject_cast<MindMapScene *>(view->scene());
+    scene->autoLayout();
+    QApplication::processEvents();
+    m_window->activateWindow();
+    QVERIFY(QTest::qWaitForWindowActive(m_window.get()));
+    scene->selectNode(node);
+    view->setFocus();
+    // While the title is typed Backspace is the text's: one character goes, the topic stays.
+    QTest::keyClick(view->viewport(), Qt::Key_Space);
+    QApplication::processEvents();
+    QTest::keyClicks(view->viewport(), QStringLiteral("xy"));
+    QTest::keyClick(view->viewport(), Qt::Key_Backspace);
+    QTest::keyClick(view->viewport(), Qt::Key_Return);
+    QApplication::processEvents();
+    QCOMPARE(m_model->root()->children.size(), size_t(1));
+    QVERIFY2(node->title.endsWith(QLatin1Char('x')), qPrintable(node->title));
+    QTest::keyClick(view->viewport(), Qt::Key_Backspace);
+    QApplication::processEvents();
+    QVERIFY(m_model->root()->children.empty());
+    QCOMPARE(m_registry->shortcuts(QStringLiteral("outlineOutdent")), QList<QKeySequence>{QKeySequence(QStringLiteral("Shift+Tab"))});
+
+    m_model->addChild(m_model->root(), QStringLiteral("A"));
+    MindNode *b = m_model->addChild(m_model->root(), QStringLiteral("B"));
+    QApplication::processEvents();
+    for (auto *button : m_window->findChildren<QPushButton *>())
+        if (button->text() == QStringLiteral("Outliner")) { button->click(); break; }
+    QTreeView *tree = nullptr;
+    for (auto *candidate : m_window->findChildren<QTreeView *>())
+        if (candidate->isVisible() && candidate->model() == m_model) tree = candidate;
+    QVERIFY(tree);
+    tree->setFocus();
+    tree->selectionModel()->setCurrentIndex(m_model->indexFromNode(b), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    QTest::keyClick(tree, Qt::Key_Backspace);
+    QApplication::processEvents();
+    QCOMPARE(m_model->root()->children.size(), size_t(1));
+    QCOMPARE(m_model->root()->children.front()->title, QStringLiteral("A"));
+    for (auto *button : m_window->findChildren<QPushButton *>())
+        if (button->text() == QStringLiteral("Mind map")) { button->click(); break; }
 }
 
 // 2026-11-05: Ctrl+Alt+S opens and closes the side panel of the view shown (Format panel on the map,

@@ -18,7 +18,9 @@
 #include <QGraphicsItem>
 #include <QLabel>
 #include <QPushButton>
+#include <QMouseEvent>
 #include <QScrollBar>
+#include <QSettings>
 #include <QStackedWidget>
 #include <QStyleFactory>
 #include <QTest>
@@ -58,6 +60,7 @@ private slots:
     void openingKeepsSelectionBesidePanel_data();
     void openingKeepsSelectionBesidePanel();
     void newChildAtTheEdgeIsShown();
+    void leftEdgeIsDragged();
 
 private:
     void setPanelOpen(bool open);
@@ -83,6 +86,7 @@ void SidePanelTest::initTestCase() {
     QCoreApplication::setApplicationName(QStringLiteral("MentisSidePanelTest"));
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     Performance::setMode(Performance::Mode::Light);  // apertura immediata; Standard in un test a parte
+    QSettings().remove(QStringLiteral("panels/sidePanelWidth"));  // the content's minimum, as a first start
     m_window = std::make_unique<MainWindow>();
     m_window->show();
     QVERIFY(QTest::qWaitForWindowExposed(m_window.get()));
@@ -427,6 +431,45 @@ void SidePanelTest::newChildAtTheEdgeIsShown() {
     auto *view = m_window->findChild<MindMapView *>();
     QVERIFY2(view->viewport()->rect().contains(nodeInView(created)), "the new child is beyond the edge");
     m_model->removeNode(created);
+}
+
+// User's request 2026-11-22: the panel's left edge is dragged, from the content's minimum to half
+// the window; the width is kept in the settings and used again at the next opening.
+void SidePanelTest::leftEdgeIsDragged() {
+    m_window->resize(1200, 800);
+    setPanelOpen(true);
+    auto *handle = m_window->findChild<QWidget *>(QStringLiteral("InspectorDockResizeHandle"));
+    QVERIFY(handle && handle->isVisible());
+    const int minimum = m_dock->width();
+    QCOMPARE(handle->cursor().shape(), Qt::SizeHorCursor);
+    QVERIFY(handle->geometry().contains(m_dock->geometry().left(), m_dock->geometry().center().y()));
+    const auto drag = [handle](int dx) {
+        const QPointF at = QPointF(handle->rect().center());
+        const QPointF global = handle->mapToGlobal(at);
+        QMouseEvent press(QEvent::MouseButtonPress, at, global, Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(handle, &press);
+        QMouseEvent move(QEvent::MouseMove, at + QPointF(dx, 0), global + QPointF(dx, 0), Qt::NoButton, Qt::LeftButton, Qt::NoModifier);
+        QApplication::sendEvent(handle, &move);
+        QMouseEvent release(QEvent::MouseButtonRelease, at + QPointF(dx, 0), global + QPointF(dx, 0), Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+        QApplication::sendEvent(handle, &release);
+        QApplication::processEvents();
+    };
+    drag(-100);  // to the left: wider
+    QCOMPARE(m_dock->width(), minimum + 100);
+    QCOMPARE(QSettings().value(QStringLiteral("panels/sidePanelWidth")).toInt(), minimum + 100);
+    drag(-2000);  // at most half the window, as far as the editor's minimum allows
+    QVERIFY(m_dock->width() > minimum + 100 && m_dock->width() <= m_window->width() / 2);
+    QVERIFY(m_dock->geometry().left() >= m_window->centralWidget()->geometry().left() + m_window->centralWidget()->minimumSizeHint().width());
+    QCOMPARE(QSettings().value(QStringLiteral("panels/sidePanelWidth")).toInt(), m_dock->width());
+    drag(2000);  // never under the content's minimum
+    QCOMPARE(m_dock->width(), minimum);
+    drag(-60);
+    setPanelOpen(false);
+    setPanelOpen(true);  // reopened at the dragged width
+    QCOMPARE(m_dock->width(), minimum + 60);
+    drag(2000);  // back to the minimum for the other tests
+    QCOMPARE(m_dock->width(), minimum);
+    QSettings().remove(QStringLiteral("panels/sidePanelWidth"));
 }
 
 QTEST_MAIN(SidePanelTest)

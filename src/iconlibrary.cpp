@@ -251,6 +251,34 @@ QString markerFor(const Item &item, const QString &collectionId, QByteArray *dat
     return Markers::customMarker(customGroup(collectionId), sha);
 }
 
+QList<MarkerChoice> groupMarkers(const QString &marker) {
+    if (!Markers::isCustom(marker)) return {};
+    const QString group = Markers::seriesOf(marker).section(QLatin1Char(':'), 1);
+    for (const Collection &collection : load(Kind::Marker)) {
+        if (collection.builtIn || customGroup(collection.id) != group) continue;
+        QList<MarkerChoice> choices;
+        for (const Item &item : collection.items) {
+            MarkerChoice choice{{}, item.name, {}};
+            choice.marker = markerFor(item, collection.id, &choice.data);
+            if (Markers::isValid(choice.marker)) choices.append(choice);
+        }
+        return choices;
+    }
+    return {};
+}
+
+QString nextMarker(const QString &marker, QByteArray *data) {
+    if (!Markers::isCustom(marker)) return Markers::next(marker);
+    const QList<MarkerChoice> choices = groupMarkers(marker);
+    for (qsizetype i = 0; i < choices.size(); ++i)
+        if (choices[i].marker == marker) {
+            const MarkerChoice &following = choices[(i + 1) % choices.size()];
+            if (data) *data = following.data;
+            return following.marker;
+        }
+    return marker;
+}
+
 QString displayName(const QString &path) {
     QString name = QFileInfo(path).completeBaseName();
     return name.replace(QLatin1Char('_'), QLatin1Char(' ')).replace(QLatin1Char('-'), QLatin1Char(' '));

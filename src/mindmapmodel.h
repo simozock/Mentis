@@ -163,6 +163,7 @@ struct MindNode {
     QString ganttShape;
     QString ganttFill;
     QString ganttBorder;
+    QColor ganttBorderColor;  // FEAT-080: the bar's own border colour; invalid = the sheet's
     static constexpr int kMaxPriority = 5;
     QStringList labels;      // FEAT-060: etichette, gia' ripulite (Labels::normalized)
     QList<NodeFile> files;   // FEAT-049: file allegati, nell'ordine in cui sono stati aggiunti
@@ -232,6 +233,15 @@ public:
     // (user, 2026-10-30). Part of the change that made it one, so Undo brings them back.
     void dropSummaryPlanning();
     QList<Boundary> boundaries;     // FEAT-052; changed through Document
+    // FEAT-052 point 8: after topics moved, inserted or placed by hand, each boundary they touch
+    // covers unbroken runs of siblings only. A covered topic placed by hand (a manual offset), moved
+    // to the other side (crossed) or under another parent leaves the run and gets a boundary of its
+    // own, a copy; moved past an uncovered sibling or into a covered branch, or made floating, it
+    // only leaves. A broken run gives each piece a boundary, the longest (the first when equal)
+    // keeping the original; a boundary whose topics all moved follows them. A topic landing between
+    // two covered siblings joins. A boundary left empty goes with its relationships. The add, move,
+    // indent, outdent and insert functions below call it themselves.
+    void refitBoundaries(const QList<const MindNode *> &moved, const QList<const MindNode *> &crossed = {});
     // Palette del foglio (FEAT-031): id (di base, NodeStyle::basePalettes, o di un modello o
     // personalizzata) e i suoi colori, salvati entrambi cosi' il foglio si apre uguale ovunque. I
     // rami principali prendono i colori in ordine. Per cambiarla usare setPalette(), che ricalcola i
@@ -345,7 +355,8 @@ public:
     bool removeNode(MindNode *node, bool pruneAnnotations = true);
     bool indentNode(MindNode *node);
     bool outdentNode(MindNode *node);
-    bool moveNode(MindNode *node, MindNode *newParent, int row = -1);
+    // crossedSides: the node goes to the other side of the central topic (FEAT-052 point 8).
+    bool moveNode(MindNode *node, MindNode *newParent, int row = -1, bool crossedSides = false);
     // Copia/incolla e duplica dell'outliner: il ramo completo (nodo + discendenti) in JSON,
     // nello stesso formato dei file .mentis. L'inserimento assegna id nuovi a tutta la copia.
     QJsonObject subtreeToJson(const MindNode *node) const;
@@ -438,6 +449,7 @@ private:
     mutable QJsonObject m_markerImagesJson;  // cache: si ricodifica solo quando cambiano
     mutable bool m_markerImagesDirty = true;
     std::unique_ptr<MindNode> m_root;
+    bool m_boundaryRefitSuspended = false;  // insertParent hands the boundaries over itself
     struct FlatSnapshotCache;
     std::unique_ptr<FlatSnapshotCache> m_flatCache;  // mutable nel contenuto: toFlatSnapshot() e' const
 };

@@ -46,7 +46,6 @@ QString profileName(Profile value) {
 
 // Standard: valori in uso prima dei profili. Leggero: meno lavoro per CPU, disco e memoria.
 int autoSaveDelayMs() { return light() ? 2000 : 750; }
-double detailZoomThreshold() { return light() ? 0.6 : 0.4; }
 double imageScaleFactor() { return light() ? 1.0 : 2.0; }
 int pixmapCacheKb() { return light() ? 10240 : 32768; }
 bool smoothPixmaps() { return !light(); }

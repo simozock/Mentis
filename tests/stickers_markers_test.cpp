@@ -1030,6 +1030,33 @@ void StickersMarkersTest::customMarkerFromAFile() {
     // Lo stesso clic lo toglie.
     clickCell(0, page->shownPaths().back());
     QCOMPARE(node->markers, QStringList{QStringLiteral("flag:red")});
+    // User's request 2026-11-19: an own group steps as a drawn series. A second marker of the group
+    // replaces the first; a click on it on the map gives the group's next one (the last goes back to
+    // the first), one step; the right click lists the group's markers.
+    clickCell(0, page->shownPaths().back());
+    const QString second = svg(QStringLiteral("stella.svg"), QStringLiteral("gold"));
+    page->pickFiles = [second] { return QStringList{second}; };
+    page->addFiles({});
+    QCOMPARE(node->markers.size(), 2);
+    QVERIFY(node->markers.contains(QStringLiteral("flag:red")));
+    QVERIFY(!node->markers.contains(marker));
+    m_model->markerImages.clear();  // the step puts the next one's image back in the document
+    flushHistory();
+    NodeItem *item = itemFor(node);
+    const int at = int(node->markers.indexOf(QStringLiteral("flag:red"))) == 0 ? 1 : 0;
+    const QPoint point = m_view->mapFromScene(item->mapToScene(item->markerRects().at(at).center()));
+    QTest::mouseClick(m_view->viewport(), Qt::LeftButton, {}, point);
+    QApplication::processEvents();
+    QVERIFY(node->markers.contains(marker));
+    QVERIFY(m_model->markerImages.contains(Markers::customImage(marker)));
+    flushHistory();
+    undo();
+    QVERIFY(!node->markers.contains(marker));
+    chooseInNextMenu(QStringLiteral("cuore"));
+    QContextMenuEvent event(QContextMenuEvent::Mouse, point, m_view->viewport()->mapToGlobal(point));
+    QApplication::sendEvent(m_view->viewport(), &event);
+    QApplication::processEvents();
+    QVERIFY(node->markers.contains(marker));
 }
 
 // Richiesta dell'utente 2026-10-20: the columns fill the panel's width. Since FEAT-072 B1

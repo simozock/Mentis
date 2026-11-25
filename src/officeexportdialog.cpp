@@ -26,7 +26,7 @@ QString titleFor(GanttOffice::Format format) {
 }
 }  // namespace
 
-OfficeExportDialog::OfficeExportDialog(QWidget *parent, GanttOffice::Format format, GanttChart::Scale viewUnit, bool preferGantt)
+OfficeExportDialog::OfficeExportDialog(QWidget *parent, GanttOffice::Format format, GanttCanvas::Scale viewUnit, bool preferGantt)
     : ModalDialog(parent, titleFor(format), tr("Export…"), 520) {
     Help::setPage(this, QStringLiteral("files/export-documents.md"));  // FEAT-092: F1 and "?" open it
     setObjectName(QStringLiteral("OfficeExportDialog"));
@@ -78,8 +78,8 @@ bool OfficeExportDialog::ganttChosen() const { return m_kind->currentIndex() == 
 
 GanttPages::Content OfficeExportDialog::content() const { return static_cast<GanttPages::Content>(m_content->currentIndex()); }
 
-GanttChart::Scale OfficeExportDialog::unit() const {
-    return m_unit ? static_cast<GanttChart::Scale>(m_unit->currentIndex()) : GanttChart::Scale::Days;
+GanttCanvas::Scale OfficeExportDialog::unit() const {
+    return m_unit ? static_cast<GanttCanvas::Scale>(m_unit->currentIndex()) : GanttCanvas::Scale::Days;
 }
 
 void OfficeExportDialog::accept() {

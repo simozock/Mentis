@@ -1,7 +1,10 @@
 #include "formuladialog.h"
 #include "help.h"
 
+#include "bracecompletion.h"
 #include "formulatext.h"
+#include "latexcatalogue.h"
+#include "latexlistdialog.h"
 #include "stylecontrols.h"
 #include "uitheme.h"
 
@@ -112,6 +115,14 @@ FormulaDialog::FormulaDialog(QWidget *parent, const QString &code, const QColor 
     });
     backgroundRow->addWidget(m_backgroundField);
     contentLayout()->addLayout(backgroundRow);
+    // FEAT-132: the list of LaTeX commands, a modal over this one; the chosen entry goes in at the cursor.
+    m_listButton = addSideButton(tr("Symbols and formulas…"));
+    connect(m_listButton, &QPushButton::clicked, this, [this] {
+        LatexListDialog list(this);
+        const bool chosen = list.exec() == QDialog::Accepted;
+        m_field->setFocus();
+        if (chosen) insertCode(list.chosenCode());
+    });
     connect(m_field, &QPlainTextEdit::textChanged, this, &FormulaDialog::refresh);
     refresh();
     m_field->setFocus();
@@ -119,6 +130,18 @@ FormulaDialog::FormulaDialog(QWidget *parent, const QString &code, const QColor 
 }
 
 QString FormulaDialog::code() const { return m_field->toPlainText().trimmed(); }
+
+void FormulaDialog::insertCode(const QString &code) {
+    QTextCursor cursor = m_field->textCursor();
+    const QString value = m_field->toPlainText();
+    const int start = cursor.selectionStart();
+    const int end = cursor.selectionEnd();
+    const LatexCatalogue::Insertion insertion = LatexCatalogue::insert(value, start, end, code);
+    // One edit through the cursor, so Ctrl+Z in the field takes it back in one step.
+    cursor.insertText(insertion.text.mid(start, insertion.text.size() - value.size() + (end - start)));
+    cursor.setPosition(insertion.caret);
+    m_field->setTextCursor(cursor);
+}
 
 void FormulaDialog::refresh() {
     const QString text = code();
@@ -134,11 +157,18 @@ void FormulaDialog::refresh() {
 }
 
 bool FormulaDialog::eventFilter(QObject *watched, QEvent *event) {
-    // Invio va a capo nel codice; Ctrl+Invio conferma (come il bottone principale).
+    // Invio va a capo nel codice; Ctrl+Invio conferma tramite ModalDialog (bottone principale, se attivo).
     if (watched == m_field && event->type() == QEvent::KeyPress) {
         auto *key = static_cast<QKeyEvent *>(event);
-        if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) && (key->modifiers() & Qt::ControlModifier)) {
-            if (m_valid) accept();
+        // FEAT-133: the field takes the key, then the braces are closed (the whole field is LaTeX).
+        if (key->key() == Qt::Key_Backspace || key->text() == QLatin1String("{") || key->text() == QLatin1String("}")) {
+            BraceCompletion::KeyTyping braces;
+            if (QTextCursor cursor = m_field->textCursor(); braces.before(cursor, key, BraceCompletion::Scope::Code)) {
+                m_field->setTextCursor(cursor);
+                return true;
+            }
+            static_cast<QObject *>(m_field)->event(event);
+            if (QTextCursor cursor = m_field->textCursor(); braces.after(cursor, key)) m_field->setTextCursor(cursor);
             return true;
         }
     }

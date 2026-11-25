@@ -36,8 +36,27 @@ enum class NodeFillStyle {
     Pieno, Nessuno, PienoManoLibera, PennellateDiagonali, TratteggioDiagonale, PennellateOrizzontali, TratteggioOrizzontale
 };
 
+enum class NodeBorderStyle { Continuo, Tratteggiato, Nessuno, ContinuoManoLibera, TratteggiatoManoLibera };
+// FEAT-020 parte B: forme del gruppo Base, nell'ordine del menu (la prima e' quella attuale).
+enum class NodeShape {
+    RettangoloArrotondato, Rettangolo, LineaSotto, DoppiaLineaSotto, Cerchio, Ellisse,
+    Rombo, Parallelogramma, Pillola, Esagono, EsagonoVerticale, Ottagono,
+    ParentesiQuadre,  // FEAT-026 phase E: the fishbone's central topic (variant 1)
+    // FEAT-030 stage A: the Advanced group, in the menu's order.
+    Cuore, Nuvola, Stella, Goccia, Gemma, Scudo, FrecciaSinistra, FrecciaDestra, Etichetta, Bandiera, Nota,
+    PilaDiSchede, SchedaConBordoLaterale,
+    // FEAT-030 stage B: the Puntuale group (with ParentesiQuadre above), in the menu's order.
+    ParentesiAngolari, DoppieParentesiAngolari, ParentesiTonde, ParentesiGraffe, Angoli, Virgolette,
+    // FEAT-030 stage C: the flowchart group, in the menu's order.
+    Decisione, InputManuale, ProcessoPredefinito, OperazioneManuale, Database, Documento, DocumentiMultipli, Ritardo,
+    Dati, Connettore, ConnettoreFuoriPagina, CerchioDoppio, Visualizzazione, Trapezio, TrapezioRovesciato
+};
+
 // FEAT-040: aspetto dell'immagine del nodo (pagina Stile dell'immagine). I valori predefiniti non
 // si scrivono nel file: un file senza queste chiavi apre l'immagine come prima.
+// FEAT-131: a colour effect on a picture's pixels; None = the picture as it is.
+enum class ImageEffect { None, Grayscale, Sepia, Invert, Faded };
+
 struct ImageStyle {
     enum class Border { None, Solid, Dashed, Dotted };
     static constexpr qreal kDefaultBorderWidthPx = 2;
@@ -54,24 +73,12 @@ struct ImageStyle {
     // Rotazione in gradi in senso orario (0, 90, 180, 270; richiesta dell'utente 2026-10-20). Con 90 e
     // 270 la misura del nodo (imageSize) e' gia' quella ruotata: Document::rotateImage la scambia.
     int rotation = 0;
+    // FEAT-129: the topic shape the picture is cut to, filling its box; Rectangle = the plain picture.
+    NodeShape shape = NodeShape::Rettangolo;
+    ImageEffect effect = ImageEffect::None;  // FEAT-131
     bool operator==(const ImageStyle &) const = default;
 };
 
-enum class NodeBorderStyle { Continuo, Tratteggiato, Nessuno, ContinuoManoLibera, TratteggiatoManoLibera };
-// FEAT-020 parte B: forme del gruppo Base, nell'ordine del menu (la prima e' quella attuale).
-enum class NodeShape {
-    RettangoloArrotondato, Rettangolo, LineaSotto, DoppiaLineaSotto, Cerchio, Ellisse,
-    Rombo, Parallelogramma, Pillola, Esagono, EsagonoVerticale, Ottagono,
-    ParentesiQuadre,  // FEAT-026 phase E: the fishbone's central topic (variant 1)
-    // FEAT-030 stage A: the Advanced group, in the menu's order.
-    Cuore, Nuvola, Stella, Goccia, Gemma, Scudo, FrecciaSinistra, FrecciaDestra, Etichetta, Bandiera, Nota,
-    PilaDiSchede, SchedaConBordoLaterale,
-    // FEAT-030 stage B: the Puntuale group (with ParentesiQuadre above), in the menu's order.
-    ParentesiAngolari, DoppieParentesiAngolari, ParentesiTonde, ParentesiGraffe, Angoli, Virgolette,
-    // FEAT-030 stage C: the flowchart group, in the menu's order.
-    Decisione, InputManuale, ProcessoPredefinito, OperazioneManuale, Database, Documento, DocumentiMultipli, Ritardo,
-    Dati, Connettore, ConnettoreFuoriPagina, CerchioDoppio, Visualizzazione, Trapezio, TrapezioRovesciato
-};
 // FEAT-022: maiuscole/minuscole (solo visualizzazione nella mappa) e allineamento del titolo.
 enum class TextCase { Nessuna, Maiuscolo, Minuscolo };
 enum class TextAlign { Sinistra, Centro, Destra, Giustificato };

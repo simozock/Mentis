@@ -2,9 +2,11 @@
 # FEAT-097: builds the Android app's APK on this computer (Windows, Git Bash), signs it with a local
 # test key and, with --install, installs it on the phone connected by USB (adb).
 #
-#   tools/android-apk.sh [arm64|x86_64] [--install]
+#   tools/android-apk.sh [arm64|x86_64] [--debuggable] [--install]
 #
 # arm64 (phones) is the default; x86_64 is the emulator. The APK goes to build/android-apk/.
+# --debuggable builds optimized code with debug symbols in a debuggable package (its own build
+# folder), so `adb shell run-as` reads the app's storage and a hang can be traced on the phone.
 #
 # Needs (Qt 6.12's Android page, https://doc.qt.io/qt-6.12/android.html: NDK 27.2.12479018, JDK 21 or
 # newer, platforms;android-36, build-tools;36.0.0):
@@ -21,12 +23,14 @@ set -euo pipefail
 
 ARCH=arm64
 INSTALL=0
+DEBUGGABLE=0
 for arg in "$@"; do
     case "$arg" in
         arm64) ARCH=arm64 ;;
         x86_64) ARCH=x86_64 ;;
         --install) INSTALL=1 ;;
-        *) echo "Usage: $0 [arm64|x86_64] [--install]" >&2; exit 2 ;;
+        --debuggable) DEBUGGABLE=1 ;;
+        *) echo "Usage: $0 [arm64|x86_64] [--debuggable] [--install]" >&2; exit 2 ;;
     esac
 done
 case "$ARCH" in
@@ -48,6 +52,15 @@ KEYSTORE="$KEY_DIR/mentis-test.keystore"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/build/android-$ARCH"
+BUILD_TYPE=Release
+DEPLOYMENT=Release
+SUFFIX=
+if [ "$DEBUGGABLE" = 1 ]; then
+    BUILD="$BUILD-debuggable"
+    BUILD_TYPE=RelWithDebInfo
+    DEPLOYMENT=Debug  # Qt's debug package: android:debuggable, not stripped
+    SUFFIX=-debuggable
+fi
 HOST_BUILD="$ROOT/build/android-host"
 OUT="$ROOT/build/android-apk"
 
@@ -75,16 +88,19 @@ fi
 # Configured once; later runs only build what changed.
 if [ ! -f "$BUILD/build.ninja" ]; then
     "$QT_ANDROID/bin/qt-cmake.bat" -S "$ROOT" -B "$BUILD" -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_BUILD_TYPE=$BUILD_TYPE         -DQT_ANDROID_DEPLOYMENT_TYPE=$DEPLOYMENT \
         -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
         -DANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" \
         -DQT_HOST_PATH="$QT_HOST" \
         -DMENTIS_HOST_TRANSLATIONS="$TRANSLATIONS" \
         -DBUILD_TESTING=OFF
 fi
+# Load (2026-11-16): Gradle, run by Qt's androiddeployqt, would use a worker per CPU thread.
+export GRADLE_OPTS="${GRADLE_OPTS:-} -Dorg.gradle.workers.max=${MENTIS_GRADLE_WORKERS:-4}"
 cmake --build "$BUILD" --target MentisMobile_make_apk
 
-# Qt's release APK is unsigned, and Android refuses an unsigned package.
+# Qt's release APK is unsigned, and Android refuses an unsigned package; a debug one is signed with
+# Gradle's debug key, replaced here so it installs over the other local builds.
 TOOLS="$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS"
 if [ ! -f "$KEYSTORE" ]; then
     mkdir -p "$KEY_DIR"
@@ -95,7 +111,7 @@ UNSIGNED=$(find "$BUILD" -name "*.apk" -path "*outputs/apk/*" | head -n 1)
 [ -n "$UNSIGNED" ] || { echo "No APK found under $BUILD" >&2; exit 1; }
 mkdir -p "$OUT"
 COMMIT=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo local)
-APK="$OUT/MentisMobile-$QT_ABI-$COMMIT.apk"
+APK="$OUT/MentisMobile-$QT_ABI-$COMMIT$SUFFIX.apk"
 "$TOOLS/zipalign.exe" -f -p 4 "$UNSIGNED" "$OUT/aligned.apk"
 "$TOOLS/apksigner.bat" sign --ks "$KEYSTORE" --ks-pass pass:mentis-test --key-pass pass:mentis-test --out "$APK" "$OUT/aligned.apk"
 rm -f "$OUT/aligned.apk" "$APK.idsig"

@@ -13,6 +13,15 @@ Write an equation in LaTeX and see it drawn in the topic.
 3. Type the code, for example `\frac{a}{b}` or `\sqrt{x}`. The preview shows the formula, or what is wrong.
 4. Choose a **Background** (white or transparent) and click **Insert**.
 
+## Find a symbol or a structure
+
+Don't remember a command? Click **Symbols and formulas…** at the bottom left of the formula window.
+
+1. Type what you need, for example `integral`, `arrow` or `\frac`, or choose a category.
+2. Click an entry (or press **Enter**): its code goes in where the cursor was.
+
+Text you selected before goes inside the first braces: select `x^2`, choose the square root, and you get `\sqrt{x^2}`.
+
 The formula takes the place of a picture: size, place and style work as for an [image](images.md).
 
 > [!TIP]

@@ -50,6 +50,8 @@ public:
     void rebuild();
     void autoLayout();
     void selectNode(MindNode *node);
+    // FEAT-126: the topic joins the selection and takes the focus, as a Ctrl+click.
+    void addToSelection(MindNode *node);
     // Aggiornamenti incrementali: modificano solo gli item interessati invece di
     // distruggere e ricreare tutta la scena come fa rebuild().
     void updateNode(MindNode *node);   // un argomento: aspetto, posizione, rami collegati
@@ -171,7 +173,6 @@ signals:
     void taskToggled(MindNode *node);  // FEAT-048
     void noteActivated(MindNode *node);  // FEAT-059
     void labelActivated(MindNode *node);  // FEAT-060
-    void taskTyped(MindNode *node, int task);  // FEAT-068
     void filesActivated(MindNode *node, const QPoint &screenPos);  // FEAT-049
     void formulaActivated(MindNode *node);  // FEAT-064
     void formulaMenuRequested(MindNode *node, const QPoint &screenPos);

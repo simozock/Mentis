@@ -3,9 +3,10 @@ import QtQuick.Controls
 import Mentis.Mobile
 
 // FEAT-106: a tap on a topic's marker, as the desktop's right click on it (MainWindow::showMarkerMenu):
-// the values of its series, the topic's one checked, then Remove marker. The list is dark as the
-// sheet select's (surface, divider border, radius 8, 48 px rows for the finger, ui-mobile.md); an own
-// marker has only Remove. A tap on a row applies it (one Undo step) and closes the menu.
+// the values of its series (or the markers of its own group in the library), the topic's one
+// checked, then Remove marker. The list is dark as the sheet select's (surface, divider border,
+// radius 8, 48 px rows for the finger, ui-mobile.md). A tap on a row applies it (one Undo step) and
+// closes the menu.
 Popup {
     id: menu
     objectName: "markerMenu"

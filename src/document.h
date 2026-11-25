@@ -178,7 +178,9 @@ public:
     // MindMapModel::moveNode). side: lato scelto per un ramo principale (+1 destra, -1 sinistra),
     // 0 = resta com'e'; un nodo che non e' piu' principale perde il lato. Falso se non cambia nulla.
     // Apre il passo di storico senza chiuderlo: la ridisposizione entra nello stesso passo.
-    bool moveNode(MindNode *node, MindNode *newParent, int row, int side);
+    // fromSide: the side the node is drawn on before the move (+1 right, -1 left, 0 unknown); a main
+    // topic moved to the other side leaves its boundary's run (FEAT-052 point 8).
+    bool moveNode(MindNode *node, MindNode *newParent, int row, int side, int fromSide = 0);
     // FEAT-096 stage 3: topics dragged on the map, each with where it ends and its distance from the
     // automatic place (MindNode::manualOffset, kept by the layout; a floating topic keeps only the
     // position). The front end may have moved them already while dragging. Opens the history step
@@ -189,6 +191,9 @@ public:
         QPointF manualOffset;
     };
     bool placeTopics(const QList<TopicPlacement> &placements);
+    // FEAT-052 point 8: MindMapModel::refitBoundaries after topics were placed by hand, all at once;
+    // true if a boundary changed.
+    bool refitBoundaries(const QList<const MindNode *> &placed);
     // Il nodo con il suo ramo diventa un argomento mobile con il centro in position (in fondo ai figli
     // del centrale). Apre il passo di storico senza chiuderlo. Falso per il centrale.
     bool makeFloating(MindNode *node, const QPointF &position);
@@ -351,6 +356,10 @@ public:
     // FEAT-054 (2026-10-18): esportazione in una cartella con il .md e assets/. Dal nome scelto
     // ("Documenti/Biologia.md") il percorso del .md dentro la sua cartella ("Documenti/Biologia/Biologia.md").
     static QString exportMarkdownPath(const QString &chosenPath);
+    // The suggested name of an export: "20261031T113911 Sheet 1" (user 2026-10-31), the name's
+    // characters no file name may hold as "-", "Untitled" when empty. Moved unchanged from
+    // MapExporter::defaultFileName for the phone (FEAT-120 stage C).
+    static QString exportFileName(const QString &name, const QDateTime &moment);
     struct ExportResult {
         bool ok = true;
         QString error;

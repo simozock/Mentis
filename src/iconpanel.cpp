@@ -431,7 +431,7 @@ void IconPage::addFiles(const QString &collectionId) {
                                                IconLibrary::fileFilter());
     paths = checkedFiles(paths);
     if (paths.isEmpty()) return;
-    // Tappa 3: every added file gets a name, its own prefilled; Cancel skips that file.
+    // Tappa 3: every added file gets a name, its own prefilled; the X skips that file.
     QStringList named, names;
     for (const QString &path : std::as_const(paths)) {
         const QString current = IconLibrary::displayName(path);
@@ -615,7 +615,7 @@ void IconPage::editSticker(const QString &path, const QString &collectionId) {
     const bool remove = askDeleteOriginal ? askDeleteOriginal(name)
                                           : ModalDialog::ask(window(), tr("Delete the original?"),
                                                              tr("The new sticker is saved. Delete the original \"%1\" from its collection?").arg(name),
-                                                             tr("Delete"), QString(), tr("Keep")) == ModalDialog::Choice::Primary;
+                                                             tr("Delete")) == ModalDialog::Choice::Primary;
     if (remove && IconLibrary::removeItem(m_kind, collectionId, path)) reload();
 }
 

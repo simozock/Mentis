@@ -21,9 +21,6 @@ class QPushButton;
 class QToolButton;
 struct MindNode;
 
-// The name of a built-in theme, as the Change theme menu shows it.
-QString pitchThemeName(Pitch::Theme theme);
-
 class PitchPreview final : public QWidget {
 public:
     explicit PitchPreview(QWidget *parent = nullptr);

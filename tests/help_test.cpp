@@ -12,6 +12,9 @@
 #include <QApplication>
 #include <QDir>
 #include <QDirIterator>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QStackedWidget>
 #include <QStyleFactory>
@@ -20,6 +23,7 @@
 #include <QTextTable>
 #include <QToolButton>
 #include <QTreeWidget>
+#include <QVBoxLayout>
 #include <QtTest>
 
 class HelpTest : public QObject {
@@ -149,6 +153,67 @@ private slots:
         const QPoint beside = help->mapTo(&dialog, QPoint(-6, help->height() / 2));
         QCOMPARE(QColor(image.pixel((QPointF(inside) * ratio).toPoint())).name(),
                  QColor(image.pixel((QPointF(beside) * ratio).toPoint())).name());
+    }
+
+    // User's request 2026-11-23: a modal with input fields opens with the focus on the first one
+    // (read-only and hidden fields skipped); a focus the dialog chose itself stays.
+    void firstInputFieldTakesTheFocus() {
+        QWidget owner;
+        owner.resize(800, 600);
+        owner.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&owner));
+        {
+            ModalDialog dialog(&owner, QStringLiteral("Fields"), QStringLiteral("OK"), 420);
+            auto *hidden = new QLineEdit;
+            auto *readOnly = new QLineEdit;
+            readOnly->setReadOnly(true);
+            auto *first = new QLineEdit;
+            auto *second = new QLineEdit;
+            for (QWidget *field : {static_cast<QWidget *>(hidden), static_cast<QWidget *>(readOnly),
+                                   static_cast<QWidget *>(first), static_cast<QWidget *>(second)})
+                dialog.contentLayout()->addWidget(field);
+            hidden->hide();
+            dialog.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+            QCOMPARE(dialog.focusWidget(), first);
+        }
+        {
+            ModalDialog dialog(&owner, QStringLiteral("Chosen"), QStringLiteral("OK"), 420);
+            auto *first = new QLineEdit;
+            auto *chosen = new QLineEdit;
+            dialog.contentLayout()->addWidget(first);
+            dialog.contentLayout()->addWidget(chosen);
+            chosen->setFocus();
+            dialog.show();
+            QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+            QCOMPARE(dialog.focusWidget(), chosen);
+        }
+    }
+
+    // User's request 2026-11-24: Ctrl+Enter presses the main button from a multi-line field too (where
+    // Enter starts a new line), not when the button is disabled.
+    void ctrlEnterConfirms() {
+        QWidget owner;
+        owner.resize(800, 600);
+        owner.show();
+        QVERIFY(QTest::qWaitForWindowExposed(&owner));
+        ModalDialog dialog(&owner, QStringLiteral("Note"), QStringLiteral("Done"), 420);
+        auto *field = new QPlainTextEdit;
+        dialog.contentLayout()->addWidget(field);
+        dialog.open();
+        QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+        QTRY_COMPARE(QApplication::focusWidget(), field);
+        QTest::keyClick(field, Qt::Key_Return);
+        QVERIFY(dialog.isVisible());
+        QCOMPARE(field->toPlainText(), QStringLiteral("\n"));
+        dialog.acceptButton()->setEnabled(false);
+        QTest::keyClick(field, Qt::Key_Return, Qt::ControlModifier);
+        QVERIFY(dialog.isVisible());
+        dialog.acceptButton()->setEnabled(true);
+        QTest::keyClick(field, Qt::Key_Enter, Qt::ControlModifier | Qt::KeypadModifier);
+        QVERIFY(!dialog.isVisible());
+        QCOMPARE(dialog.result(), int(QDialog::Accepted));
+        QCOMPARE(field->toPlainText(), QStringLiteral("\n"));
     }
 
     // The page of the place the user is in, and F1 opening it.

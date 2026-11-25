@@ -39,7 +39,7 @@ public:
     TopicTools(MindMapView *view, MindMapScene *scene, QObject *parent = nullptr);
 
     std::function<bool()> enabled;  // false = everything hidden (e.g. Outliner shown)
-    std::function<void(MindNode *)> relation, webLink, image, note, checkbox, sticker;
+    std::function<void(MindNode *)> relation, link, image, note, checkbox, sticker;
     std::function<void()> addChild, addSibling;
     // FEAT-085: format painter turned on from the topic, kept on by a double click, turned off.
     std::function<void(MindNode *)> formatPainter;

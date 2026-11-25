@@ -61,7 +61,7 @@ On Apple Silicon choose the arm64 kit.
 ## Tests
 
 ```bash
-ctest --test-dir build -j 8 --output-on-failure
+ctest --test-dir build -j 4 --output-on-failure
 ```
 
 The tests need a display; on a machine without one set `QT_QPA_PLATFORM=offscreen`. Tests are

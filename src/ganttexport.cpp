@@ -1,25 +1,31 @@
 #include "ganttexport.h"
 
+#include "document.h"
+#include "ganttcommands.h"
+#include "mindmapmodel.h"
+
+
 #include <QDateTime>
 #include <QDir>
 #include <QSaveFile>
+#include <QSet>
 #include <QSvgGenerator>
 #include <QFontMetricsF>
 #include <QLocale>
 #include <QPageSize>
 #include <QPainter>
 #include <QPainterPath>
-#include <QScrollBar>
 
 #include <algorithm>
+#include <functional>
 #include <cmath>
 #include <limits>
 
 namespace {
 
 constexpr double kPxToPt = 0.75;  // 96 px per inch on 72 pt
-constexpr int kRowPx = GanttChart::kRowHeight;
-constexpr int kHeaderPx = GanttChart::kHeaderHeight;
+constexpr int kRowPx = GanttCanvas::kRowHeight;
+constexpr int kHeaderPx = GanttCanvas::kHeaderHeight;
 constexpr double kCellPadPx = 8;
 constexpr double kIndentPx = 16;
 constexpr double kNameMinPx = 120;
@@ -47,27 +53,27 @@ QFont textFont(bool bold = false, int pixels = 12) {
     return font;
 }
 
-// The base day width of each scale at 100 % (GanttChart::dayWidth) and the narrowest legible one:
+// The base day width of each scale at 100 % (GanttCanvas::dayWidth) and the narrowest legible one:
 // a day's number, a week's "W45", a month's short name.
-int baseDayWidth(GanttChart::Scale scale) {
-    return scale == GanttChart::Scale::Days ? 28 : scale == GanttChart::Scale::Weeks ? 12 : 4;
+int baseDayWidth(GanttCanvas::Scale scale) {
+    return scale == GanttCanvas::Scale::Days ? 28 : scale == GanttCanvas::Scale::Weeks ? 12 : 4;
 }
-bool legible(GanttChart::Scale scale, int dayWidth) {
+bool legible(GanttCanvas::Scale scale, int dayWidth) {
     switch (scale) {
-    case GanttChart::Scale::Days: return dayWidth >= 18;
-    case GanttChart::Scale::Weeks: return dayWidth * 7 >= 28;
-    case GanttChart::Scale::Months: return dayWidth * 30 >= 36;
+    case GanttCanvas::Scale::Days: return dayWidth >= 18;
+    case GanttCanvas::Scale::Weeks: return dayWidth * 7 >= 28;
+    case GanttCanvas::Scale::Months: return dayWidth * 30 >= 36;
     }
     return true;
 }
-int dayWidthAt(GanttChart::Scale scale, int zoom) { return std::max(2, int(std::lround(baseDayWidth(scale) * zoom / 100.0))); }
+int dayWidthAt(GanttCanvas::Scale scale, int zoom) { return std::max(2, int(std::lround(baseDayWidth(scale) * zoom / 100.0))); }
 
 // The timeline's ends aligned to the unit: weeks from Monday to Sunday, months whole.
-void align(GanttChart::Scale scale, QDate &first, QDate &last) {
-    if (scale == GanttChart::Scale::Weeks) {
+void align(GanttCanvas::Scale scale, QDate &first, QDate &last) {
+    if (scale == GanttCanvas::Scale::Weeks) {
         first = first.addDays(1 - first.dayOfWeek());
         last = last.addDays(7 - last.dayOfWeek());
-    } else if (scale == GanttChart::Scale::Months) {
+    } else if (scale == GanttCanvas::Scale::Months) {
         first = QDate(first.year(), first.month(), 1);
         last = QDate(last.year(), last.month(), last.daysInMonth());
     }
@@ -85,8 +91,10 @@ QString GanttPages::amountText(qint64 cents, const QString &currency) {
     return QLocale().toCurrencyString(double(cents) / 100.0, currency, 2);
 }
 
+QString GanttPages::amountText(const GanttMoney &money, const GanttCurrency &fallback) { return money.text(fallback); }
+
 namespace {
-GanttPages::Options imageOptions(GanttChart::Scale unit) {
+GanttPages::Options imageOptions(GanttCanvas::Scale unit) {
     GanttPages::Options options;
     options.singlePage = true;
     options.fitWidth = false;
@@ -98,12 +106,12 @@ QString writeError(const QString &path, const QString &reason) {
 }
 }  // namespace
 
-QImage GanttPages::toImage(const GanttExportSource &source, GanttChart::Scale unit, int scale, bool *reduced, QString *error,
+QImage GanttPages::toImage(const GanttExportSource &source, GanttCanvas::Scale unit, int scale, bool *reduced, QString *error,
                            Content content, const ExportFrame &frame) {
     const double band = frame.width();
     if (reduced) *reduced = false;
-    for (int u = int(unit); u <= int(GanttChart::Scale::Months); ++u) {
-        GanttPages::Options options = imageOptions(GanttChart::Scale(u));
+    for (int u = int(unit); u <= int(GanttCanvas::Scale::Months); ++u) {
+        GanttPages::Options options = imageOptions(GanttCanvas::Scale(u));
         options.content = content;
         const GanttPages pages(source, options);
         if (!pages.isValid()) {
@@ -112,8 +120,8 @@ QImage GanttPages::toImage(const GanttExportSource &source, GanttChart::Scale un
         }
         const QSizeF size = pages.imageSize() + QSizeF(2 * band, 2 * band);
         int times = std::clamp(scale, 1, 3);
-        while (times > 1 && std::max(size.width(), size.height()) * times > MapExporter::kMaxPngSidePx) --times;
-        if (std::max(size.width(), size.height()) * times > MapExporter::kMaxPngSidePx) continue;  // the next unit
+        while (times > 1 && std::max(size.width(), size.height()) * times > MapPages::kMaxPngSidePx) --times;
+        if (std::max(size.width(), size.height()) * times > MapPages::kMaxPngSidePx) continue;  // the next unit
         if (reduced) *reduced = times != scale || u != int(unit);
         QImage image((size * times).toSize(), QImage::Format_ARGB32_Premultiplied);
         image.fill(Qt::white);  // the Gantt is on white paper
@@ -127,12 +135,12 @@ QImage GanttPages::toImage(const GanttExportSource &source, GanttChart::Scale un
     return {};
 }
 
-MapExporter::Result GanttPages::write(MapExporter::Format format, const GanttExportSource &source, GanttChart::Scale unit,
+MapPages::Result GanttPages::write(MapPages::Format format, const GanttExportSource &source, GanttCanvas::Scale unit,
                                       const QString &path, int scale, Content content, const ExportFrame &frame) {
-    MapExporter::Result result;
+    MapPages::Result result;
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) return {false, writeError(path, file.errorString())};
-    if (format == MapExporter::Format::Png) {
+    if (format == MapPages::Format::Png) {
         QString error;
         const QImage image = toImage(source, unit, scale, &result.scaleReduced, &error, content, frame);
         if (image.isNull()) return {false, error};
@@ -165,8 +173,8 @@ MapExporter::Result GanttPages::write(MapExporter::Format format, const GanttExp
 
 GanttPages::GanttPages(const GanttExportSource &source, const Options &options) : m_source(source), m_options(options) {
     // Fit to the Gantt: the chart on a page of its own size, the cost tables on landscape A4.
-    const bool fit = options.size == MapExporter::PageSize::FitToMap;
-    m_layout = MapExporter::pageLayout(fit ? MapExporter::PageSize::A4 : options.size, fit || options.landscape);
+    const bool fit = options.size == MapPages::PageSize::FitToMap;
+    m_layout = MapPages::pageLayout(fit ? MapPages::PageSize::A4 : options.size, fit || options.landscape);
     m_pagePx = m_layout.fullRectPoints().size() / kPxToPt;
     m_costs = GanttCosts::compute(source.plan, source.schedule, source.assignments, source.people);
     if (options.content != Content::Costs) layoutChart();
@@ -176,7 +184,7 @@ GanttPages::GanttPages(const GanttExportSource &source, const Options &options) 
 
 GanttPages::~GanttPages() = default;
 
-bool GanttPages::fitsContent() const { return m_options.singlePage || m_options.size == MapExporter::PageSize::FitToMap; }
+bool GanttPages::fitsContent() const { return m_options.singlePage || m_options.size == MapPages::PageSize::FitToMap; }
 
 double GanttPages::contentHeight() const {
     return m_pagePx.height() - 2 * kMarginPx - (m_options.singlePage ? 0 : kFooterPx);
@@ -187,8 +195,8 @@ QPageLayout GanttPages::layout(int index) const {
     if (page == m_pagePx) return m_layout;
     // A page of the Gantt's size; past the PDF limit it is scaled down (draw fits the content to it).
     QSizeF points = page * kPxToPt;
-    if (const qreal side = std::max(points.width(), points.height()); side > MapExporter::kMaxPdfPagePt)
-        points *= MapExporter::kMaxPdfPagePt / side;
+    if (const qreal side = std::max(points.width(), points.height()); side > MapPages::kMaxPdfPagePt)
+        points *= MapPages::kMaxPdfPagePt / side;
     return QPageLayout(QPageSize(points, QPageSize::Point, QString(), QPageSize::ExactMatch), QPageLayout::Portrait, QMarginsF());
 }
 
@@ -266,21 +274,21 @@ void GanttPages::layoutChart() {
 
     // Fit width: the first unit from the chosen one whose days fit the room at a legible width.
     const double room = fitsContent() ? std::numeric_limits<double>::max() : contentWidth() - m_tableWidth;
-    QVector<GanttChart::Scale> candidates{m_options.scale};
+    QVector<GanttCanvas::Scale> candidates{m_options.scale};
     if (m_options.fitWidth && !fitsContent())
-        for (GanttChart::Scale scale : {GanttChart::Scale::Weeks, GanttChart::Scale::Months})
+        for (GanttCanvas::Scale scale : {GanttCanvas::Scale::Weeks, GanttCanvas::Scale::Months})
             if (int(scale) > int(m_options.scale)) candidates.append(scale);
     bool chosen = false;
-    for (GanttChart::Scale scale : std::as_const(candidates)) {
+    for (GanttCanvas::Scale scale : std::as_const(candidates)) {
         QDate first = start, last = end;
         align(scale, first, last);
         const qint64 days = first.daysTo(last) + 1;
         int zoom = 100;
         if (m_options.fitWidth && !fitsContent()) {
             const int widest = int(std::floor(room / double(days)));
-            zoom = std::min(GanttChart::kMaxZoom, int(std::floor(widest * 100.0 / baseDayWidth(scale))));
-            while (zoom >= GanttChart::kMinZoom && dayWidthAt(scale, zoom) > widest) --zoom;
-            if (zoom < GanttChart::kMinZoom || !legible(scale, dayWidthAt(scale, zoom))) continue;
+            zoom = std::min(GanttCanvas::kMaxZoom, int(std::floor(widest * 100.0 / baseDayWidth(scale))));
+            while (zoom >= GanttCanvas::kMinZoom && dayWidthAt(scale, zoom) > widest) --zoom;
+            if (zoom < GanttCanvas::kMinZoom || !legible(scale, dayWidthAt(scale, zoom))) continue;
         }
         m_scale = scale;
         m_zoom = zoom;
@@ -291,7 +299,7 @@ void GanttPages::layoutChart() {
     }
     if (!chosen) {  // too long for one page even in months: the last unit tried, over pages in width
         m_scale = candidates.last();
-        m_zoom = m_options.fitWidth ? GanttChart::kMinZoom : 100;
+        m_zoom = m_options.fitWidth ? GanttCanvas::kMinZoom : 100;
         m_first = start;
         m_last = end;
         align(m_scale, m_first, m_last);
@@ -301,30 +309,30 @@ void GanttPages::layoutChart() {
     if (fitsContent()) m_last = m_last.addDays(qint64(std::ceil(160.0 / m_dayWidth)));
 
     // The chart off screen, as the view draws it on light paper.
-    m_chart = std::make_unique<GanttChart>();
-    m_chart->setAttribute(Qt::WA_DontShowOnScreen);
-    m_chart->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_chart->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_chart->setFrameShape(QFrame::NoFrame);
-    m_chart->setColors(GanttColors::light());
+    m_chart = std::make_unique<GanttCanvas>();
+    m_chart->setColors(GanttPalette::light());
     m_chart->setPrinting(true);
     m_chart->setScale(m_scale);
     m_chart->setZoomPercent(m_zoom);
+    m_chart->textFont = m_source.chartFont;
+    m_chart->headerFont = m_source.headerFont;
+    m_chart->accent = m_source.accent;
     QStringList ids;
     for (const GanttExportSource::Row &row : std::as_const(m_source.rows)) ids.append(row.id);
     m_chart->setData(m_source.plan, m_source.schedule, ids, {}, m_source.looks);
+    m_chart->updateRange();
     m_chart->setLabelled(m_source.labelled);
     m_chart->setBaseline(m_source.baseline, m_source.comparison);
     m_chart->setCriticalShown(m_source.critical);
-    m_chart->verticalOffset = [this] { return m_rowOffset; };
-    m_chart->show();
+    m_chart->horizontalOffset = [this] { return m_dayOffset; };
+    m_chart->verticalOffset = [this] { return double(m_rowOffset); };
     m_first = std::max(m_first, m_chart->origin());  // the chart starts there
     const int days = int(m_first.daysTo(m_last)) + 1;
 
     // Pages: rows over pages in height (a summary never last on a page with its tasks on the next),
     // the timeline over pages in width only when it does not fit.
     int daysPerPage = fitsContent() ? days : std::max(1, int(std::floor((contentWidth() - m_tableWidth) / m_dayWidth)));
-    if (m_scale == GanttChart::Scale::Weeks && daysPerPage >= 14) daysPerPage -= daysPerPage % 7;
+    if (m_scale == GanttCanvas::Scale::Weeks && daysPerPage >= 14) daysPerPage -= daysPerPage % 7;
     daysPerPage = std::min(daysPerPage, days);
     m_columnsOfPages = (days + daysPerPage - 1) / daysPerPage;
     const int rowsPerPage = fitsContent() ? int(m_source.rows.size()) : std::max(1, int(std::floor((contentHeight() - kHeaderPx) / kRowPx)));
@@ -476,25 +484,29 @@ void GanttPages::drawTable(QPainter &painter, const Piece &piece, double top) co
 
 void GanttPages::drawChart(QPainter &painter, const Piece &piece, double left, double top) const {
     m_rowOffset = piece.first * kRowPx;
-    m_chart->resize(piece.days * m_dayWidth, kHeaderPx + piece.count * kRowPx);
-    m_chart->setFirstDay(piece.firstDay);
-    m_chart->viewport()->update();
+    const QRect area(0, 0, piece.days * m_dayWidth, kHeaderPx + piece.count * kRowPx);
+    // The page's first day at the left edge, at most as far as the chart's last day allows.
+    m_dayOffset = std::clamp(m_chart->offsetOfDay(piece.firstDay), 0, std::max(0, m_chart->contentWidth() - area.width()));
     painter.save();
     painter.translate(left, top);
-    painter.setClipRect(QRectF(0, 0, m_chart->width(), m_chart->height()));
-    m_chart->viewport()->render(&painter, QPoint(), QRegion(), QWidget::DrawChildren);
+    painter.setClipRect(QRectF(area));
+    m_chart->paint(painter, area);
     painter.restore();
 }
 
 void GanttPages::drawCosts(QPainter &painter, const Piece &piece, double top) const {
     const double width = piece.pagePx.width() - 2 * kMarginPx;
+    // FEAT-128: costs in several currencies are written one after the other: a wider column.
+    QSet<QString> currencies;
+    for (const GanttResource &person : m_source.people) currencies.insert(person.currency.normalized().text());
+    const double kAmountPx = ::kAmountPx * std::clamp<qsizetype>(currencies.size(), 1, 3);
     const double flexible = width - kHoursPx - kAmountPx;
     // Columns: tasks (name, people, hours, cost) and people (person, role, rate, hours, cost).
     const QVector<double> widths[2] = {{flexible * 0.55, flexible * 0.45, kHoursPx, kAmountPx},
                                        {flexible * 0.4, flexible * 0.3, flexible * 0.3, kHoursPx, kAmountPx}};
     const QStringList titles[2] = {{tr("Task"), tr("People"), tr("Hours"), tr("Cost")},
                                    {tr("Person"), tr("Role"), tr("Hourly cost"), tr("Hours"), tr("Cost")}};
-    const QString &currency = m_source.currency;
+    const GanttCurrency &currency = m_source.currency;
     QHash<QString, const GanttResource *> people;
     for (const GanttResource &person : m_source.people) people.insert(person.id, &person);
     const auto personName = [&](const QString &id) {
@@ -552,8 +564,8 @@ void GanttPages::drawCosts(QPainter &painter, const Piece &piece, double top) co
                 const GanttCosts::Amount amount = m_costs.tasks.value(task.id);
                 if (task.summary) painter.fillRect(QRectF(kMarginPx, y, width, kCostRowPx), kSummaryFill);
                 painter.setPen(kText);
-                row(y, 0, {m_source.plan.task(task.id) ? m_source.plan.task(task.id)->name.simplified() : QString(), names.join(QStringLiteral(", ")),
-                           hoursText(amount.minutes), amountText(amount.cents, currency)},
+                row(y, 0, {m_source.plan.task(task.id) ? m_source.plan.task(task.id)->shownName() : QString(), names.join(QStringLiteral(", ")),
+                           hoursText(amount.minutes), amountText(amount.cost, currency)},
                     task.summary, 0, task.depth * kIndentPx);
             } else {
                 const QString id = m_costPeople.at(entry.index);
@@ -561,8 +573,8 @@ void GanttPages::drawCosts(QPainter &painter, const Piece &piece, double top) co
                 const GanttCosts::Amount amount = m_costs.people.value(id);
                 painter.setPen(kText);
                 row(y, 1, {personName(id), person ? person->role : QString(),
-                           person ? tr("%1 / h").arg(amountText(person->hourlyCostCents, currency)) : QString(),
-                           hoursText(amount.minutes), amountText(amount.cents, currency)},
+                           person ? tr("%1 / h").arg(amountText(person->hourlyCostCents, person->currency.normalized().displaySymbol())) : QString(),
+                           hoursText(amount.minutes), amountText(amount.cost, person ? person->currency : currency)},
                     false);
             }
             y += kCostRowPx;
@@ -571,7 +583,7 @@ void GanttPages::drawCosts(QPainter &painter, const Piece &piece, double top) co
         }
         case Line::Type::Total: {
             painter.setPen(kText);
-            const QString hours = hoursText(m_costs.total.minutes), cost = amountText(m_costs.total.cents, currency);
+            const QString hours = hoursText(m_costs.total.minutes), cost = amountText(m_costs.total.cost, currency);
             if (entry.table == 0) row(y, 0, {tr("Total"), QString(), hours, cost}, true);
             else row(y, 1, {tr("Total"), QString(), QString(), hours, cost}, true);
             y += kCostRowPx;
@@ -612,4 +624,77 @@ void GanttPages::drawFooter(QPainter &painter, int index) const {
         painter.drawText(QRectF(x, y, metrics.horizontalAdvance(text) + 1, 14), Qt::AlignLeft | Qt::AlignVCenter, text);
         x += metrics.horizontalAdvance(text) + 16;
     }
+}
+
+QFont GanttExportSource::defaultHeaderFont() {
+    QFont font;
+    font.setPixelSize(12);
+    return font;
+}
+
+QVector<GanttExportSource::Field> GanttExportSource::defaultFields(const Document &document) {
+    QVector<Field> fields;
+    if (GanttColumns::numbered(document.model()->root())) fields.append(Field::Number);
+    fields.append({Field::Name, Field::Start, Field::Duration});
+    return fields;
+}
+
+GanttExportSource GanttExportSource::fromDocument(const Document &document, const QVector<Field> &fields, const QString &baselineId,
+                                                  bool critical, GanttCanvas::Scale scale) {
+    const MindMapModel &model = *document.model();
+    GanttExportSource source;
+    source.sheetName = document.sheets().value(document.currentSheet()).name;
+    source.plan = model.gantt();
+    source.schedule = source.plan.schedule();
+    for (const Field field : fields) {
+        Column column;
+        column.title = GanttColumns::title(field);
+        switch (field) {
+        case Field::Number: column.muted = true; break;
+        case Field::Name: column.kind = Column::Kind::Name, column.name = true; break;
+        case Field::Start: column.kind = Column::Kind::Start; break;
+        case Field::End: column.kind = Column::Kind::End; break;
+        case Field::Duration: column.kind = Column::Kind::Duration, column.right = true; break;
+        case Field::Progress: column.kind = Column::Kind::Progress, column.right = true; break;
+        case Field::Priority:
+        case Field::People: break;
+        }
+        source.columns.append(column);
+    }
+    // The topics by id in one walk (nodeById searches the tree once per task).
+    QHash<QString, const MindNode *> topics;
+    const std::function<void(const MindNode *)> collect = [&](const MindNode *topic) {
+        for (const auto &child : topic->children) {
+            topics.insert(child->id, child.get());
+            collect(child.get());
+        }
+    };
+    collect(model.root());
+    const QVector<GanttResource> &people = document.resources().people;
+    for (const GanttCommands::Row &shown : GanttCommands::rows(source.plan)) {
+        const GanttTask *task = source.plan.task(shown.id);
+        if (!task) continue;
+        const GanttScheduledTask scheduled = source.schedule.tasks.value(shown.id);
+        const MindNode *topic = topics.value(shown.id);
+        Row row;
+        row.id = shown.id;
+        row.depth = shown.depth;
+        row.summary = shown.summary;
+        for (const Field field : fields)
+            row.cells.append(GanttColumns::cellText(field, source.plan, *task, scheduled, topic, people));
+        source.rows.append(row);
+    }
+    const GanttCommands::BarLooks bars = GanttCommands::barLooks(model.root());
+    source.looks = bars.looks;
+    source.labelled = bars.labelled;
+    if (const GanttBaseline *baseline = baselineId.isEmpty() ? nullptr : source.plan.baseline(baselineId)) {
+        source.baseline = *baseline;
+        source.comparison = source.plan.compare(source.schedule, *baseline);
+    }
+    source.critical = critical;
+    source.scale = scale;
+    source.assignments = model.ganttAssignments();
+    source.people = people;
+    if (!people.isEmpty()) source.currency = people.constFirst().currency;
+    return source;
 }

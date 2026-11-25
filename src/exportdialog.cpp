@@ -267,7 +267,7 @@ ExportDialog::Scope ExportDialog::scope() const { return static_cast<Scope>(m_sc
 
 bool ExportDialog::ganttChosen() const { return m_kind && m_kind->currentIndex() == 1; }
 
-GanttChart::Scale ExportDialog::ganttUnit() const { return static_cast<GanttChart::Scale>(m_unit->currentIndex()); }
+GanttCanvas::Scale ExportDialog::ganttUnit() const { return static_cast<GanttCanvas::Scale>(m_unit->currentIndex()); }
 
 GanttPages::Content ExportDialog::ganttContent() const { return static_cast<GanttPages::Content>(m_content->currentIndex()); }
 

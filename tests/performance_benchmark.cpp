@@ -81,7 +81,11 @@ QJsonObject runScenario(int nodeCount, const QString &directoryPath) {
 }
 
 int main(int argc, char **argv) {
-    QApplication app(argc, argv);  // the scene's items need it (offscreen platform is enough)
+    // The scene's items need a QApplication, and the offscreen platform is enough: without it the
+    // Linux CI, which has no display, aborted at start (exit 134).
+    if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    QApplication app(argc, argv);
     QList<int> sizes;
     QString outputPath;
     QString mapsPath;  // FEAT-097: --maps <folder> keeps the maps written (benchmark-<n>.mentis)

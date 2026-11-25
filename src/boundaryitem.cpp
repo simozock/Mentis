@@ -29,9 +29,13 @@ BoundaryItem::BoundaryItem(const QString &id, QGraphicsItem *parent) : QGraphics
 
 void BoundaryItem::setContent(const Boundary &boundary, const QRectF &covered, const Look &look) {
     prepareGeometryChange();
+    const QRectF stroke = Boundaries::strokeRect(covered);
+    const bool sameFill = stroke == m_stroke && boundary.shape == m_boundary.shape && boundary.fillStyle == m_boundary.fillStyle
+                          && boundary.id == m_boundary.id && (!m_fill.area.isEmpty() || !m_fill.pattern.lines.isEmpty());
     m_boundary = boundary;
     m_look = look;
-    m_stroke = Boundaries::strokeRect(covered);
+    m_stroke = stroke;
+    if (!sameFill) m_fill = Boundaries::fill(m_boundary, m_stroke);
     updateTitleRect();
     update();
 }
@@ -44,7 +48,7 @@ void BoundaryItem::updateTitleRect() {
         m_measuredFont = m_look.font;
         m_titleWidth = QFontMetricsF(m_look.font).horizontalAdvance(text);
     }
-    m_titleRect = text.isEmpty() && !m_editor ? QRectF() : Boundaries::titleRect(m_stroke, m_titleWidth);
+    m_titleRect = text.isEmpty() && !m_editor ? QRectF() : Boundaries::titleRect(m_boundary, m_stroke, m_titleWidth);
 }
 
 QPainterPath BoundaryItem::outline() const {
@@ -55,7 +59,7 @@ QPainterPath BoundaryItem::outline() const {
 
 QRectF BoundaryItem::boundingRect() const {
     const qreal margin = std::max(m_look.pen.widthF(), kBorderHitPx) / 2 + kSelectionGapPx + kSelectionWidthPx;
-    QRectF bounds = m_stroke;
+    QRectF bounds = Boundaries::shapeBounds(m_boundary.shape, m_stroke);
     if (!m_titleRect.isEmpty()) bounds = bounds.united(m_titleRect);
     return bounds.adjusted(-margin, -margin, margin, margin);
 }
@@ -71,9 +75,14 @@ QPainterPath BoundaryItem::shape() const {
 
 void BoundaryItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) {
     painter->setRenderHint(QPainter::Antialiasing);
-    const QPainterPath body = Boundaries::outline(m_boundary.shape, m_stroke);
-    painter->fillPath(body, m_look.fill);
-    painter->strokePath(body, m_look.pen);
+    painter->fillPath(m_fill.area, m_look.fill);
+    if (!m_fill.pattern.lines.isEmpty()) {
+        // FEAT-134: the topics' pattern, opaque over the backdrop (NodeItem::paint).
+        const QColor background = scene() ? scene()->backgroundBrush().color() : NodeStyle::kMapBackground;
+        painter->setPen(QPen(NodeSketch::opaqueOver(m_look.fill, background), m_fill.pattern.penWidth, Qt::SolidLine, Qt::FlatCap));
+        painter->drawLines(m_fill.pattern.lines);
+    }
+    if (m_look.pen.style() != Qt::NoPen) painter->strokePath(Boundaries::border(m_boundary.shape, m_stroke), m_look.pen);
     if (!m_titleRect.isEmpty()) {
         // The tab has the border's color; with no border (pattern none) it still shows.
         painter->fillPath(Boundaries::titlePath(m_titleRect), m_look.pen.color());
@@ -89,7 +98,7 @@ void BoundaryItem::paint(QPainter *painter, const QStyleOptionGraphicsItem *, QW
         }
     }
     if (isSelected()) {
-        QRectF frame = m_stroke;
+        QRectF frame = Boundaries::shapeBounds(m_boundary.shape, m_stroke);
         if (!m_titleRect.isEmpty()) frame = frame.united(m_titleRect);
         const qreal gap = m_look.pen.widthF() / 2 + kSelectionGapPx;
         painter->setPen(QPen(NodeItem::selectionStyle().selectedColor, kSelectionWidthPx));
@@ -147,7 +156,7 @@ void BoundaryItem::beginEditing(const QString &initialText) {
         const QString text = m_editor->toPlainText();
         m_titleWidth = QFontMetricsF(m_look.font).horizontalAdvance(text.isEmpty() ? m_look.placeholder : text);
         m_measuredTitle = text;
-        m_titleRect = Boundaries::titleRect(m_stroke, m_titleWidth);
+        m_titleRect = Boundaries::titleRect(m_boundary, m_stroke, m_titleWidth);
         const QRectF box = m_editor->boundingRect();
         m_editor->setPos(m_titleRect.left() + Boundaries::kTitlePaddingPx, m_titleRect.center().y() - box.height() / 2);
         update();

@@ -1,5 +1,6 @@
 // FEAT-019 parte C (docs/features/FEAT-019-fondamenta-stile-nodo.md): pagina Stile attiva con uno o
 // piu' nodi. Vero MainWindow, piattaforma offscreen e impostazioni separate da quelle dell'app.
+#include "clickawaycommit.h"
 #include "slowtests.h"
 #include "floatingui.h"
 #include "document.h"
@@ -61,6 +62,7 @@ private slots:
     void presetAppliesToSelectionInOneStep();
     void fillAndBorderTypesShowMixedAndApply();
     void borderWidthField();
+    void clickAwayConfirmsField();
     void shapeAppliesAndRelaysTheMap();
     void branchBoundsContainTheStroke();
     void gridMenusShowColumnsAndNone();
@@ -590,6 +592,24 @@ void StylePageTest::borderWidthField() {
     QApplication::processEvents();
     QCOMPARE(width->text(), QStringLiteral("6"));
     for (MindNode *node : nodes) QCOMPARE(node->borderWidth, 6.0);
+}
+
+void StylePageTest::clickAwayConfirmsField() {
+    // A click on the panel where no focus goes confirms the typed value (user's report 2026-11-24).
+    ClickAwayCommit::install();
+    const QList<MindNode *> nodes = addSelectedNodes(1);
+    QLineEdit *width = m_page->borderWidthField();
+    m_window->activateWindow();
+    QVERIFY(QTest::qWaitForWindowActive(m_window.get()));
+    width->setFocus(Qt::MouseFocusReason);
+    QVERIFY(width->hasFocus());
+    QTest::keyClick(width, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClicks(width, QStringLiteral("4"));
+    QTest::mouseClick(m_page, Qt::LeftButton, {}, QPoint(2, m_page->height() - 2));
+    QApplication::processEvents();
+    QVERIFY(!width->hasFocus());
+    QCOMPARE(nodes.first()->borderWidth, 4.0);
+    QCOMPARE(width->text(), QStringLiteral("4"));
 }
 
 void StylePageTest::shapeAppliesAndRelaysTheMap() {

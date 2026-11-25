@@ -27,6 +27,10 @@ QtObject {
     readonly property color accent: "#7047eb"
     readonly property color accentDisabled: Qt.rgba(112 / 255, 71 / 255, 235 / 255, 0.4)
     readonly property color danger: "#e5484d"         // a field with a wrong value
+    // FEAT-082: a date or duration later / earlier than the compared snapshot's (GanttCanvas::criticalColor,
+    // baselineEarlierColor, the desktop's table cells)
+    readonly property color later: "#e5484d"
+    readonly property color earlier: "#30a46c"
     readonly property color textSelection: "#b3d4fc" // selected text in a title (NodeItem::SelectionStyle)
     readonly property color selection: "#2ebdff"     // selection ring and "+" knobs (NodeItem::SelectionStyle)
     // Type scale (px = dp)

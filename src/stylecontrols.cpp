@@ -1,5 +1,7 @@
 #include "stylecontrols.h"
 
+#include "stylechoices.h"
+
 #include <QStyleOptionComboBox>
 #include <QStylePainter>
 
@@ -62,7 +64,6 @@ const QColor kSurface = UiTheme::color(UiTheme::Token::Surface);
 const QColor kBorder = UiTheme::color(UiTheme::Token::Divider);
 const QColor kText = UiTheme::color(UiTheme::Token::Text);
 constexpr qreal kRadiusPx = 8;
-const QString kRecentKey = QStringLiteral("colorPicker/recent");
 
 // Riquadro a scacchi sotto i colori trasparenti, cosi' l'opacita' si vede.
 void paintColorOver(QPainter &painter, const QRectF &rect, const QColor &color, qreal radius) {
@@ -257,28 +258,10 @@ QFrame *separator(QWidget *parent) {
 }
 }  // namespace
 
-const QStringList &ColorPicker::gridColors() {
-    static const QStringList colors{
-        "#ffffff", "#eeeeee", "#d0d0d0", "#adadad", "#999999", "#666666", "#333333", "#111111", "#000000",
-        "#fdd834", "#ff9595", "#8ede99", "#0ce6cf", "#8eddf9", "#50c3f7", "#7986cb", "#ba69c8", "#ffabd5",
-        "#ffc009", "#ff5252", "#2cd551", "#00a99d", "#2abee0", "#05a8f4", "#4051b5", "#9c27b0", "#ea8aba",
-        "#ff9f00", "#ff3c00", "#19a719", "#007c74", "#0096bf", "#0288d1", "#303e9f", "#7b1fa2", "#ce4289",
-        "#ff6f00", "#e32c2d", "#15831c", "#025a5a", "#00526b", "#00579b", "#1a227e", "#4a148c", "#a34075"};
-    return colors;
-}
-
-QStringList ColorPicker::recentColors() {
-    return QSettings().value(kRecentKey).toStringList().mid(0, kMaxRecentColors);
-}
-
-void ColorPicker::rememberRecentColor(const QColor &color) {
-    if (!color.isValid()) return;
-    QStringList recent = recentColors();
-    const QString name = color.name(QColor::HexArgb);
-    recent.removeAll(name);
-    recent.prepend(name);
-    QSettings().setValue(kRecentKey, recent.mid(0, kMaxRecentColors));
-}
+// FEAT-119: the grid and the recent colours are StyleChoices', shared with the phone.
+const QStringList &ColorPicker::gridColors() { return StyleChoices::gridColors(); }
+QStringList ColorPicker::recentColors() { return StyleChoices::recentColors(); }
+void ColorPicker::rememberRecentColor(const QColor &color) { StyleChoices::rememberRecentColor(color); }
 
 ColorPicker *ColorPicker::openPicker() {
     return qobject_cast<ColorPicker *>(QApplication::activePopupWidget());
@@ -523,15 +506,6 @@ void ColorPicker::exec(const QRect &anchor, Placement placement, const Options &
     if (guard) guard->m_loop = nullptr;
 }
 
-void LightComboItemDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const {
-    QStyleOptionViewItem readable(option);
-    readable.palette.setColor(QPalette::Text, kText);
-    readable.palette.setColor(QPalette::WindowText, kText);
-    readable.palette.setColor(QPalette::ButtonText, kText);
-    readable.palette.setColor(QPalette::HighlightedText, kText);
-    QStyledItemDelegate::paint(painter, readable, index);
-}
-
 namespace {
 // Disabled controls (docs/design/ui-foundations.md, "Controlli disattivati"): the field loses its
 // border and its text drops to textMuted at 50% over the panel; the row's
@@ -542,7 +516,20 @@ QColor disabledFieldText() {
     const QColor panel = UiTheme::color(UiTheme::Token::Surface);
     return QColor((muted.red() + panel.red()) / 2, (muted.green() + panel.green()) / 2, (muted.blue() + panel.blue()) / 2);
 }
+}  // namespace
 
+void LightComboItemDelegate::paint(QPainter *painter, const QStyleOptionViewItem &option, const QModelIndex &index) const {
+    QStyleOptionViewItem readable(option);
+    // A choice that cannot be picked reads as a disabled field (before, every item was white).
+    const QColor text = option.state & QStyle::State_Enabled ? kText : disabledFieldText();
+    readable.palette.setColor(QPalette::Text, text);
+    readable.palette.setColor(QPalette::WindowText, text);
+    readable.palette.setColor(QPalette::ButtonText, text);
+    readable.palette.setColor(QPalette::HighlightedText, text);
+    QStyledItemDelegate::paint(painter, readable, index);
+}
+
+namespace {
 // Keeps a row's label disabled while all of its fields are disabled, so the whole row reads as
 // unavailable. Follows the explicit state (WA_ForceDisabled): a disabled page disables both anyway.
 class LabelFollowsFields final : public QObject {
@@ -653,16 +640,7 @@ protected:
 
 }  // namespace
 
-QString branchWidthName(int index) {
-    switch (index) {
-    // Contesto "branch width": gli stessi nomi inglesi sono anche pesi del carattere, tradotti diversamente.
-    case 0: return StylePage::tr("Extra thin", "branch width");
-    case 1: return StylePage::tr("Thin", "branch width");
-    case 2: return StylePage::tr("Medium", "branch width");
-    case 3: return StylePage::tr("Bold", "branch width");
-    default: return StylePage::tr("Extra bold", "branch width");
-    }
-}
+QString branchWidthName(int index) { return StyleChoices::branchWidthName(index); }  // FEAT-119: shared with the phone
 
 QComboBox *makeDarkSelect(QWidget *parent) {
     auto *select = new DarkSelect(parent);
@@ -1028,27 +1006,12 @@ namespace {
 // FEAT-023: the line-end marks of an icon select (branch and relationship start or end); the icons
 // are drawn by BranchPath, as on the map.
 void addLineEndItems(QComboBox *select, bool atStart) {
-    const QList<std::pair<BranchEnd, const char *>> ends{
-        {BranchEnd::None, QT_TRANSLATE_NOOP("StylePage", "None")}, {BranchEnd::OpenArrow, QT_TRANSLATE_NOOP("StylePage", "Open arrow")},
-        {BranchEnd::FilledArrow, QT_TRANSLATE_NOOP("StylePage", "Filled arrow")}, {BranchEnd::Dot, QT_TRANSLATE_NOOP("StylePage", "Dot")},
-        {BranchEnd::Square, QT_TRANSLATE_NOOP("StylePage", "Square")}, {BranchEnd::Diamond, QT_TRANSLATE_NOOP("StylePage", "Diamond")}};
     select->setIconSize(kTypeIconSize);
-    for (const auto &[value, name] : ends) {
-        addTypeItem(select, static_cast<int>(value), QCoreApplication::translate("StylePage", name), [value, atStart](QPainter &painter, const QRectF &box) {
-            const qreal y = box.center().y();
-            const QPointF from(box.left() + 3, y), to(box.right() - 3, y);
-            const QPointF tip = atStart ? from : to;
-            painter.setPen(QPen(kText, 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawLine(from, to);
-            const QPainterPath mark = BranchPath::endMark(value, tip, QPointF(atStart ? -1 : 1, 0), 2.5);
-            if (!BranchPath::endIsStroke(value)) {
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(kText);
-            }
-            painter.drawPath(mark);
+    const StyleChoices::Icon kind = atStart ? StyleChoices::Icon::LineStart : StyleChoices::Icon::LineEnd;
+    for (const StyleChoices::Choice &end : StyleChoices::lineEnds())  // FEAT-119: shared with the phone
+        addTypeItem(select, end.value, end.name, [kind, value = end.value](QPainter &painter, const QRectF &box) {
+            StyleChoices::drawIcon(kind, value, painter, box, kText, QColor("#6b7280"));
         });
-    }
 }
 
 // "Nessuno": riquadro tenue barrato.
@@ -1063,36 +1026,15 @@ void drawNone(QPainter &painter, const QRectF &box) {
 // pattern, the name in the tooltip. With branch the freehand lines (drawn with NodeSketch, scaled
 // like the hand-drawn border icons) and "None" at the bottom.
 void addLinePatternItems(QComboBox *select, bool branch) {
-    struct Item { int value; QString name; Qt::PenStyle pen; bool freehand; };
-    QList<Item> items{{Qt::SolidLine, StylePage::tr("Solid line"), Qt::SolidLine, false}};
-    if (branch) items.append({NodeStyle::kFreehandSolidLine, StylePage::tr("Hand-drawn solid"), Qt::SolidLine, true});
-    items.append({Qt::DashLine, StylePage::tr("Dashed line"), Qt::DashLine, false});
-    if (branch) items.append({NodeStyle::kFreehandDashLine, StylePage::tr("Hand-drawn dashed"), Qt::DashLine, true});
-    items.append({Qt::DotLine, StylePage::tr("Dotted"), Qt::DotLine, false});
     select->setIconSize(kTypeIconSize);
-    for (const Item &item : items) {
-        addTypeItem(select, item.value, item.name, [item](QPainter &painter, const QRectF &box) {
-            const qreal scale = box.height() / 28;
-            painter.translate(box.topLeft());
-            painter.scale(scale, scale);
-            const qreal width = box.width() / scale;
-            const QLineF line(3, 14, width - 3, 14);
-            constexpr quint64 kIconSeed = 7;  // fixed stroke for the icons
-            const QPainterPath path = item.freehand ? NodeSketch::roughLine(line, kIconSeed) : [&line] {
-                QPainterPath straight(line.p1());
-                straight.lineTo(line.p2());
-                return straight;
-            }();
-            painter.strokePath(path, QPen(kText, 2 / scale, item.pen, Qt::FlatCap, Qt::RoundJoin));
+    const StyleChoices::Icon kind = branch ? StyleChoices::Icon::BranchLine : StyleChoices::Icon::LinePattern;
+    for (const StyleChoices::Choice &pattern : StyleChoices::linePatterns(branch))  // FEAT-119: shared with the phone
+        addTypeItem(select, pattern.value, pattern.name, [kind, value = pattern.value](QPainter &painter, const QRectF &box) {
+            StyleChoices::drawIcon(kind, value, painter, box, kText, QColor("#6b7280"));
         });
-    }
     auto *dark = static_cast<DarkSelect *>(select);
-    if (branch) {
-        addTypeItem(select, Qt::NoPen, StylePage::tr("None"), drawNone);
-        dark->gridMenu = {2, select->count() - 1, QString()};
-    } else {
-        dark->gridMenu = {3, -1, QString()};
-    }
+    if (branch) dark->gridMenu = {2, select->count() - 1, QString()};
+    else dark->gridMenu = {3, -1, QString()};
 }
 
 // FEAT-072 B9: the selected topic as the Style card shows it: its title in its own colours
@@ -1104,24 +1046,9 @@ QPixmap topicPreview(const MindNode *node) {
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
-    QFont font = painter.font();
-    font.setPixelSize(13);
-    font.setWeight(QFont::Weight(std::clamp(node->fontWeight, 100, 900)));
-    const QFontMetricsF metrics(font);
-    const QString title = QString(node->title).replace(QLatin1Char('\n'), QLatin1Char(' '));
-    const qreal textWidth = std::min<qreal>(metrics.horizontalAdvance(title), kPresetIconSize.width() - 34);
-    const qreal width = std::max<qreal>(textWidth + 32, 48);
-    const QRectF pill((kPresetIconSize.width() - width) / 2, 1, width, kPresetIconSize.height() - 2);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(NodeStyle::kMapBackground);
-    painter.drawRoundedRect(pill, 6, 6);
     const bool border = node->borderWidth > 0 && node->border.alpha() > 0;
-    painter.setPen(border ? QPen(node->border, 2) : QPen(Qt::NoPen));
-    painter.setBrush(node->fill);
-    painter.drawRoundedRect(pill.adjusted(1, 1, -1, -1), 5, 5);
-    painter.setFont(font);
-    painter.setPen(node->text);
-    painter.drawText(pill, Qt::AlignCenter, metrics.elidedText(title, Qt::ElideRight, textWidth));
+    StyleChoices::drawTopicPreview(painter, QRectF(QPointF(0, 0), QSizeF(kPresetIconSize)), node->title, node->fill,
+                                   border ? node->border : QColor(), node->text, node->fontWeight);  // FEAT-119: shared with the phone
     return pixmap;
 }
 // Anteprima di uno stile predefinito (FEAT-020): pillola con il nome dello
@@ -1135,49 +1062,7 @@ QPixmap presetIcon(NodePreset preset, const QString &name, const QColor &color, 
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
-    const QRectF pill = QRectF(QPointF(0, 0), QSizeF(kPresetIconSize)).adjusted(1, 1, -1, -1);
-    QColor fill = NodeStyle::kMapBackground;
-    QColor border = color;
-    QColor text = NodeStyle::darkenedText(color);
-    bool strike = false;
-    switch (preset) {
-    case NodePreset::MoltoImportante:
-    case NodePreset::Importante:
-        fill = preset == NodePreset::MoltoImportante ? important.veryImportant : important.important;
-        border = Qt::transparent;
-        text = NodeStyle::readableTextOn(fill);
-        break;
-    case NodePreset::Depenna:
-        strike = true;
-        break;
-    case NodePreset::Predefinito:
-        if (depth == 1) {
-            fill = color;
-            border = Qt::transparent;
-            text = NodeStyle::readableTextOn(color);
-        } else if (depth == 2) {
-            fill = color;
-            fill.setAlphaF(0.2f);
-        } else if (depth == 0) {
-            text = QColor("#172033");
-        }
-        break;
-    }
-    if (fill.alpha() < 255) {  // tinta al 20%: si compone sul bianco della mappa
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(NodeStyle::kMapBackground);
-        painter.drawRoundedRect(pill, 6, 6);
-    }
-    painter.setPen(border.alpha() == 0 ? QPen(Qt::NoPen) : QPen(border, 2));
-    painter.setBrush(fill);
-    painter.drawRoundedRect(pill.adjusted(1, 1, -1, -1), 5, 5);
-    QFont font = painter.font();
-    font.setPixelSize(13);
-    font.setWeight(QFont::DemiBold);
-    font.setStrikeOut(strike);
-    painter.setFont(font);
-    painter.setPen(text);
-    painter.drawText(pill, Qt::AlignCenter, name);
+    StyleChoices::drawPreset(painter, QRectF(QPointF(0, 0), QSizeF(kPresetIconSize)), int(preset), name, color, depth, important);  // FEAT-119
     return pixmap;
 }
 
@@ -1406,8 +1291,7 @@ StylePage::StylePage(QWidget *parent) : QWidget(parent) {
     m_preset->setIconSize(kPresetIconSize);
     m_preset->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_preset->setMinimumWidth(kPresetIconSize.width() + 40);
-    m_presetNames = {{NodePreset::MoltoImportante, tr("Very important")}, {NodePreset::Importante, tr("Important")},
-                     {NodePreset::Depenna, tr("Strike out")}, {NodePreset::Predefinito, tr("Default")}};
+    for (const StyleChoices::Choice &preset : StyleChoices::presets()) m_presetNames.append({static_cast<NodePreset>(preset.value), preset.name});
     for (const auto &[preset, name] : std::as_const(m_presetNames)) {
         m_preset->addItem(QString(), static_cast<int>(preset));
         m_preset->setItemData(m_preset->count() - 1, name, Qt::ToolTipRole);
@@ -1432,58 +1316,16 @@ StylePage::StylePage(QWidget *parent) : QWidget(parent) {
     // FEAT-020 parte C: motivi e mano libera disegnati con lo stesso codice della mappa su un
     // riquadro piu' grande, ridotto in proporzione all'altezza dell'icona: cosi' si vedono tre o
     // quattro righe del motivo sia nell'icona piccola sia in quella del menu a griglia (foto 23).
-    auto sketchIcon = [](const std::function<void(QPainter &, const QPainterPath &, qreal)> &draw) -> IconDraw {
-        return [draw](QPainter &painter, const QRectF &box) {
-            const qreal scale = box.height() / 28;
-            painter.translate(box.topLeft());
-            painter.scale(scale, scale);
-            QPainterPath outline;
-            // Rientro di 3 unita': le punte dei motivi restano dentro l'icona.
-            outline.addRoundedRect(QRectF(QPointF(0, 0), box.size() / scale).adjusted(3, 3, -3, -3), 5, 5);
-            draw(painter, outline, scale);
-        };
+    // FEAT-119: the lists, names and icons are StyleChoices', shared with the phone.
+    const auto addChoices = [](QComboBox *select, StyleChoices::Icon kind, const QList<StyleChoices::Choice> &choices) {
+        for (const StyleChoices::Choice &choice : choices)
+            addTypeItem(select, choice.value, choice.name, [kind, value = choice.value](QPainter &painter, const QRectF &box) {
+                StyleChoices::drawIcon(kind, value, painter, box, kText, QColor("#6b7280"));
+            });
     };
-    constexpr quint64 kIconSeed = 7;  // tratto fisso per le icone
-    addTypeItem(m_fillStyle, static_cast<int>(NodeFillStyle::Pieno), tr("Filled"), [](QPainter &painter, const QRectF &box) {
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(kText);
-        painter.drawRoundedRect(box, 3, 3);
-    });
-    addTypeItem(m_fillStyle, static_cast<int>(NodeFillStyle::PienoManoLibera), tr("Hand-drawn fill"),
-                sketchIcon([](QPainter &painter, const QPainterPath &outline, qreal) {
-                    painter.fillPath(NodeSketch::roughArea(outline, kIconSeed), kText);
-                }));
-    // Ordine della foto 23: pennellate e tratteggio diagonali, poi orizzontali.
-    const QList<std::pair<NodeFillStyle, QString>> patterns{
-        {NodeFillStyle::PennellateDiagonali, tr("Diagonal strokes")}, {NodeFillStyle::TratteggioDiagonale, tr("Diagonal hatching")},
-        {NodeFillStyle::PennellateOrizzontali, tr("Horizontal strokes")}, {NodeFillStyle::TratteggioOrizzontale, tr("Horizontal hatching")}};
-    for (const auto &[style, name] : patterns) {
-        addTypeItem(m_fillStyle, static_cast<int>(style), name, sketchIcon([style](QPainter &painter, const QPainterPath &outline, qreal scale) {
-            const NodeSketch::Pattern pattern = NodeSketch::pattern(style, outline, kIconSeed);
-            // Nell'icona piccola pennellate un po' piu' sottili: a 22x14 px le scaglie chiare
-            // altrimenti spariscono e il motivo sembra un pieno.
-            painter.setPen(QPen(kText, pattern.penWidth * (scale < 0.5 ? 0.75 : 1.0), Qt::SolidLine, Qt::FlatCap));
-            painter.drawLines(pattern.lines);
-        }));
-    }
-    addTypeItem(m_fillStyle, static_cast<int>(NodeFillStyle::Nessuno), tr("No fill"), drawNone);
+    addChoices(m_fillStyle, StyleChoices::Icon::FillStyle, StyleChoices::fillStyles());
     m_borderStyle = enumSelect(StyleProperty::BorderStyle, kTypeSelectWidthPx);
-    // Ordine della foto 04: continuo, a mano libera, tratteggiato, tratteggiato a mano libera.
-    for (const auto penStyle : {Qt::SolidLine, Qt::DashLine}) {
-        const bool dashed = penStyle == Qt::DashLine;
-        addTypeItem(m_borderStyle, static_cast<int>(dashed ? NodeBorderStyle::Tratteggiato : NodeBorderStyle::Continuo),
-                    dashed ? tr("Dashed") : tr("Solid"), [penStyle](QPainter &painter, const QRectF &box) {
-                        painter.setPen(QPen(kText, 1.5, penStyle));
-                        painter.drawRoundedRect(box, 3, 3);
-                    });
-        addTypeItem(m_borderStyle, static_cast<int>(dashed ? NodeBorderStyle::TratteggiatoManoLibera : NodeBorderStyle::ContinuoManoLibera),
-                    dashed ? tr("Hand-drawn dashed") : tr("Hand-drawn solid"),
-                    sketchIcon([penStyle](QPainter &painter, const QPainterPath &outline, qreal scale) {
-                        painter.strokePath(NodeSketch::roughOutline(outline, kIconSeed),
-                                           QPen(kText, 1.5 / scale, penStyle, Qt::RoundCap, Qt::RoundJoin));
-                    }));
-    }
-    addTypeItem(m_borderStyle, static_cast<int>(NodeBorderStyle::Nessuno), tr("No border"), drawNone);
+    addChoices(m_borderStyle, StyleChoices::Icon::BorderStyle, StyleChoices::borderStyles());
     // FEAT-038: riempimento e bordo con il menu a griglia a due colonne e "Nessuno" in fondo.
     static_cast<DarkSelect *>(m_fillStyle)->gridMenu = {2, m_fillStyle->findData(static_cast<int>(NodeFillStyle::Nessuno)), QString()};
     static_cast<DarkSelect *>(m_borderStyle)->gridMenu = {2, m_borderStyle->findData(static_cast<int>(NodeBorderStyle::Nessuno)), QString()};
@@ -1496,54 +1338,14 @@ StylePage::StylePage(QWidget *parent) : QWidget(parent) {
     // FEAT-020 parte B: forme Base, icona disegnata con lo stesso contorno della mappa.
     m_shape = enumSelect(StyleProperty::Shape, kTypeSelectWidthPx);
     m_shape->setIconSize(kTypeIconSize);
-    // In the menu's order, which is not the order of the values (FEAT-030: the square brackets, added
-    // with the fishbone, belong to the Puntuale group).
-    using S = NodeShape;
-    const QList<std::pair<NodeShape, QString>> nodeShapes{
-        {S::RettangoloArrotondato, tr("Rounded rectangle")}, {S::Rettangolo, tr("Rectangle")}, {S::LineaSotto, tr("Line below")},
-        {S::DoppiaLineaSotto, tr("Double line below")}, {S::Cerchio, tr("Circle")}, {S::Ellisse, tr("Ellipse")},
-        {S::Rombo, tr("Diamond")}, {S::Parallelogramma, tr("Parallelogram")}, {S::Pillola, tr("Pill")},
-        {S::Esagono, tr("Hexagon")}, {S::EsagonoVerticale, tr("Vertical hexagon")}, {S::Ottagono, tr("Octagon")},
-        // FEAT-030 stage A: the Advanced group.
-        {S::Cuore, tr("Heart")}, {S::Nuvola, tr("Cloud")}, {S::Stella, tr("Star")}, {S::Goccia, tr("Drop")}, {S::Gemma, tr("Gem")},
-        {S::Scudo, tr("Shield")}, {S::FrecciaSinistra, tr("Left arrow")}, {S::FrecciaDestra, tr("Right arrow")},
-        {S::Etichetta, tr("Tag")}, {S::Bandiera, tr("Flag")}, {S::Nota, tr("Folded note")}, {S::PilaDiSchede, tr("Card stack")},
-        {S::SchedaConBordoLaterale, tr("Side-bar card")},
-        // FEAT-030 stage B: the Puntuale group.
-        {S::ParentesiAngolari, tr("Angle brackets")}, {S::DoppieParentesiAngolari, tr("Double angle brackets")},
-        {S::ParentesiQuadre, tr("Square brackets")}, {S::ParentesiTonde, tr("Round brackets")},
-        {S::ParentesiGraffe, tr("Curly brackets")}, {S::Angoli, tr("Corners")}, {S::Virgolette, tr("Quotation marks")},
-        // FEAT-030 stage C: the flowchart group.
-        {S::Decisione, tr("Decision")}, {S::InputManuale, tr("Manual input")}, {S::ProcessoPredefinito, tr("Predefined process")},
-        {S::OperazioneManuale, tr("Manual operation")}, {S::Database, tr("Database")}, {S::Documento, tr("Document")},
-        {S::DocumentiMultipli, tr("Multiple documents")}, {S::Ritardo, tr("Delay")}, {S::Dati, tr("Data")},
-        {S::Connettore, tr("Connector")}, {S::ConnettoreFuoriPagina, tr("Off-page connector")}, {S::CerchioDoppio, tr("Double circle")},
-        {S::Visualizzazione, tr("Display")}, {S::Trapezio, tr("Trapezoid")}, {S::TrapezioRovesciato, tr("Inverted trapezoid")}};
-    for (const auto &[shape, name] : nodeShapes) {
-        addTypeItem(m_shape, static_cast<int>(shape), name, [shape](QPainter &painter, const QRectF &box) {
-            // Riquadro "contenuto" scelto perche' ogni forma stia nell'icona con le sue proporzioni.
-            const QRectF content(0, 0, 36, 22);
-            const QRectF outer = NodeShapes::outerRect(shape, content, 2);
-            const qreal scale = std::min(box.width() / outer.width(), box.height() / outer.height());
-            painter.translate(box.center());
-            painter.scale(scale, scale);
-            painter.translate(-outer.center());
-            painter.setPen(QPen(kText, 1.5 / scale));
-            painter.setBrush(Qt::NoBrush);
-            if (NodeShapes::hasOpenBorder(shape))
-                for (const QLineF &line : NodeShapes::borderLines(shape, outer, 2)) painter.drawLine(line);
-            else
-                painter.drawPath(NodeShapes::outline(shape, outer));
-            for (const QPainterPath &line : NodeShapes::innerLines(shape, outer)) painter.drawPath(line);
-            for (const QPainterPath &mark : NodeShapes::marks(shape, outer)) painter.drawPath(mark);
-            painter.fillPath(NodeShapes::filledMarks(shape, outer), kText);
-        });
+    // FEAT-038: three columns with the group's title, as photo 02.
+    const QList<StyleChoices::Group> shapeGroups = StyleChoices::shapeGroups();
+    QList<std::pair<int, QString>> groupStarts;
+    for (const StyleChoices::Group &group : shapeGroups) {
+        if (m_shape->count() > 0) groupStarts.append({m_shape->count(), group.title});
+        addChoices(m_shape, StyleChoices::Icon::Shape, group.choices);
     }
-    // FEAT-038: tre colonne con il titolo del gruppo, come la foto 02.
-    const auto itemOf = [this](NodeShape shape) { return m_shape->findData(static_cast<int>(shape)); };
-    static_cast<DarkSelect *>(m_shape)->gridMenu = {3, -1, tr("Basic"), false,
-                                                    {{itemOf(S::Cuore), tr("Advanced")}, {itemOf(S::ParentesiAngolari), tr("Punctual")},
-                                                     {itemOf(S::Decisione), tr("Flowchart")}}};
+    static_cast<DarkSelect *>(m_shape)->gridMenu = {3, -1, shapeGroups.front().title, false, groupStarts};
 
     auto *shape = new QWidget(this);
     auto *shapeLayout = new QVBoxLayout(shape);
@@ -1624,29 +1426,7 @@ StylePage::StylePage(QWidget *parent) : QWidget(parent) {
     m_branchShape = enumSelect(StyleProperty::BranchShape, 64);
     m_branchShape->setObjectName(QStringLiteral("BranchShapeSelect"));
     m_branchShape->setIconSize(kTypeIconSize);
-    const QList<std::pair<BranchShape, QString>> shapes{
-        {BranchShape::RoundedBracket, tr("Rounded bracket")}, {BranchShape::Bracket, tr("Bracket")},
-        {BranchShape::Straight, tr("Straight lines")}, {BranchShape::Curve, tr("Curves")},
-        {BranchShape::SCurve, tr("S-curves")}, {BranchShape::Angled, tr("Angled lines")},
-        {BranchShape::RoundedAngled, tr("Rounded angled lines")}};
-    for (const auto &[value, name] : shapes) {
-        addTypeItem(m_branchShape, static_cast<int>(value), name, [value](QPainter &painter, const QRectF &box) {
-            // Drawn in a 48x32 space (stub and bar at their real 12 px) and scaled to the icon.
-            const qreal scale = std::min(box.width() / 48, box.height() / 32);
-            painter.translate(box.center() - QPointF(24, 16) * scale);
-            painter.scale(scale, scale);
-            painter.setPen(QPen(kText, 1.5 / scale, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter.setBrush(Qt::NoBrush);
-            const QPointF from(2, 16);
-            for (const qreal y : {3.0, 16.0, 29.0}) {
-                const QPointF to(46, y);
-                const QPainterPath path = value == BranchShape::RoundedBracket || value == BranchShape::Bracket
-                                              ? BranchPath::bracket(from, to, value == BranchShape::RoundedBracket)
-                                              : BranchPath::fan(from, to, static_cast<int>(value));
-                painter.drawPath(path);
-            }
-        });
-    }
+    addChoices(m_branchShape, StyleChoices::Icon::BranchShape, StyleChoices::branchShapes());
     static_cast<DarkSelect *>(m_branchShape)->gridMenu = {2, -1, QString()};
     layout->addWidget(section(tr("Branch"), branch, m_branchShape));
     m_numbering = new NumberingFields(this);
@@ -1855,7 +1635,11 @@ void StylePage::setNodes(const QList<const MindNode *> &nodes, const QStringList
     m_structureSection->setVisible(branch);
     if (branch) {
         m_structure->setInTable(MapStructure::insideTreeTable(nodes.front()));  // FEAT-028: no Mind map there
+        const MindNode *node = nodes.front();
+        m_structure->setDirectionFilter([node](MapStructure::Type type) { return MapStructure::effectiveDirections(node, type); });
         m_structure->setValue(nodes.front()->structure, nodes.front()->structureDirection);
+    } else {
+        m_structure->setDirectionFilter({});  // keeps no pointer to a topic no longer shown
     }
     const bool central = nodes.size() == 1 && !nodes.front()->parent;
     m_rootStructureSection->setVisible(central);
@@ -1881,20 +1665,7 @@ void StylePage::setNodes(const QList<const MindNode *> &nodes, const QStringList
 
 namespace {
 // Nomi dei pesi nella select (FEAT-022; nomi italiani dei pesi standard, valori CSS/OpenType).
-QString weightName(int weight) {
-    switch (weight) {
-    case 100: return StylePage::tr("Thin");
-    case 200: return StylePage::tr("Extra light");
-    case 300: return StylePage::tr("Light");
-    case 400: return StylePage::tr("Regular");
-    case 500: return StylePage::tr("Medium");
-    case 600: return StylePage::tr("Semibold");
-    case 700: return StylePage::tr("Bold");
-    case 800: return StylePage::tr("Extra bold");
-    case 900: return StylePage::tr("Black");
-    default: return QString::number(weight);
-    }
-}
+QString weightName(int weight) { return StyleChoices::weightName(weight); }  // FEAT-119: shared with the phone
 
 // Icona Hugeicons ricolorata (scura nel file, chiara sul pannello: AGENTS.md "Icone"), di size
 // px logici alla densita' dello schermo. (Prima si chiedevano 32 px e si fissava la densita' a 2:
@@ -2071,15 +1842,9 @@ void StylePage::fillWeights(const QString &family, int current) {
     const QString shown = family.isEmpty() ? NodeStyle::kDefaultMapFontFamily : family;  // predefinito: Atkinson Hyperlegible
     if (shown != m_weightsFamily || m_fontWeight->findData(current) < 0) {
         const QSignalBlocker blocker(m_fontWeight);
-        QSet<int> weights{QFont::Normal, QFont::Bold};
-        for (const QString &style : QFontDatabase::styles(shown))
-            if (!QFontDatabase::italic(shown, style)) weights.insert(QFontDatabase::weight(shown, style));
-        if (current > 0) weights.insert(current);
-        QList<int> sorted(weights.cbegin(), weights.cend());
-        std::sort(sorted.begin(), sorted.end());
+        const QList<int> sorted = StyleChoices::fontWeights(family, current);  // FEAT-119: shared with the phone
         m_fontWeight->clear();
-        for (const int weight : std::as_const(sorted))
-            if (weight >= 100 && weight <= 900 && weight % 100 == 0) m_fontWeight->addItem(weightName(weight), weight);
+        for (const int weight : sorted) m_fontWeight->addItem(weightName(weight), weight);
         m_weightsFamily = shown;
     }
 }
@@ -2138,7 +1903,6 @@ void StylePage::showText(const QList<const MindNode *> &nodes) {
 }
 
 namespace {
-const QString kFavoritesKey = QStringLiteral("palettes/favorites");
 
 // Stella a cinque punte nel riquadro.
 QPolygonF starShape(const QRectF &box) {
@@ -2228,22 +1992,10 @@ private:
 };
 }  // namespace
 
-QStringList PalettePicker::favoriteIds() {
-    QStringList ids;
-    for (const QString &id : QSettings().value(kFavoritesKey).toStringList())
-        if (CustomPalettes::lookup(id)) ids.append(id);  // una palette personalizzata rimossa sparisce
-    return ids;
-}
-
-bool PalettePicker::isFavorite(const QString &id) { return QSettings().value(kFavoritesKey).toStringList().contains(id); }
-
-void PalettePicker::setFavorite(const QString &id, bool favorite) {
-    QSettings settings;
-    QStringList ids = settings.value(kFavoritesKey).toStringList();
-    ids.removeAll(id);
-    if (favorite) ids.append(id);
-    settings.setValue(kFavoritesKey, ids);
-}
+// FEAT-119: kept in StyleChoices, shared with the phone.
+QStringList PalettePicker::favoriteIds() { return StyleChoices::favoritePaletteIds(); }
+bool PalettePicker::isFavorite(const QString &id) { return StyleChoices::isFavoritePalette(id); }
+void PalettePicker::setFavorite(const QString &id, bool favorite) { StyleChoices::setFavoritePalette(id, favorite); }
 
 PalettePicker *PalettePicker::openPicker() { return qobject_cast<PalettePicker *>(QApplication::activePopupWidget()); }
 
@@ -2583,6 +2335,43 @@ ImageStylePage::ImageStylePage(QWidget *parent) : QWidget(parent) {
 
     // Bordo: tipo (select a icone, come i nodi), colore, spessore.
     constexpr int kTypeSelectWidthPx = 64;
+    // FEAT-129: the topic shapes, as the topic's Shape select (icons, names, grid menu by group).
+    auto *shape = new DarkSelect(this);
+    shape->setFixedWidth(kTypeSelectWidthPx);
+    shape->setFocusPolicy(Qt::TabFocus);
+    shape->setAccessibleName(tr("Shape"));
+    shape->setPlaceholderText(QStringLiteral("—"));
+    shape->view()->setItemDelegate(new LightComboItemDelegate(shape->view()));
+    shape->setIconSize(kTypeIconSize);
+    QList<std::pair<int, QString>> shapeGroupStarts;
+    const QList<StyleChoices::Group> shapeGroups = StyleChoices::shapeGroups();
+    for (const StyleChoices::Group &group : shapeGroups) {
+        if (shape->count() > 0) shapeGroupStarts.append({shape->count(), group.title});
+        for (const StyleChoices::Choice &choice : group.choices)
+            addTypeItem(shape, choice.value, choice.name, [value = choice.value](QPainter &painter, const QRectF &box) {
+                StyleChoices::drawIcon(StyleChoices::Icon::Shape, value, painter, box, kText, QColor("#6b7280"));
+            });
+    }
+    shape->gridMenu = {3, -1, shapeGroups.front().title, false, shapeGroupStarts};
+    m_shape = shape;
+    connect(m_shape, &QComboBox::activated, this, [this](int index) {
+        const auto chosen = static_cast<NodeShape>(m_shape->itemData(index).toInt());
+        chooseStyle([chosen](ImageStyle &style) { style.shape = chosen; });
+    });
+    m_shapeRow = row(tr("Shape"), {m_shape});
+    layout->addWidget(m_shapeRow);
+
+    // FEAT-131: a colour effect on the picture, sticker or formula.
+    m_effect = makeDarkSelect(this);
+    m_effect->setFixedWidth(kWideFieldWidthPx);
+    m_effect->setAccessibleName(tr("Effect"));
+    for (const StyleChoices::Choice &choice : StyleChoices::imageEffects()) m_effect->addItem(choice.name, choice.value);
+    connect(m_effect, &QComboBox::activated, this, [this](int index) {
+        const auto chosen = static_cast<ImageEffect>(m_effect->itemData(index).toInt());
+        chooseStyle([chosen](ImageStyle &style) { style.effect = chosen; });
+    });
+    layout->addWidget(row(tr("Effect"), {m_effect}));
+
     auto *border = new DarkSelect(this);
     border->setFixedWidth(kTypeSelectWidthPx);
     border->setFocusPolicy(Qt::TabFocus);
@@ -2685,7 +2474,7 @@ ImageStylePage::ImageStylePage(QWidget *parent) : QWidget(parent) {
 
     m_resetStyle = button(tr("Reset style"));
     connect(m_resetStyle, &QToolButton::clicked, this, [this] {
-        // Bordo, ombra, opacita'; un adesivo torna con il suo contorno.
+        // Bordo, ombra, opacita', forma (FEAT-129) ed effetto (FEAT-131); un adesivo torna con il suo contorno.
         // La rotazione non e' uno stile: resta (la misura del nodo e' gia' quella ruotata).
         chooseStyle([sticker = m_sticker, rotation = m_style.rotation](ImageStyle &style) {
             style = ImageStyle();
@@ -2716,6 +2505,16 @@ void ImageStylePage::setNode(const MindNode *node) {
         const QSignalBlocker blocker(m_border);
         m_border->setCurrentIndex(any ? m_border->findData(static_cast<int>(m_style.border)) : -1);
     }
+    {
+        const QSignalBlocker blocker(m_shape);
+        m_shape->setCurrentIndex(any ? m_shape->findData(static_cast<int>(m_style.shape)) : -1);
+    }
+    {
+        const QSignalBlocker blocker(m_effect);
+        m_effect->setCurrentIndex(any ? m_effect->findData(static_cast<int>(m_style.effect)) : -1);
+    }
+    setManualLook(m_shape, any);
+    setManualLook(m_effect, any);
     setManualLook(m_border, any);
     m_borderColor->setReading(reading(m_style.borderColor));
     {
@@ -2724,6 +2523,7 @@ void ImageStylePage::setNode(const MindNode *node) {
     }
     m_sticker = any && node->imageSticker && !node->imagePath.isEmpty();
     m_outlineRow->setVisible(m_sticker);
+    m_shapeRow->setVisible(!m_sticker);  // FEAT-129: a sticker keeps its own outline
     {
         const QSignalBlocker blocker(m_outline);
         m_outline->setChecked(m_sticker && m_style.outline);
@@ -2733,7 +2533,7 @@ void ImageStylePage::setNode(const MindNode *node) {
     const bool bordered = any && m_style.border != ImageStyle::Border::None;
     m_borderWidth->setEnabled(bordered);
     m_borderColor->setEnabled(bordered);
-    for (QWidget *field : std::initializer_list<QWidget *>{m_width, m_height, m_chain, m_resetSize, m_rotate, m_border, m_shadow, m_outline,
+    for (QWidget *field : std::initializer_list<QWidget *>{m_width, m_height, m_chain, m_resetSize, m_rotate, m_shape, m_effect, m_border, m_shadow, m_outline,
                                                           m_opacitySlider, m_opacityField, m_resetStyle})
         field->setEnabled(any);
 }
@@ -2777,38 +2577,8 @@ QPixmap variantThumbnail(const QString &paletteId, const QStringList &palette, i
     QPixmap pixmap(size * ratio);
     pixmap.setDevicePixelRatio(ratio);
     pixmap.fill(Qt::transparent);
-    const NodeStyle::Backdrop backdrop = NodeStyle::backdropFor(paletteId, palette, variant, std::nullopt);
-    auto root = std::make_unique<MindNode>();
-    for (int i = 0; i < 4; ++i) {
-        auto main = std::make_unique<MindNode>();
-        main->parent = root.get();
-        root->children.push_back(std::move(main));
-    }
-    NodeStyle::resolveTree(root.get(), palette, backdrop);
     QPainter painter(&pixmap);
-    painter.setRenderHint(QPainter::Antialiasing);
-    const QRectF box(QPointF(0, 0), QSizeF(size));
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(backdrop.color);
-    painter.drawRoundedRect(box, 4, 4);
-    const QPointF center = box.center();
-    const QRectF central(center.x() - 12, center.y() - 3, 24, 6);
-    const qreal mainWidth = 18, mainHeight = 7;
-    for (int i = 0; i < 4; ++i) {
-        const MindNode *node = root->children[static_cast<size_t>(i)].get();
-        const bool right = i % 2 == 0;
-        const qreal y = center.y() + (i < 2 ? -9 : 9) - mainHeight / 2;
-        const qreal x = right ? box.right() - 8 - mainWidth : box.left() + 8;
-        const QRectF branch(x, y, mainWidth, mainHeight);
-        painter.setPen(QPen(node->branchColor, 1));
-        painter.drawLine(QPointF(right ? central.right() : central.left(), center.y()),
-                         QPointF(right ? branch.left() : branch.right(), branch.center().y()));
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(node->fill);
-        painter.drawRoundedRect(branch, 2, 2);
-    }
-    painter.setBrush(root->text);  // il centrale e' solo testo: una barretta del suo colore
-    painter.drawRoundedRect(central, 2, 2);
+    StyleChoices::drawVariantThumbnail(painter, QRectF(QPointF(0, 0), QSizeF(size)), paletteId, palette, variant);  // FEAT-119: shared
     return pixmap;
 }
 
@@ -3277,17 +3047,38 @@ BoundaryStylePage::BoundaryStylePage(QWidget *parent) : QWidget(parent) {
 
     layout->addWidget(heading(tr("Shape")));
     m_shape = darkSelect(tr("Boundary shape"));
-    m_shape->addItem(tr("Rounded rectangle"), static_cast<int>(Boundary::Shape::RoundedRectangle));
-    m_shape->addItem(tr("Rectangle"), static_cast<int>(Boundary::Shape::Rectangle));
+    // FEAT-130, FEAT-134: the shapes as icons, in a grid menu like the topics' shapes.
+    m_shape->setIconSize(kTypeIconSize);
+    for (const StyleChoices::Choice &shape : StyleChoices::boundaryShapes())
+        addTypeItem(m_shape, shape.value, shape.name, [value = shape.value](QPainter &painter, const QRectF &box) {
+            StyleChoices::drawIcon(StyleChoices::Icon::BoundaryShape, value, painter, box, kText, QColor("#6b7280"));
+        });
+    static_cast<DarkSelect *>(m_shape)->gridMenu = {4, -1, QString()};
     onChosen(m_shape, [](Boundary &boundary, const QVariant &value) { boundary.shape = static_cast<Boundary::Shape>(value.toInt()); });
     layout->addWidget(row(tr("Shape"), {m_shape}));
+    // FEAT-134: the topics' fill styles before the colour, as the topics' Fill row.
+    m_fillStyle = darkSelect(tr("Fill style"));
+    m_fillStyle->setFixedWidth(64);
+    m_fillStyle->setIconSize(kTypeIconSize);
+    for (const StyleChoices::Choice &style : StyleChoices::fillStyles())
+        addTypeItem(m_fillStyle, style.value, style.name, [value = style.value](QPainter &painter, const QRectF &box) {
+            StyleChoices::drawIcon(StyleChoices::Icon::FillStyle, value, painter, box, kText, QColor("#6b7280"));
+        });
+    static_cast<DarkSelect *>(m_fillStyle)->gridMenu = {2, m_fillStyle->findData(int(NodeFillStyle::Nessuno)), QString()};
+    onChosen(m_fillStyle, [](Boundary &boundary, const QVariant &value) { boundary.fillStyle = static_cast<NodeFillStyle>(value.toInt()); });
     m_fillColor = colorField(tr("Fill color"), [](Boundary &boundary, const QColor &color) { boundary.fillColor = color; });
-    layout->addWidget(row(tr("Fill"), {m_fillColor}));
+    layout->addWidget(row(tr("Fill"), {m_fillStyle, m_fillColor}));
 
     layout->addWidget(heading(tr("Border")));
     m_pattern = darkSelect(tr("Line style"));
     m_pattern->setFixedWidth(64);
-    addLinePatternItems(m_pattern, false);
+    // The relationships' line styles and "None" (FEAT-130).
+    m_pattern->setIconSize(kTypeIconSize);
+    for (const StyleChoices::Choice &pattern : StyleChoices::boundaryPatterns())
+        addTypeItem(m_pattern, pattern.value, pattern.name, [value = pattern.value](QPainter &painter, const QRectF &box) {
+            StyleChoices::drawIcon(StyleChoices::Icon::LinePattern, value, painter, box, kText, QColor("#6b7280"));
+        });
+    static_cast<DarkSelect *>(m_pattern)->gridMenu = {2, -1, QString()};
     onChosen(m_pattern, [](Boundary &boundary, const QVariant &value) { boundary.linePattern = value.toInt(); });
     layout->addWidget(row(tr("Style"), {m_pattern}));
     m_width = darkSelect(tr("Line width"));
@@ -3297,9 +3088,35 @@ BoundaryStylePage::BoundaryStylePage(QWidget *parent) : QWidget(parent) {
     layout->addWidget(row(tr("Width"), {m_width}));
     m_lineColor = colorField(tr("Line color"), [](Boundary &boundary, const QColor &color) { boundary.lineColor = color; });
     layout->addWidget(row(tr("Color"), {m_lineColor}));
+
+    // FEAT-130: the title's text, as the relationships' label (the sheet's font first).
+    layout->addWidget(heading(tr("Title")));
+    m_titleFont = darkSelect(tr("Font"));
+    m_titleFont->setMaxVisibleItems(12);
+    m_titleFont->addItem(NodeStyle::kDefaultMapFontFamily, QString());
+    NodeItem::loadBundledFonts();
+    for (const QString &family : QFontDatabase::families())
+        if (!family.startsWith(QLatin1Char('@')) && family != NodeStyle::kDefaultMapFontFamily) m_titleFont->addItem(family, family);
+    onChosen(m_titleFont, [](Boundary &boundary, const QVariant &value) { boundary.titleFont = value.toString(); });
+    layout->addWidget(row(tr("Font"), {m_titleFont}));
+    m_titleSize = darkSelect(tr("Text size"));
+    m_titleSize->setFixedWidth(kFieldWidthPx);
+    for (const int px : NodeStyle::kFontSizesPx) m_titleSize->addItem(QString::number(px), qreal(px));
+    onChosen(m_titleSize, [](Boundary &boundary, const QVariant &value) { boundary.titleSize = value.toDouble(); });
+    m_titleColor = colorField(tr("Text color"), [](Boundary &boundary, const QColor &color) { boundary.titleColor = color; });
+    layout->addWidget(row(tr("Size"), {m_titleSize, m_titleColor}));
+    m_titleBold = new IconToggle(QStringLiteral(":/assets/hugeicons/text-bold.svg"), tr("Bold"), this);
+    // The button flips on click; setBoundaries puts back the boundaries' value after the change.
+    connect(m_titleBold, &QToolButton::clicked, this, [this](bool on) {
+        emit edited([on](Boundary &boundary) { boundary.titleBold = on; });
+    });
+    QFrame *bold = toggleBar({m_titleBold}, this);
+    bold->setFixedWidth(kFieldHeightPx + 4);
+    layout->addWidget(row(tr("Bold"), {bold}));
 }
 
-void BoundaryStylePage::setBoundaries(const QList<Boundary> &boundaries, const QColor &defaultLineColor, const QColor &defaultFillColor) {
+void BoundaryStylePage::setBoundaries(const QList<Boundary> &boundaries, const QColor &defaultLineColor, const QColor &defaultFillColor,
+                                      const QColor &defaultTitleColor) {
     setEnabled(!boundaries.isEmpty());
     // Common value of a property, or nothing (index -1) when the boundaries differ.
     const auto show = [&boundaries](QComboBox *combo, const std::function<QVariant(const Boundary &)> &valueOf) {
@@ -3313,8 +3130,16 @@ void BoundaryStylePage::setBoundaries(const QList<Boundary> &boundaries, const Q
         combo->setCurrentIndex(index);
     };
     show(m_shape, [](const Boundary &b) { return QVariant(static_cast<int>(b.shape)); });
+    show(m_fillStyle, [](const Boundary &b) { return QVariant(static_cast<int>(b.fillStyle)); });
     show(m_pattern, [](const Boundary &b) { return QVariant(b.linePattern.value_or(Boundaries::kDefaultLinePattern)); });
     show(m_width, [](const Boundary &b) { return QVariant(b.lineWidth.value_or(Boundaries::kDefaultLineWidth)); });
+    show(m_titleFont, [](const Boundary &b) { return QVariant(b.titleFont); });
+    show(m_titleSize, [](const Boundary &b) { return QVariant(b.titleSize.value_or(Boundaries::kTitleFontPx)); });
+    {
+        const QSignalBlocker blocker(m_titleBold);  // mixed values show off, as the topics' toggles
+        m_titleBold->setChecked(!boundaries.isEmpty() &&
+                                std::all_of(boundaries.cbegin(), boundaries.cend(), [](const Boundary &b) { return b.titleBold; }));
+    }
     const auto colorReading = [&boundaries](const std::function<std::optional<QColor>(const Boundary &)> &own, const QColor &fallback) {
         NodeStyle::Reading reading;
         reading.empty = boundaries.isEmpty();
@@ -3327,4 +3152,5 @@ void BoundaryStylePage::setBoundaries(const QList<Boundary> &boundaries, const Q
     };
     m_lineColor->setReading(colorReading([](const Boundary &b) { return b.lineColor; }, defaultLineColor));
     m_fillColor->setReading(colorReading([](const Boundary &b) { return b.fillColor; }, defaultFillColor));
+    m_titleColor->setReading(colorReading([](const Boundary &b) { return b.titleColor; }, defaultTitleColor));
 }

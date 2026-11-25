@@ -1,5 +1,6 @@
 #include "noteeditor.h"
 
+#include "bracecompletion.h"
 #include "markdownshortcuts.h"
 #include "nodelinks.h"
 #include "richresources.h"
@@ -464,6 +465,17 @@ bool NoteEditor::eventFilter(QObject *watched, QEvent *event) {
     if (watched == m_text && event->type() == QEvent::KeyPress) {
         auto *key = static_cast<QKeyEvent *>(event);
         if (key->key() == Qt::Key_Escape) { commitAndClose(); return true; }
+        // FEAT-133: the field takes the key, then the braces of a formula are closed.
+        if (key->key() == Qt::Key_Backspace || key->text() == QLatin1String("{") || key->text() == QLatin1String("}")) {
+            BraceCompletion::KeyTyping braces;
+            if (QTextCursor cursor = m_text->textCursor(); braces.before(cursor, key, BraceCompletion::Scope::Text)) {
+                m_text->setTextCursor(cursor);
+                return true;
+            }
+            static_cast<QObject *>(m_text)->event(event);
+            if (QTextCursor cursor = m_text->textCursor(); braces.after(cursor, key)) m_text->setTextCursor(cursor);
+            return true;
+        }
         // FEAT-068: il tasto lo scrive il campo, poi le scorciatoie Markdown guardano cosa c'e'.
         if (key->text().size() == 1 && MarkdownShortcuts::isTrigger(key->text().front()) &&
             !(key->modifiers() & (Qt::ControlModifier | Qt::AltModifier)) && !m_typingShortcut) {

@@ -1,5 +1,6 @@
 #include "mapsnapshot.h"
 
+#include "branchline.h"
 #include "branchpath.h"
 #include "mapstructure.h"
 #include "mindmapmodel.h"
@@ -26,6 +27,8 @@ std::unique_ptr<NodeGeometry> MapSnapshot::measure(const MindNode *node) {
 
 MapSnapshot::MapSnapshot(MindMapModel *model, bool writePositions) : m_writePositions(writePositions) {
     if (!model || !model->root()) return;
+    // FEAT-059 Show all notes, as MainWindow::refreshStylePage sets it for the scene: a sheet setting.
+    NodeGeometry::showAllNotes() = model->sheetStyle.showNotes;
     m_background = model->backdrop().color;
     const std::function<void(const MindNode *)> measureBranch = [&](const MindNode *node) {
         m_geometries[node] = measure(node);
@@ -64,6 +67,7 @@ MapSnapshot::MapSnapshot(MindMapModel *model, bool writePositions) : m_writePosi
     m_layout->computeAutoPositions();
     place(model->root(), QPointF(), false);
     addSummaries(model);  // before the boundaries, which may hold a summary topic's subtopics
+    addBranches(model);
     addBoundaries(model);
     addRelations(model);
 }
@@ -149,8 +153,9 @@ void MapSnapshot::addBoundaries(const MindMapModel *model) {
         BoundaryShape shape{boundaries[i], Boundaries::strokeRect(covers[i]), {},
                             Boundaries::look(boundaries[i], backdrop, model->sheetStyle.fontFamily), {}};
         if (!shape.boundary.title.isEmpty())
-            shape.titleRect = Boundaries::titleRect(shape.stroke, QFontMetricsF(shape.look.font).horizontalAdvance(shape.boundary.title));
+            shape.titleRect = Boundaries::titleRect(shape.boundary, shape.stroke, QFontMetricsF(shape.look.font).horizontalAdvance(shape.boundary.title));
         shape.outline = Boundaries::outline(shape.boundary.shape, shape.stroke);
+        shape.fill = Boundaries::fill(shape.boundary, shape.stroke);
         if (!shape.titleRect.isEmpty()) shape.outline = shape.outline.united(Boundaries::titlePath(shape.titleRect));
         const qreal half = shape.look.pen.widthF() / 2;
         m_bounds = m_bounds.united(shape.frame().adjusted(-half, -half, half, half));
@@ -167,10 +172,15 @@ void MapSnapshot::addBoundaries(const MindMapModel *model) {
 }
 
 const MapSnapshot::BoundaryShape *MapSnapshot::boundaryAt(const QPointF &mapPoint, qreal tolerance) const {
-    // BoundaryItem::shape: the filled outline, a band along the border and the tab.
+    // BoundaryItem::shape: the filled outline (FEAT-130: the shape's, an ellipse's lobes included), a
+    // band along the border and the tab. The stroker runs only for a tap near the shape.
     for (auto it = m_boundaries.crbegin(); it != m_boundaries.crend(); ++it) {
         const qreal band = std::max(tolerance, it->look.pen.widthF() / 2);
-        if (it->stroke.adjusted(-band, -band, band, band).contains(mapPoint) || it->titleRect.contains(mapPoint)) return &*it;
+        if (it->titleRect.contains(mapPoint) || it->outline.contains(mapPoint)) return &*it;
+        if (!it->frame().adjusted(-band, -band, band, band).contains(mapPoint)) continue;
+        QPainterPathStroker stroker;
+        stroker.setWidth(2 * band);
+        if (stroker.createStroke(it->outline).contains(mapPoint)) return &*it;
     }
     return nullptr;
 }
@@ -236,24 +246,25 @@ void MapSnapshot::place(MindNode *node, const QPointF &inheritedOffset, bool hid
         position = autoPosition.value() + offset;
         if (m_writePositions) node->position = position;
     }
-    const qsizetype self = m_topics.size();
     if (!hidden) {
         const NodeGeometry *geometry = m_geometries.at(node).get();
         QRectF pills;  // FEAT-114
         for (const QRectF &pill : geometry->labelRects()) pills = pills.united(pill.translated(position));
         m_topicIndex.insert(node, m_topics.size());
-        m_topics.append({node, position, geometry->normalBoundingRect().translated(position), geometry, pills});
+        auto cell = m_layout->tableLook(node, m_layout->nodeById);
+        if (cell) {
+            cell->rect.translate(position);
+            if (!cell->frame.isNull()) cell->frame.translate(position);
+            m_bounds = m_bounds.united(cell->rect.united(cell->frame).adjusted(-1, -1, 1, 1));  // NodeItem: the cell with its border
+        }
+        m_topics.append({node, position, geometry->normalBoundingRect().translated(position), geometry, pills, cell});
         m_bounds = m_bounds.united(pills);
         m_bounds = m_bounds.united(m_topics.last().bounds);
     }
     for (const auto &child : node->children) {
         // MindMapScene::applyCollapse: a collapsed topic hides its branches, not its floating topics.
         const bool childHidden = hidden || (!child->floating && MapLayout::childrenHidden(node));
-        const qsizetype childIndex = m_topics.size();
         place(child.get(), offset, childHidden);
-        // updateEdge: no line into a floating topic, a summary topic or a table's cell.
-        if (!childHidden && !child->floating && !child->summaryTopic && !isTableCell(child.get()))
-            addBranch(m_topics.at(self), m_topics.at(childIndex), !node->parent);
     }
 }
 
@@ -274,20 +285,27 @@ bool MapSnapshot::isTableCell(const MindNode *node) const {
     return (cell != m_layout->tableCells().cend() && cell->owner != node->id) || m_layout->tableFrames().contains(node->id);
 }
 
-void MapSnapshot::addBranch(const Topic &parent, const Topic &child, bool fromRoot) {
-    // Prototype: the desktop's line for a plain mind map (MindMapScene::updateEdge). The child's side
-    // is the half of the map it stands in, the line enters it on the side facing the parent.
-    const bool right = child.position.x() >= parent.position.x();
-    const QPointF entry = child.position + child.geometry->branchAnchor(!right);
-    QPainterPath path;
-    if (fromRoot) {
-        path = BranchPath::fromRoot(parent.geometry->shapeRect().translated(parent.position), entry);
-    } else {
-        path = BranchPath::between(parent.position + parent.geometry->branchAnchor(right), entry);
+void MapSnapshot::addBranches(const MindMapModel *model) {
+    // MindMapScene::updateEdge for every drawn topic. A timeline's axis and a fishbone's spine (z -2)
+    // first, under the other lines, as the desktop's z values put them.
+    const BranchLine::PlacedOf placed = [this](const MindNode *node) -> BranchLine::Placed {
+        const Topic *topic = topicOf(node);
+        return topic ? BranchLine::Placed{topic->position, topic->geometry} : BranchLine::Placed{};
+    };
+    QList<Branch> under;
+    for (const Topic &topic : std::as_const(m_topics)) {
+        if (!BranchLine::hasLine(topic.node, isTableCell(topic.node), placed)) continue;
+        const BranchLine::Line line = BranchLine::line(*model, *m_layout, topic.node, placed);
+        if (line.path.isEmpty() && line.filledMarks.isEmpty() && line.strokedMarks.isEmpty()) continue;  // a brace's middle child
+        // EdgeItem::boundingRect: half the pen, and half the marks' pen, past the control points.
+        const qreal half = (line.pen.style() == Qt::NoPen ? 0 : line.pen.widthF() / 2) + 0.5;
+        QRectF bounds = line.path.controlPointRect().adjusted(-half, -half, half, half);
+        const qreal markHalf = line.markWidth / 2 + 0.5;
+        for (const QPainterPath *mark : {&line.filledMarks, &line.strokedMarks})
+            if (!mark->isEmpty()) bounds |= mark->controlPointRect().adjusted(-markHalf, -markHalf, markHalf, markHalf);
+        m_bounds = m_bounds.united(bounds);
+        Branch branch{line.path, line.pen, line.brush, line.filledMarks, line.strokedMarks, line.markColor, line.markWidth, bounds};
+        (line.z < -1 ? under : m_branches).append(branch);
     }
-    // The line takes the child's branch colour and the parent's width (nodestyle.h).
-    const qreal width = parent.node->branchWidth;
-    const QRectF bounds = path.boundingRect().adjusted(-width, -width, width, width);
-    m_bounds = m_bounds.united(bounds);
-    m_branches.append({path, child.node->lineColor, width, bounds});
+    m_branches = under + m_branches;
 }

@@ -12,6 +12,7 @@
 #include <QLineF>
 #include <QList>
 #include <QPainterPath>
+#include <QRectF>
 #include <QString>
 
 namespace NodeSketch {
@@ -51,5 +52,20 @@ Pattern pattern(NodeFillStyle style, const QPainterPath &outline, quint64 seed);
 // Colore opaco che sullo sfondo appare come color (anche semitrasparente, per esempio il secondo
 // livello al 20%): le parti sovrapposte delle pennellate non diventano piu' scure.
 QColor opaqueOver(const QColor &color, const QColor &background);
+
+// FEAT-119 stage 0: what NodeItem::paint draws of a topic's shape besides the plain outline, moved from
+// NodeItem::sketchFor so the phone draws the same: "Pieno a mano libera"'s area, a pattern's strokes, a
+// freehand border (or underlines and marks) already stroked as an area to fill with the border colour,
+// and the area inside that border for a solid fill. Each part only for the styles that use it. The phone
+// strokes borderLine, the freehand line before stroking, with its own triangles.
+struct Drawing {
+    QPainterPath area;
+    Pattern pattern;
+    QPainterPath border;
+    QPainterPath borderLine;
+    QPainterPath borderArea;
+};
+Drawing drawing(NodeShape shape, NodeFillStyle fill, NodeBorderStyle border, qreal borderWidth, const QRectF &shapeBox,
+                qreal cornerRadius, quint64 seed);
 
 }  // namespace NodeSketch

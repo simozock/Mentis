@@ -54,6 +54,8 @@
     <file>assets/icons/window-minimize-light.svg</file>
     <file>assets/icons/window-minimize.svg</file>
     <file>assets/hugeicons/arrow-down.svg</file>
+    <file>assets/hugeicons/arrow-up.svg</file>
+    <file>assets/hugeicons/more-vertical.svg</file>
     <file>assets/hugeicons/boundary.svg</file>
     <file>assets/hugeicons/child.svg</file>
     <file>assets/hugeicons/undo.svg</file>
@@ -63,6 +65,7 @@
     <file>assets/hugeicons/focus.svg</file>
     <file>assets/hugeicons/help.svg</file>
     <file>assets/hugeicons/help-light.svg</file>
+    <file>assets/hugeicons/chart-light.svg</file>
     <file>assets/hugeicons/arrow-right-light.svg</file>
     <file>assets/hugeicons/arrow-down-light.svg</file>
     <file>assets/hugeicons/arrow-left.svg</file>
@@ -178,8 +181,10 @@
     <file>assets/hugeicons/export-download.svg</file>
     <file>assets/hugeicons/export-copy.svg</file>
     <file>assets/hugeicons/copy.svg</file>
+    <file>assets/hugeicons/cut.svg</file>
     <file>assets/hugeicons/paste.svg</file>
     <file>assets/hugeicons/present.svg</file>
+    <file>assets/hugeicons/gantt.svg</file>
     <file>assets/hugeicons/window-close.svg</file>
     <file>assets/hugeicons/window-maximize-light.svg</file>
     <file>assets/hugeicons/window-maximize.svg</file>

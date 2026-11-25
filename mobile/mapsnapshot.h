@@ -5,15 +5,18 @@
 #include "nodegeometry.h"
 #include "relationship.h"
 
+#include <QBrush>
 #include <QColor>
 #include <QHash>
 #include <QList>
 #include <QPainterPath>
+#include <QPen>
 #include <QPointF>
 #include <QRectF>
 #include <QSet>
 
 #include <memory>
+#include <optional>
 #include <unordered_map>
 
 class MindMapModel;
@@ -30,8 +33,8 @@ struct MindNode;
 // edit asks for it: on open, sheet switch or Undo the model must stay equal to the history state,
 // or Document would record a layout-only step (the phone measures text with its own fonts).
 //
-// What is drawn of it, and the prototype's limits: MapScene (stage A, read only). Every line is the
-// plain curve between two topics.
+// What is drawn of it: MapScene (stage A, read only). FEAT-119 stage 0: every line is the desktop's
+// (BranchLine: the structure's or the branch shape's line, its pattern, the tapered branch, the marks).
 //
 // FEAT-110: the relationships between two drawn elements, with the desktop's geometry and look
 // (Relationships::geometry, Relationships::look).
@@ -55,12 +58,20 @@ public:
         // FEAT-114: map px, the tag pills under the shape (empty without tags); they belong to the
         // topic, as NodeItem's shape, but not to its selection ring.
         QRectF pills;
-        bool contains(const QPointF &mapPoint) const { return bounds.contains(mapPoint) || pills.contains(mapPoint); }
+        // FEAT-028: the topic as a tree-table cell (MindMapScene::applyTableCells), drawn instead of
+        // its shape; rect and frame in map px. A tap on the cell selects the topic, as on the desktop.
+        std::optional<MapLayout::TableLook> cell;
+        bool contains(const QPointF &mapPoint) const {
+            return bounds.contains(mapPoint) || pills.contains(mapPoint) || (cell && (cell->rect.contains(mapPoint) || cell->frame.contains(mapPoint)));
+        }
     };
     struct Branch {
-        QPainterPath path;      // map px
-        QColor color;
-        qreal width = 2;
+        QPainterPath path;      // map px; stroked with pen, or (tapered) filled with brush's colour
+        QPen pen;
+        QBrush brush;
+        QPainterPath filledMarks, strokedMarks;  // FEAT-119 stage 0, EdgeItem's marks
+        QColor markColor;
+        qreal markWidth = 0;
         QRectF bounds;
     };
     struct Relation {
@@ -76,7 +87,11 @@ public:
         QRectF titleRect;  // map px, the title tab; empty without a title
         Boundaries::Look look;
         QPainterPath outline;  // the border with the tab: a relationship's end (BoundaryItem::outline)
-        QRectF frame() const { return titleRect.isEmpty() ? stroke : stroke.united(titleRect); }
+        Boundaries::Fill fill;  // FEAT-134: the fill style's area or pattern
+        QRectF frame() const {  // FEAT-130: where the shape reaches, with the tab
+            const QRectF bounds = Boundaries::shapeBounds(boundary.shape, stroke);
+            return titleRect.isEmpty() ? bounds : bounds.united(titleRect);
+        }
     };
     struct SummaryShape {
         QString id;            // Summary::id
@@ -127,7 +142,8 @@ public:
 private:
     void place(MindNode *node, const QPointF &inheritedOffset, bool hidden);
     bool isTableCell(const MindNode *node) const;
-    void addBranch(const Topic &parent, const Topic &child, bool fromRoot);
+    // The lines into the drawn topics, once every topic is placed (a line reads its siblings).
+    void addBranches(const MindMapModel *model);
     void addBoundaries(const MindMapModel *model);
     void addSummaries(MindMapModel *model);
     // MindMapScene::branchesCovered: the union of the drawn shapes of these topics and of their

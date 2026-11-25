@@ -14,6 +14,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QtTest>
+#include <functional>
 
 namespace {
 
@@ -45,6 +46,7 @@ public:
             if (!m_answers.contains(title)) return;
             modal->setProperty("answered", true);
             seen.append(title);
+            if (beforeAnswer) beforeAnswer(title);
             if (m_answers.value(title) == QLatin1String("secondary"))
                 modal->findChild<QPushButton *>(QStringLiteral("ModalSecondary"))->click();
             else
@@ -53,6 +55,7 @@ public:
         m_timer.start(10);
     }
     QStringList seen;
+    std::function<void(const QString &)> beforeAnswer;  // runs while the modal is open
 
 private:
     QHash<QString, QString> m_answers;
@@ -208,6 +211,41 @@ private slots:
         }
     }
 
+    // A release without its installer fails as a network error; cancel removes the partial file.
+    void downloaderMissingInstallerAndCancel() {
+        QTemporaryDir source;
+        QTemporaryDir target;
+        const QString name = Updates::installerFileName("3.0.0");
+        const QByteArray installer(8 * 1024 * 1024, 'x');
+        Updates::Release release;
+        release.version = "3.0.0";
+        release.installerName = name;
+        release.installerUrl = QUrl::fromLocalFile(source.filePath(name));
+        release.checksumsUrl = QUrl::fromLocalFile(source.filePath("SHA256SUMS"));
+        writeFile(source.filePath("SHA256SUMS"), QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex() + "  " + name.toUtf8() + "\n");
+        {
+            UpdateDownloader downloader(release, target.path());
+            QSignalSpy finished(&downloader, &UpdateDownloader::finished);
+            downloader.start();
+            QVERIFY(finished.wait());
+            QCOMPARE(finished.at(0).at(0).value<UpdateDownloader::Error>(), UpdateDownloader::Error::Network);
+            QVERIFY(!QFile::exists(target.filePath(name)));
+        }
+
+        writeFile(source.filePath(name), installer);
+        {
+            UpdateDownloader downloader(release, target.path());
+            QSignalSpy finished(&downloader, &UpdateDownloader::finished);
+            // Cancelled at the first bytes, as the dialog's Cancel does.
+            QObject::connect(&downloader, &UpdateDownloader::progress, &downloader, [&downloader] { downloader.cancel(); });
+            downloader.start();
+            QVERIFY(finished.wait());
+            QCOMPARE(finished.count(), 1);
+            QCOMPARE(finished.at(0).at(0).value<UpdateDownloader::Error>(), UpdateDownloader::Error::Cancelled);
+            QVERIFY(!QFile::exists(target.filePath(name)));
+        }
+    }
+
     // Startup: a skipped version and a check made today ask nothing.
     void startupRespectsSkipAndDay() {
         QTemporaryDir dir;
@@ -331,6 +369,47 @@ private slots:
         QVERIFY(file.open(QIODevice::ReadOnly));
         QCOMPARE(file.readAll(), installer);
         QGuiApplication::setQuitOnLastWindowClosed(true);
+    }
+
+    // "Check now" while the startup check runs: one answer, given as for "Check now" (a skipped
+    // version is proposed). The installer gone before Restart and install: no window is closed.
+    void checkNowDuringStartupAndInstallerGone() {
+        QTemporaryDir dir;
+        const QString name = Updates::installerFileName("99.0.0");
+        const QByteArray installer(1000, 'i');
+        const QUrl page = releasePage(dir, "v99.0.0");
+        const QString assets = dir.filePath("releases/download/v99.0.0/");
+        writeFile(assets + name, installer);
+        writeFile(assets + "SHA256SUMS", QCryptographicHash::hash(installer, QCryptographicHash::Sha256).toHex() + "  " + name.toUtf8() + "\n");
+        QWidget window;
+        window.resize(800, 600);
+        window.show();
+        UpdatePrompt prompt(&window);
+        prompt.releaseUrl = page;
+        prompt.canInstall = [] { return true; };
+        bool closeAsked = false;
+        prompt.closeWindows = [&closeAsked] {
+            closeAsked = true;
+            return true;
+        };
+        prompt.startInstaller = [](const QString &) { return true; };
+        QSignalSpy finished(&prompt, &UpdatePrompt::checkFinished);
+
+        Updates::Settings settings;
+        settings.skippedVersion = "99.0.0";
+        settings.save();
+        AutoAnswer answers({{"Update available", "primary"}, {"Update ready", "primary"}, {"Updates", "primary"}});
+        answers.beforeAnswer = [](const QString &title) {
+            if (title == QLatin1String("Update ready")) QDir(UpdateDownloader::defaultFolder()).removeRecursively();
+        };
+        prompt.checkAtStartup();
+        prompt.checkNow(&window);
+        QVERIFY(finished.wait());
+        QTest::qWait(50);
+        QCOMPARE(finished.count(), 1);
+        QCOMPARE(answers.seen, (QStringList{"Update available", "Update ready", "Updates"}));
+        QVERIFY(!closeAsked);
+        QVERIFY(QGuiApplication::quitOnLastWindowClosed());
     }
 };
 

@@ -3,6 +3,7 @@
 // FEAT-052 (docs/features/FEAT-052-confini.md): boundaries around a branch or a run of sibling
 // topics. Data, JSON form and geometry; no widgets or scene items.
 
+#include "nodesketch.h"
 #include "nodestyle.h"
 
 #include <QColor>
@@ -10,6 +11,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QList>
+#include <QMarginsF>
 #include <QPainterPath>
 #include <QPen>
 #include <QRectF>
@@ -20,7 +22,8 @@
 #include <optional>
 
 struct Boundary {
-    enum class Shape { RoundedRectangle, Rectangle };
+    // FEAT-130: the shapes after Rectangle; FEAT-134: Tag, RoundedLeft, Frame.
+    enum class Shape { RoundedRectangle, Rectangle, Waves, Scallops, Tension, Polygon, Ellipse, Corners, Tag, RoundedLeft, Frame };
     QString id;
     QStringList topics;  // the covered topics (with their branches), siblings first to last
     QString title;       // empty = no title tab
@@ -28,8 +31,14 @@ struct Boundary {
     // Style chosen by hand; unset = default (see Boundaries::k* below).
     std::optional<QColor> lineColor;
     std::optional<qreal> lineWidth;
-    std::optional<int> linePattern;  // Qt::PenStyle: SolidLine, DashLine or DotLine
+    std::optional<int> linePattern;  // Qt::PenStyle: SolidLine, DashLine, DotLine or NoPen (FEAT-130)
     std::optional<QColor> fillColor;
+    NodeFillStyle fillStyle = NodeFillStyle::Pieno;  // FEAT-134: the topics' fill styles
+    // FEAT-130: the title's text; unset = the sheet's font, 14 px, the default ink, normal weight.
+    QString titleFont;
+    std::optional<qreal> titleSize;
+    std::optional<QColor> titleColor;
+    bool titleBold = false;
     bool operator==(const Boundary &) const = default;
 };
 
@@ -53,6 +62,20 @@ inline constexpr qreal kTitleHeightPx = 18;
 inline constexpr qreal kTitlePaddingPx = 10;
 inline constexpr qreal kTitleRadiusPx = 2;
 inline constexpr qreal kTitleFontPx = 14;
+// FEAT-130 shapes (Mentis' own measures, not measured on the reference): waves 3 px high, about
+// 24 px long; scallops bulging 4 px, about 16 px long; tension 5 px inwards; polygon corners cut
+// 12 px; corner marks 16 px arms. Cuts and arms at most a quarter of the side.
+inline constexpr qreal kWaveAmplitudePx = 3;
+inline constexpr qreal kWaveLengthPx = 24;
+inline constexpr qreal kScallopBulgePx = 4;
+inline constexpr qreal kScallopLengthPx = 16;
+inline constexpr qreal kTensionPx = 5;
+inline constexpr qreal kPolygonCutPx = 12;
+inline constexpr qreal kCornerArmPx = 16;
+// FEAT-134 (Mentis' own measures, read from a screenshot of the reference): Tag's left corners cut
+// as Polygon's; Rounded left's left radius 24 px at most; Frame's edges 8 px past the corners.
+inline constexpr qreal kRoundedLeftRadiusPx = 24;
+inline constexpr qreal kFrameOverrunPx = 8;
 
 QString shapeKey(Boundary::Shape shape);
 std::optional<Boundary::Shape> shapeFromKey(const QString &key);
@@ -65,16 +88,32 @@ QJsonArray toJson(const QList<Boundary> &boundaries);
 // compatibility during development, user rule).
 QList<Boundary> listFromJson(const QJsonArray &array);
 
-// Outline of the stroke around `covered` (the union of the covered topics' boxes).
+// The rect 8 px around `covered` (the union of the covered topics' boxes) the shapes are drawn on.
 QRectF strokeRect(const QRectF &covered);
+// Closed body: fill, clicks and a relationship's end (Corner marks and Frame: the rectangle).
 QPainterPath outline(Boundary::Shape shape, const QRectF &stroke);
-// Title tab standing on the top edge of `stroke`, wide enough for a text `textWidth` wide.
-QRectF titleRect(const QRectF &stroke, qreal textWidth);
+// What the pen draws: the outline, the four marks of Corner marks or the four edges of Frame.
+QPainterPath border(Boundary::Shape shape, const QRectF &stroke);
+// Where the shape reaches: `stroke`, wider for waves, scallops, the ellipse and the frame (stroke not included).
+QRectF shapeBounds(Boundary::Shape shape, const QRectF &stroke);
+qreal titleHeight(const Boundary &boundary);  // grows with the title's size (FEAT-130)
+// Title tab standing on the top of the shape, wide enough for a text `textWidth` wide: 12 px from
+// the left, centred on an ellipse; on a frame it stands on the rectangle, between the overruns.
+QRectF titleRect(const Boundary &boundary, const QRectF &stroke, qreal textWidth);
 QPainterPath titlePath(const QRectF &tab);
 
-// Room the layout leaves above and below the covered run (margin, half the stroke; the tab).
-qreal padAbove(const Boundary &boundary);
-qreal padBelow(const Boundary &boundary);
+// Room the layout leaves around the covered run, `covered` its size (only the ellipse needs it):
+// margin, half the stroke, the shape's reach; the tab above.
+QMarginsF room(const Boundary &boundary, const QSizeF &covered);
+
+// FEAT-134: the fill drawn as the topics' (NodeSketch, seeded by the id): Solid fills `area` (the
+// outline), Hand-drawn solid its rough area, a pattern draws `pattern`'s strokes in the fill colour made
+// opaque over the backdrop (NodeSketch::opaqueOver), None nothing. Built on content change only.
+struct Fill {
+    QPainterPath area;
+    NodeSketch::Pattern pattern;
+};
+Fill fill(const Boundary &boundary, const QRectF &stroke);
 
 // How a boundary is drawn on a sheet: its style or the defaults, black alphas on the default
 // canvas and the same alphas of the backdrop's readable colour on a dark one (annotationColor);

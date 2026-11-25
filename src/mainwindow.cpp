@@ -18,6 +18,7 @@
 #include "stickers.h"
 #include "iconlibrary.h"
 #include "iconpanel.h"
+#include "bracecompletion.h"
 #include "markdownshortcuts.h"
 #include "labeleditor.h"
 #include "palettedialog.h"
@@ -37,12 +38,14 @@
 #include "mindmapscene.h"
 #include "mindmapview.h"
 #include "nodeitem.h"
+#include "outlineformats.h"
 #include "richtitle.h"
 #include "settingsdialog.h"
 #include "shortcutcatalog.h"
 #include "floatingui.h"
 #include "structurepicker.h"
 #include "segmentedcontrol.h"
+#include "panelresizehandle.h"
 #include "sidepanel.h"
 #include "stylecontrols.h"
 #include "performance.h"
@@ -155,6 +158,10 @@
 #include "updateprompt.h"
 
 namespace {
+
+// The side panel's dragged width (user's request 2026-11-22); missing = the content's minimum.
+const QString kInspectorWidthSetting = QStringLiteral("panels/sidePanelWidth");
+
 // Schede della Home: il bordo compare solo al passaggio del mouse e legge il colore
 // corrente della selezione dei nodi, quindi segue subito la preferenza globale.
 template<typename Button>
@@ -232,168 +239,7 @@ private:
     QColor m_color = Qt::white;
 };
 
-// Formattazione condivisa tra mappa e outliner (richieste 2026-10-13 e 2026-10-14). L'outliner
-// mostra e modifica grassetto, corsivo, barrato e sottolineato del titolo formattato
-// (MindNode::titleHtml); font, dimensione e colore restano nell'HTML e si vedono solo sulla mappa.
-// Il peso dipende dal contesto (BoldWeights): dove il testo è già in grassetto (voci di primo
-// livello e titolo principale nell'outliner, nodo principale sulla mappa) il grassetto è Black
-// (900), perché Segoe UI non ha l'800 e lo rende come Bold 700 (misurato con QFontInfo).
-enum InlineFlag : quint8 { kInlineItalic = 1, kInlineStrike = 2, kInlineUnderline = 4, kInlineBold = 8, kInlineHighlight = 16 };
-
-// Peso del testo in grassetto e del testo normale in un contesto (riga dell'outliner o titolo
-// salvato per la mappa). Un carattere è "in grassetto" se il suo peso arriva almeno a bold.
-struct BoldWeights {
-    int bold = QFont::Bold;
-    int regular = QFont::Normal;
-};
-// Testo normale a peso 400 (voci dell'outliner sotto il primo livello, nodi della mappa).
-constexpr BoldWeights kNormalBold{QFont::Bold, QFont::Normal};
-// Testo già in grassetto (voci di primo livello e titolo principale nell'outliner, nodo principale).
-constexpr BoldWeights kHeavyBold{QFont::Black, QFont::Bold};
-
-quint8 inlineFlags(const QTextCharFormat &format, int boldWeight = QFont::Bold) {
-    return (format.fontItalic() ? kInlineItalic : 0) | (format.fontStrikeOut() ? kInlineStrike : 0) |
-           (format.fontUnderline() ? kInlineUnderline : 0) |
-           (format.fontWeight() >= boldWeight ? kInlineBold : 0) |
-           (MarkdownShortcuts::isHighlight(format) ? kInlineHighlight : 0);  // FEAT-068 "==testo=="
-}
-
-// Formato da disegnare: il peso si imposta solo per il grassetto, il resto eredita quello della
-// riga (impostarlo a 400 toglierebbe il grassetto delle voci di primo livello).
-QTextCharFormat inlineFormat(quint8 flags, int boldWeight = QFont::Bold) {
-    QTextCharFormat format = flags & kInlineHighlight ? MarkdownShortcuts::highlightFormat() : QTextCharFormat();
-    format.setFontItalic(flags & kInlineItalic);
-    format.setFontStrikeOut(flags & kInlineStrike);
-    format.setFontUnderline(flags & kInlineUnderline);
-    if (flags & kInlineBold) format.setFontWeight(boldWeight);
-    return format;
-}
-
-// FEAT-022: pesi del titolo salvato di un nodo: normale = peso del nodo, grassetto = 700 o 900
-// (NodeItem::boldWeightFor). Con i predefiniti sono kNormalBold e, per il nodo principale, kHeavyBold.
-BoldWeights storedBoldWeights(const MindNode *node) { return {NodeItem::boldWeightFor(node), node->fontWeight}; }
-
-// Formato da salvare in titleHtml: il peso è sempre esplicito, così il grassetto si può anche togliere.
-QTextCharFormat inlineStoredFormat(quint8 flags, BoldWeights weights) {
-    QTextCharFormat format = inlineFormat(flags & ~kInlineBold);
-    format.setFontWeight(flags & kInlineBold ? weights.bold : weights.regular);
-    return format;
-}
-
-// Flag di ogni carattere del documento, indicizzati come le posizioni di QTextCursor e come
-// toPlainText() (il separatore tra paragrafi occupa una posizione e vale 0).
-QVector<quint8> inlineFlagsPerChar(const QTextDocument &document, int boldWeight = QFont::Bold) {
-    QVector<quint8> flags(document.characterCount(), 0);
-    for (QTextBlock block = document.begin(); block.isValid(); block = block.next())
-        for (auto it = block.begin(); !it.atEnd(); ++it) {
-            const QTextFragment fragment = it.fragment();
-            if (!fragment.isValid()) continue;
-            const quint8 value = inlineFlags(fragment.charFormat(), boldWeight);
-            for (int i = 0; i < fragment.length(); ++i) flags[fragment.position() + i] = value;
-        }
-    return flags;
-}
-
-// Tratti consecutivi con gli stessi flag, a partire da offset e per length caratteri.
-QList<QTextLayout::FormatRange> inlineRanges(const QVector<quint8> &flags, int offset, int length,
-                                             int boldWeight = QFont::Bold) {
-    QList<QTextLayout::FormatRange> ranges;
-    for (int i = 0; i < length;) {
-        const quint8 value = flags.value(offset + i);
-        int end = i + 1;
-        while (end < length && flags.value(offset + end) == value) ++end;
-        if (value) ranges.append({i, end - i, inlineFormat(value, boldWeight)});
-        i = end;
-    }
-    return ranges;
-}
-
-// Inizio del titolo nel testo del documento: NodeItem::finishEditing salva come titolo il testo
-// senza spazi iniziali e finali, mentre l'HTML li conserva. -1 se l'HTML non corrisponde al titolo.
-int titleOffsetIn(const QString &plain, const QString &title) {
-    int offset = 0;
-    while (offset < plain.size() && plain.at(offset).isSpace()) ++offset;
-    return plain.mid(offset, title.size()) == title ? offset : -1;
-}
-
-// Corsivo, barrato e sottolineato del titolo, nelle posizioni del testo semplice (title).
-// Vuoto se non ce ne sono, se il titolo ha formule o se l'HTML non corrisponde al titolo.
-// storedBold: peso del grassetto nel titolo salvato (Black per il nodo principale, già in grassetto
-// sulla mappa); displayBold: peso con cui disegnarlo nella riga dell'outliner (2026-10-14).
-QList<QTextLayout::FormatRange> titleInlineRanges(const QString &title, const QString &html,
-                                                  int storedBold = QFont::Bold, int displayBold = QFont::Bold) {
-    if (html.isEmpty() || FormulaText::containsMath(title)) return {};
-    QTextDocument document;
-    document.setHtml(RichTitle::withoutDocumentFont(html));  // FEAT-022: vale il font del nodo
-    const int offset = titleOffsetIn(document.toPlainText(), title);
-    if (offset < 0) return {};
-    return inlineRanges(inlineFlagsPerChar(document, storedBold), offset, int(title.size()), displayBold);
-}
-
-// Nuovo titleHtml dopo una modifica fatta nell'outliner. Si parte dal titolo formattato salvato
-// (oldHtml), si sostituisce solo il tratto di testo cambiato (prefisso e suffisso comuni restano
-// con la loro formattazione completa) e si applicano corsivo, barrato e sottolineato del campo.
-// I caratteri nuovi prendono le altre proprietà (grassetto, colore...) dal carattere precedente,
-// come quando si scrive sulla mappa. Titolo senza HTML e senza formattazione: resta testo semplice
-// (stringa vuota). Nessun cambiamento: restituisce oldHtml così com'è (niente "Modificato").
-// editedBold: peso del grassetto nel campo dell'outliner; stored: pesi da scrivere nel titolo
-// salvato (kHeavyBold per il nodo principale, kNormalBold per gli altri). 2026-10-14.
-QString mergeOutlineFormats(const QString &oldTitle, const QString &oldHtml, const QTextDocument &edited,
-                            const QFont &font, int editedBold = QFont::Bold, BoldWeights stored = kNormalBold) {
-    const QString newText = edited.toPlainText();
-    // Le formule restano testo semplice, come sulla mappa (NodeItem::finishEditing).
-    if (FormulaText::containsMath(newText)) return {};
-    const QVector<quint8> wanted = inlineFlagsPerChar(edited, editedBold);
-    const bool anyWanted = std::any_of(wanted.cbegin(), wanted.cend(), [](quint8 value) { return value != 0; });
-    if (oldHtml.isEmpty() && !anyWanted) return {};
-
-    QTextDocument document;
-    document.setUndoRedoEnabled(false);
-    document.setDefaultFont(font);
-    if (oldHtml.isEmpty()) document.setPlainText(oldTitle);
-    else document.setHtml(RichTitle::withoutDocumentFont(oldHtml));  // FEAT-022: vale il font del nodo
-    // Tratto del documento che corrisponde al titolo (gli spazi attorno restano dove sono).
-    const QString oldPlain = document.toPlainText();
-    int offset = titleOffsetIn(oldPlain, oldTitle);
-    const QString oldText = offset < 0 ? oldPlain : oldTitle;
-    if (offset < 0) offset = 0;
-
-    const int common = int(qMin(oldText.size(), newText.size()));
-    int prefix = 0;
-    while (prefix < common && oldText.at(prefix) == newText.at(prefix)) ++prefix;
-    int suffix = 0;
-    while (suffix < common - prefix && oldText.at(oldText.size() - 1 - suffix) == newText.at(newText.size() - 1 - suffix)) ++suffix;
-    bool changed = prefix + suffix != oldText.size() || prefix + suffix != newText.size();
-    QTextCursor cursor(&document);
-    if (changed) {
-        cursor.setPosition(offset + prefix);
-        cursor.setPosition(offset + int(oldText.size()) - suffix, QTextCursor::KeepAnchor);
-        // "\n" diventa un nuovo paragrafo (https://doc.qt.io/qt-6/qtextcursor.html#insertText).
-        cursor.insertText(newText.mid(prefix, newText.size() - prefix - suffix));
-        if (document.toPlainText().mid(offset, newText.size()) != newText) {
-            // Caso imprevisto (caratteri che toPlainText converte): si riparte dal testo nuovo.
-            document.setPlainText(newText);
-            offset = 0;
-        }
-    }
-    const QVector<quint8> current = inlineFlagsPerChar(document, stored.bold);
-    for (int i = 0; i < newText.size();) {
-        const quint8 value = wanted.value(i);
-        if (newText.at(i) == QLatin1Char('\n') || current.value(offset + i) == value) { ++i; continue; }
-        int end = i + 1;
-        while (end < newText.size() && newText.at(end) != QLatin1Char('\n') && wanted.value(end) == value &&
-               current.value(offset + end) != value) ++end;
-        cursor.setPosition(offset + i);
-        cursor.setPosition(offset + end, QTextCursor::KeepAnchor);
-        cursor.mergeCharFormat(inlineStoredFormat(value, stored));
-        // FEAT-068: l'evidenziato tolto nel campo si toglie anche dal titolo salvato.
-        if (!(value & kInlineHighlight) && (current.value(offset + i) & kInlineHighlight)) MarkdownShortcuts::setHighlight(cursor, false);
-        changed = true;
-        i = end;
-    }
-    if (!changed) return oldHtml;
-    return document.toHtml();
-}
+using namespace OutlineFormats;  // FEAT-121: moved unchanged to the core (outlineformats.h)
 
 // Barra dell'outliner per la selezione nel campo di modifica: solo corsivo, barrato e
 // sottolineato (richiesta 2026-10-13). Stesso aspetto della barra della mappa (TextFormatBar in
@@ -584,8 +430,12 @@ protected:
             return;
         }
         if (outlineCharStyleKey(this, event, charStyleKey, formatBar)) return;
-        if (QTextCursor cursor = textCursor(); plainTyping.type(event, cursor)) { setTextCursor(cursor); ensureCursorVisible(); }
+        // FEAT-133: the braces of a formula closed while typing.
+        BraceCompletion::KeyTyping braces;
+        if (QTextCursor cursor = textCursor(); braces.before(cursor, event, BraceCompletion::Scope::Text)) setTextCursor(cursor);
+        else if (QTextCursor cursor = textCursor(); plainTyping.type(event, cursor)) { setTextCursor(cursor); ensureCursorVisible(); }
         else QPlainTextEdit::keyPressEvent(event);
+        if (QTextCursor cursor = textCursor(); braces.after(cursor, event)) setTextCursor(cursor);
         typedShortcut(event);
     }
     void mousePressEvent(QMouseEvent *event) override { plainTyping.active = false; QPlainTextEdit::mousePressEvent(event); }
@@ -595,7 +445,6 @@ public:
     OutlineFormatBar *formatBar = nullptr;
     RichTitle::PlainFirstTyping plainTyping;  // FEAT-095: on from the field's opening
     int boldWeight = QFont::Bold;  // FEAT-068: peso del grassetto della riga (rowBoldWeights)
-    int pendingTask = 0;           // FEAT-068: "- [ ] " a inizio titolo, casella alla conferma
     // FEAT-094: true when the pasted clipboard went onto the item (image, files, branch).
     std::function<bool()> pasteContent;
 
@@ -613,9 +462,7 @@ private:
         MarkdownShortcuts::Options options;
         options.boldWeight = boldWeight;
         const MarkdownShortcuts::Result result = MarkdownShortcuts::afterTyping(cursor, event->text().front(), options);
-        if (!result.changed) return;
-        setTextCursor(cursor);
-        if (result.task) pendingTask = result.task;
+        if (result.changed) setTextCursor(cursor);
     }
 };
 
@@ -679,8 +526,12 @@ protected:
             return;
         }
         if (outlineCharStyleKey(this, event, charStyleKey, formatBar)) return;
-        if (QTextCursor cursor = textCursor(); plainTyping.type(event, cursor)) { setTextCursor(cursor); ensureCursorVisible(); }
+        // FEAT-133: the braces of a formula closed while typing.
+        BraceCompletion::KeyTyping braces;
+        if (QTextCursor cursor = textCursor(); braces.before(cursor, event, BraceCompletion::Scope::Text)) setTextCursor(cursor);
+        else if (QTextCursor cursor = textCursor(); plainTyping.type(event, cursor)) { setTextCursor(cursor); ensureCursorVisible(); }
         else QPlainTextEdit::keyPressEvent(event);
+        if (QTextCursor cursor = textCursor(); braces.after(cursor, event)) setTextCursor(cursor);
         // FEAT-068: scorciatoie Markdown in linea (il titolo principale non ha la casella).
         if (event->text().size() == 1 && event->text() != QLatin1String(" ") &&
             !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
@@ -746,18 +597,23 @@ void loadRootTitle(OutlineRootTitleEdit *edit, const MindNode *root) {
 // FEAT-036: colori dell'outliner. Chiari come prima con uno sfondo della mappa chiaro; con uno
 // sfondo scuro l'outliner diventa scuro con colori neutri propri (non quelli della mappa).
 struct OutlineColors {
-    QColor page, text, marker, selection, dropInside, dropLine, badge, grip, rootFocus;
+    QColor page, text, marker, selection, badge, grip, rootFocus;
 };
+// Where a dragged row lands: the selection colour of Settings (user, 2026-11-18), shared with the
+// Gantt table; tinted over the row it goes into.
+QColor outlineDropLine() { return NodeItem::selectionStyle().selectedColor; }
+QColor outlineDropInside(bool dark) {
+    QColor color = outlineDropLine();
+    color.setAlpha(dark ? 90 : 50);
+    return color;
+}
 OutlineColors lightOutlineColors() {
-    return {QColor("#ffffff"), QColor("#202630"), QColor("#202630"), QColor("#e7efff"), QColor("#dce9ff"),
-            QColor("#8fb8f4"), QColor(15, 23, 42, 15), QColor("#7f8792"), QColor("#edf3ff")};
+    return {QColor("#ffffff"), QColor("#202630"), QColor("#202630"), QColor("#e7efff"), QColor(15, 23, 42, 15), QColor("#7f8792"), QColor("#edf3ff")};
 }
 OutlineColors darkOutlineColors() {
     using UiTheme::Token;
-    QColor dropInside = UiTheme::color(Token::Accent);
-    dropInside.setAlpha(90);
     return {UiTheme::color(Token::SurfaceSunken), UiTheme::color(Token::Text), UiTheme::color(Token::Text),
-            UiTheme::color(Token::SurfaceRaised), dropInside, UiTheme::color(Token::Accent), QColor(255, 255, 255, 30),
+            UiTheme::color(Token::SurfaceRaised), QColor(255, 255, 255, 30),
             UiTheme::color(Token::TextMuted), UiTheme::color(Token::Surface)};
 }
 OutlineColors &outlineColors() {
@@ -1500,7 +1356,6 @@ public:
     std::function<void()> historyStepFinished;
     // FEAT-096 stage 3: each state of the edited title goes to the document (Document::editTitle).
     std::function<void(const QModelIndex &, const QString &, const QString &)> titleEdited;
-    std::function<void(const QModelIndex &, int)> taskTyped;  // FEAT-068: "- [ ] " a inizio titolo
     std::function<bool(const QModelIndex &)> pasteWhileEditing;  // FEAT-094
     std::function<int(const QKeyEvent *)> charStyleKey;  // FEAT-095
 
@@ -1540,7 +1395,7 @@ public:
         if (view && view->dropIndex() == index && view->dropHint() == OutlineTreeView::DropHint::Inside) {
             painter->save();
             painter->setPen(Qt::NoPen);
-            painter->setBrush(outlineColors().dropInside);
+            painter->setBrush(outlineDropInside(outlineColors().page != QColor("#ffffff")));
             QRect highlight = content.rect.adjusted(px(22), px(2), -px(4), -px(2));
             painter->drawRoundedRect(highlight, 4, 4);
             painter->restore();
@@ -1594,7 +1449,7 @@ public:
             const bool before = view->dropHint() == OutlineTreeView::DropHint::Before;
             const QRect row = option.rect;
             const int y = before ? row.top() + px(6) : row.bottom() - px(6);
-            painter->setBrush(outlineColors().dropLine);
+            painter->setBrush(outlineDropLine());
             painter->drawRoundedRect(QRect(row.left() + px(22), y - px(2), qMax(px(20), row.width() - px(30)), px(4)), 2 * z, 2 * z);
             painter->drawEllipse(QPointF(row.left() + px(22), y), 4 * z, 4 * z);
         }
@@ -1891,13 +1746,6 @@ public:
                 if (text == node->title && html == node->titleHtml) continue;  // nessun cambiamento
                 if (titleEdited) titleEdited(index, text, html);
                 if (!last && historyStepFinished) historyStepFinished();
-            }
-            // FEAT-068: casella scritta a inizio titolo; dopo il titolo, come sulla mappa.
-            if (title->pendingTask && taskTyped) {
-                const int task = std::exchange(title->pendingTask, 0);
-                const QPersistentModelIndex persistent(index);
-                const auto callback = taskTyped;
-                QTimer::singleShot(0, mapModel, [callback, persistent, task] { if (persistent.isValid()) callback(persistent, task); });
             }
             return;
         }
@@ -2416,7 +2264,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_document(new Do
     m_topicTools->relation = [this](MindNode *) { beginRelation(); };
     m_topicTools->keepRelation = [this] { keepRelation(); };
     m_topicTools->stopRelation = [this] { stopRelation(); };
-    m_topicTools->webLink = [this](MindNode *node) { editWebLink(node); };
+    m_topicTools->link = [this](MindNode *node) { editLink(node); };
     m_topicTools->image = [this](MindNode *node) { updateInspector(node); chooseImage(); };
     m_topicTools->note = [this](MindNode *node) { openNote(node); };
     m_topicTools->checkbox = [this](MindNode *node) { toggleTaskBoxes({node}); };
@@ -2431,15 +2279,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), m_document(new Do
     });
     m_topicTools->addChild = [this] { addChild(); };
     m_topicTools->addSibling = [this] { addSibling(); };
-    connect(m_scene, &MindMapScene::taskTyped, this, &MainWindow::setTypedTask);  // FEAT-068
     // FEAT-049: graffetta dei file e file trascinati sulla mappa.
     connect(m_scene, &MindMapScene::filesActivated, this, &MainWindow::showFilesMenu);
     connect(m_scene, &MindMapScene::formulaActivated, this, &MainWindow::editFormula);  // FEAT-064
     connect(m_scene, &MindMapScene::formulaMenuRequested, this, &MainWindow::showFormulaMenu);
     // FEAT-051: clic sul marcatore = valore seguente della serie; tasto destro = menu.
-    connect(m_scene, &MindMapScene::markerClicked, this, [this](MindNode *node, const QString &marker) {
-        setMarker(node, Markers::seriesOf(marker), Markers::next(marker));
-    });
+    connect(m_scene, &MindMapScene::markerClicked, this, &MainWindow::stepMarker);
     connect(m_scene, &MindMapScene::markerMenuRequested, this, &MainWindow::showMarkerMenu);
     connect(m_scene, &MindMapScene::imageMenuRequested, this, &MainWindow::showImageMenu);
     connect(m_scene, &MindMapScene::reorderRequested, this, &MainWindow::reorderNode);  // FEAT-015
@@ -3243,13 +3088,10 @@ QWidget *MainWindow::createEditorPage() {
     // Qt disegna l'icona al bordo della voce ignorando il padding (richiesta 2026-10-12);
     // padding-left 20 lascia 12 px tra icona (16 px) e testo.
     insertMenu->setStyleSheet(UiTheme::qss("QMenu{background:@surface;color:@text;border:1px solid @divider;border-radius:8px;padding:4px;} QMenu::item{min-width:176px;padding:8px 24px 8px 20px;margin:2px 0;border-radius:4px;} QMenu::item:selected{background:@surfaceRaised;} QMenu::icon{left:12px;} "));
-    // FEAT-027: Collegamento -> Argomento… / Pagina web…, solo con un nodo selezionato.
-    auto *linkMenu = insertMenu->addMenu(QIcon(":/assets/hugeicons/menu-link.svg"), tr("Link"));
-    linkMenu->setObjectName(QStringLiteral("LinkMenu"));
-    linkMenu->setWindowFlags(Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint); linkMenu->setAttribute(Qt::WA_TranslucentBackground);
-    linkMenu->setStyleSheet(insertMenu->styleSheet());
-    showMenuKey(linkMenu->addAction(QIcon(":/assets/hugeicons/menu-link.svg"), tr("Topic…"), m_actions["topicLink"], &QAction::trigger), "topicLink");
-    showMenuKey(linkMenu->addAction(QIcon(":/assets/hugeicons/menu-link-web.svg"), tr("Web page…"), m_actions["webLink"], &QAction::trigger), "webLink");
+    // FEAT-027, FEAT-117: one Link item for both kinds, only with one selected topic.
+    QAction *linkItem = insertMenu->addAction(QIcon(":/assets/hugeicons/menu-link.svg"), tr("Link…"), m_actions["link"], &QAction::trigger);
+    linkItem->setObjectName(QStringLiteral("LinkItem"));
+    showMenuKey(linkItem, "link");
     // FEAT-059: nota del nodo selezionato.
     showMenuKey(insertMenu->addAction(QIcon(":/assets/hugeicons/menu-note.svg"), tr("Note"), m_actions["note"], &QAction::trigger), "note");
     // FEAT-051: adesivo (nel posto dell'immagine) e marcatori.
@@ -3266,7 +3108,7 @@ QWidget *MainWindow::createEditorPage() {
     todoMenu->setAttribute(Qt::WA_TranslucentBackground);
     todoMenu->setStyleSheet(insertMenu->styleSheet());
     showMenuKey(todoMenu->addAction(QIcon(":/assets/hugeicons/menu-checkbox.svg"), tr("Checkbox"), this, [this] { toggleTaskBoxes(m_scene->selectedNodes()); }), "addTask");
-    connect(insertMenu, &QMenu::aboutToShow, this, [this, linkMenu] { linkMenu->menuAction()->setEnabled(m_scene->selectedNodes().size() == 1); });
+    connect(insertMenu, &QMenu::aboutToShow, this, [this, linkItem] { linkItem->setEnabled(m_scene->selectedNodes().size() == 1); });
 
     auto *indentRight = new QToolButton; indentRight->setIcon(QIcon(":/assets/hugeicons/indent-right.svg")); indentRight->setToolTip(tr("Indent (Tab)")); connect(indentRight, &QToolButton::clicked, this, &MainWindow::indentOutlineNode); row->addWidget(indentRight);
     auto *indentLeft = new QToolButton; indentLeft->setIcon(QIcon(":/assets/hugeicons/indent-left.svg")); indentLeft->setToolTip(tr("Outdent (Shift+Tab)")); connect(indentLeft, &QToolButton::clicked, this, &MainWindow::outdentOutlineNode); row->addWidget(indentLeft);
@@ -3941,16 +3783,40 @@ void MainWindow::homeMapMenu(const QString &map, const QPoint &globalPos) {
     const QString baseStyle = m_outlineAddMenu ? m_outlineAddMenu->styleSheet() : QString();
     styleHomeMenu(menu, baseStyle);
     QAction *open = menu.addAction(tr("Open"));
+    QAction *rename = menu.addAction(tr("Rename…"));
     QMenu *moveMenu = menu.addMenu(tr("Move to…"));
     styleHomeMenu(*moveMenu, baseStyle);
     addMoveTargets(moveMenu, map);
+    // As on the phone's Home (ui-mobile.md): Delete… last, asked first; not while the map is open.
+    QAction *remove = menu.addAction(tr("Delete…"));
     QAction *chosen = menu.exec(globalPos);
     if (!chosen) return;
     const QString target = chosen->data().toString();
-    const bool isOpen = chosen == open;
-    QTimer::singleShot(0, this, [this, map, target, isOpen] {
-        if (isOpen) { if (maybeSave()) readFile(map); }
-        else if (!target.isEmpty()) moveMapTo(map, target);
+    // After the menu's own event: the page is made again, the card that asked included.
+    QTimer::singleShot(0, this, [this, map, target, chosen, open, rename, remove] {
+        const QString name = QFileInfo(map).completeBaseName();
+        if (chosen == open) {
+            if (maybeSave()) readFile(map);
+        } else if (chosen == rename) {
+            bool ok = false;
+            const QString newName = ModalDialog::askText(this, tr("Rename map"), tr("Name"), tr("Rename"), &ok, name);
+            if (!ok) return;
+            QString error;
+            const QString renamed = MapFolder::current().renameMapFile(map, newName, &error);
+            if (renamed.isEmpty()) ModalDialog::inform(this, tr("Error"), error);
+            else followMoveInRecent(map, renamed);
+            refreshFolderPage();
+        } else if (chosen == remove) {
+            if (ModalDialog::ask(this, tr("Delete map"),
+                                 tr("Delete the map \"%1\" with all its sheets? This cannot be undone.").arg(name),
+                                 tr("Delete")) != ModalDialog::Choice::Primary)
+                return;
+            QString error;
+            if (!MapFolder::current().removeMap(map, &error)) ModalDialog::inform(this, tr("Error"), error);
+            refreshFolderPage();
+        } else if (!target.isEmpty()) {
+            moveMapTo(map, target);
+        }
     });
 }
 
@@ -4398,8 +4264,7 @@ void MainWindow::createDocks() {
         view->picture = [this](const MindNode *node) { return m_scene->nodePicture(node); };
         view->mapMarkerClicked = [this](const QModelIndex &index, int i) {
             if (MindNode *node = m_model->nodeFromIndex(index); node && i < node->markers.size()) {
-                const QString marker = node->markers[i];
-                setMarker(node, Markers::seriesOf(marker), Markers::next(marker));
+                stepMarker(node, node->markers[i]);
             }
         };
         view->trailingIconClicked = [this](const QModelIndex &index, OutlineTreeView::TrailingIcon icon, const QPoint &screenPos) {
@@ -4426,7 +4291,6 @@ void MainWindow::createDocks() {
         [this] { outdentOutlineNode(); }, m_outline);
     // Ogni passo di una modifica fatta nell'outliner (testo, corsivo, barrato, sottolineato) è
     // un Ctrl+Z distinto, come sulla mappa (vedi MindMapScene::historyStepFinished più sopra).
-    outlineDelegate->taskTyped = [this](const QModelIndex &index, int task) { setTypedTask(m_model->nodeFromIndex(index), task); };
     outlineDelegate->charStyleKey = [this](const QKeyEvent *event) { return charStyleKey(event); };  // FEAT-095
     outlineDelegate->pasteWhileEditing = [this](const QModelIndex &index) {
         return pasteWhileEditing(m_model->nodeFromIndex(index), true);
@@ -5017,10 +4881,23 @@ void MainWindow::ensureInspector() {
     connect(m_dockPages, &QStackedWidget::currentChanged, this, [this] { updatePanelToggles(); });
     connect(m_iconPanel, &SidePanel::contentMinimumWidthChanged, this, [this] { applyInspectorMinimumWidth(); });
     m_inspectorDock->setWidget(m_dockPages);
-    m_inspectorWidth = inspectorMinimumWidth();
-    m_inspectorDock->setFixedWidth(m_inspectorWidth);  // FEAT-072 B1: not resizable
+    m_inspectorDraggedWidth = QSettings().value(kInspectorWidthSetting).toInt();
+    m_inspectorWidth = inspectorWidthFor(m_inspectorDraggedWidth);
+    m_inspectorDock->setFixedWidth(m_inspectorWidth);
     connect(m_sidePanel, &SidePanel::contentMinimumWidthChanged, this, [this] { applyInspectorMinimumWidth(); });
     addDockWidget(Qt::RightDockWidgetArea, m_inspectorDock);
+    // The left edge is dragged (user's request 2026-11-22): 4 px over the editor's card, 6 inside.
+    m_inspectorHandle = new PanelResizeHandle(m_inspectorDock, Qt::LeftEdge, 6, 4);
+    m_inspectorHandle->resizeTo = [this](int wanted) {
+        if (m_inspectorAnimating) return m_inspectorDock->width();
+        m_inspectorWidth = inspectorWidthFor(wanted);
+        m_inspectorDock->setFixedWidth(m_inspectorWidth);
+        return m_inspectorWidth;
+    };
+    m_inspectorHandle->finished = [this](int width) {
+        m_inspectorDraggedWidth = width;
+        QSettings().setValue(kInspectorWidthSetting, width);
+    };
     m_inspectorDock->setMaximumHeight(QWIDGETSIZE_MAX);
     m_inspectorDock->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     connect(m_inspectorDock, &QDockWidget::visibilityChanged, this, [this] { updatePanelToggles(); });
@@ -5082,7 +4959,7 @@ void MainWindow::setStructure(MindNode *node, const QString &typeKey, const QStr
 }
 
 void MainWindow::reorderNode(MindNode *node, MindNode *newParent, int row, int side) {
-    if (!m_document->moveNode(node, newParent, row, side)) return;
+    if (!m_document->moveNode(node, newParent, row, side, m_scene->sideOf(node))) return;
     m_scene->autoLayout();
     m_document->flushPendingStep();  // spostamento e ridisposizione in un solo passo
     m_scene->selectNode(node);
@@ -5889,8 +5766,16 @@ QIcon markerIcon(const QString &marker) {
 }
 }  // namespace
 
+// The next value of the marker's series or own group (FEAT-051): a click on the topic's marker.
+void MainWindow::stepMarker(MindNode *node, const QString &marker) {
+    setMarker(node, Markers::seriesOf(marker), IconLibrary::nextMarker(marker));
+}
+
 void MainWindow::setMarker(MindNode *node, const QString &series, const QString &marker) {
-    if (!node || !m_document->setMarker(node, series, marker)) return;
+    if (!node) return;
+    // An own marker's image goes into the document (registered by IconLibrary::groupMarkers).
+    if (Markers::isCustom(marker)) m_model->addMarkerImage(Markers::customImage(marker), Markers::image(Markers::customImage(marker)));
+    if (!m_document->setMarker(node, series, marker)) return;
     m_scene->updateNode(node);
     m_scene->autoLayout();
     m_document->flushPendingStep();  // marcatore e ridisposizione in un solo passo
@@ -5906,17 +5791,18 @@ void MainWindow::showMarkerMenu(MindNode *node, const QString &marker, const QPo
     menu.setStyleSheet(m_outlineAddMenu->styleSheet());
     const QString series = Markers::seriesOf(marker);
     const QString id = node->id;
-    for (const Markers::Series &s : Markers::series()) {
-        if (s.id != series) continue;
-        for (const QString &value : s.values) {
-            const QString option = series + QLatin1Char(':') + value;
-            QAction *action = menu.addAction(markerIcon(option), Markers::label(option));
-            action->setCheckable(true);
-            action->setChecked(option == marker);
-            connect(action, &QAction::triggered, this, [this, id, series, option] {
-                if (MindNode *current = nodeById(id)) setMarker(current, series, option);
-            });
-        }
+    QStringList options;  // the series' values, or the markers of the own group
+    for (const Markers::Series &s : Markers::series())
+        if (s.id == series)
+            for (const QString &value : s.values) options.append(series + QLatin1Char(':') + value);
+    for (const IconLibrary::MarkerChoice &choice : IconLibrary::groupMarkers(marker)) options.append(choice.marker);
+    for (const QString &option : std::as_const(options)) {
+        QAction *action = menu.addAction(markerIcon(option), Markers::label(option));
+        action->setCheckable(true);
+        action->setChecked(option == marker);
+        connect(action, &QAction::triggered, this, [this, id, series, option] {
+            if (MindNode *current = nodeById(id)) setMarker(current, series, option);
+        });
     }
     menu.addSeparator();
     QAction *remove = menu.addAction(tr("Remove marker"));
@@ -6254,7 +6140,6 @@ void MainWindow::showOutlineContextMenu(const QPoint &pos) {
     add(tr("Indent"), "outlineIndent", &MainWindow::indentOutlineNode, index.row() > 0);
     add(tr("Outdent"), "outlineOutdent", &MainWindow::outdentOutlineNode, index.parent().isValid());
     menu.addSeparator();
-    // Canc e non Backspace: qui Backspace riduce il rientro (comportamento esistente).
     add(tr("Delete"), "outlineDelete", &MainWindow::deleteOutlineNode);
     add(tr("Clear text"), nullptr, &MainWindow::clearOutlineNodeText);
     menu.addSeparator();
@@ -6371,7 +6256,10 @@ void MainWindow::setWorkspaceView(WorkspaceView view) {
     if (view == WorkspaceView::Gantt) ensureGanttView();
     setFormatPainter(false);  // FEAT-085
     stopRelation();           // FEAT-109
+    const bool enteringGantt = view == WorkspaceView::Gantt && workspaceView() != WorkspaceView::Gantt;
     if (workspaceView() == WorkspaceView::Gantt) m_ganttView->commitPendingEdit();
+    // The task panel opens on entering the Gantt (user, 2026-11-23); closed, it stays so until left.
+    if (enteringGantt && m_ganttView->panel()->isHidden()) m_ganttView->togglePanel();
     const bool outline = view == WorkspaceView::Outline, gantt = view == WorkspaceView::Gantt;
     if (outline) refreshOutline();
     m_workspacePages->setCurrentWidget(outline ? m_outlinePage : gantt ? static_cast<QWidget *>(m_ganttView) : m_view);
@@ -6698,8 +6586,8 @@ bool MainWindow::maybeSave(bool storePreview) {
     }
     // FEAT-035: modale comune scuro (prima QMessageBox di sistema). 2026-11-05: X instead of "Cancel",
     // "Don't save" on the left and "Save" on the right (user's request).
-    const auto choice = ModalDialog::askWithClose(this, tr("Unsaved changes"), tr("Do you want to save your changes?"),
-                                                  tr("Save"), tr("Don't save"));
+    const auto choice = ModalDialog::ask(this, tr("Unsaved changes"), tr("Do you want to save your changes?"),
+                                         tr("Save"), tr("Don't save"));
     return choice == ModalDialog::Choice::Secondary || (choice == ModalDialog::Choice::Primary && saveMap());
 }
 void MainWindow::setDirty() { m_document->markChanged(); }
@@ -6766,21 +6654,38 @@ MindNode *MainWindow::nodeById(const QString &id) const {
     return id.isEmpty() ? nullptr : find(m_model->root());
 }
 
-void MainWindow::editTopicLink(MindNode *node) {
+void MainWindow::editLink(MindNode *node) {
+    if (node) openLinkDialog(node, !node->topicLink.isEmpty() && node->webLink.isEmpty());
+}
+
+void MainWindow::editTopicLink(MindNode *node) { openLinkDialog(node, true); }
+
+void MainWindow::editWebLink(MindNode *node) { openLinkDialog(node, false); }
+
+void MainWindow::openLinkDialog(MindNode *node, bool topicTab) {
     if (!node) return;
     commitPendingEdits();
     m_document->flushPendingStep();
-    // Tutti i fogli nell'albero: quelli non ancora letti si leggono ora dal file.
-    QList<TopicLinkDialog::SheetContent> sheets;
-    const QVector<Document::Sheet> &documentSheets = m_document->sheets();
-    for (int i = 0; i < documentSheets.size(); ++i) {
-        if (i != m_document->currentSheet() && !m_document->ensureSheetLoaded(i).ok) continue;
-        sheets.append({documentSheets[i].id, documentSheets[i].name, m_document->sheetContent(i)});
-    }
+    // Every sheet in the tree, the ones not read yet read now from the file: only once the Topic
+    // tab shows, so a web link does not read the whole document.
+    const auto sheets = [this] {
+        QList<LinkDialog::SheetContent> list;
+        const QVector<Document::Sheet> &documentSheets = m_document->sheets();
+        for (int i = 0; i < documentSheets.size(); ++i) {
+            if (i != m_document->currentSheet() && !m_document->ensureSheetLoaded(i).ok) continue;
+            list.append({documentSheets[i].id, documentSheets[i].name, m_document->sheetContent(i)});
+        }
+        return list;
+    };
     const QString sourceId = node->id;
-    TopicLinkDialog dialog(this, sheets, sourceId, node->topicLink);
+    LinkDialog dialog(this, topicTab ? LinkDialog::Tab::Topic : LinkDialog::Tab::Web, node->webLink, sheets, sourceId,
+                      node->topicLink);
     if (dialog.exec() != QDialog::Accepted) return;
     node = nodeById(sourceId);  // il modale non cambia la mappa, ma il puntatore si rilegge
+    if (dialog.tab() == LinkDialog::Tab::Web) {
+        if (node && !dialog.address().isEmpty()) m_model->setLinks({{node, {}, dialog.address()}});
+        return;
+    }
     const QString targetId = dialog.targetId(), targetSheet = dialog.targetSheetId();
     if (!node || targetId.isEmpty()) return;
     QList<MindMapModel::LinkChange> changes{{node, targetId, {}}};
@@ -6801,15 +6706,6 @@ void MainWindow::editTopicLink(MindNode *node) {
     if (!m_model->setLinks(changes) && m_pendingLinkSheet) { setDirty(); commitLinkStep(); refreshLinkStates(); }
     m_pendingLinkSheet.reset();
     statusBar()->showMessage(tr("Link added"), 2000);
-}
-
-void MainWindow::editWebLink(MindNode *node) {
-    if (!node) return;
-    commitPendingEdits();
-    const QString sourceId = node->id;
-    WebLinkDialog dialog(this, node->webLink);
-    if (dialog.exec() != QDialog::Accepted || dialog.address().isEmpty()) return;
-    if (MindNode *source = nodeById(sourceId)) m_model->setLinks({{source, {}, dialog.address()}});
 }
 
 void MainWindow::commitLinkStep() { m_document->commitLinkStep(std::exchange(m_pendingLinkSheet, std::nullopt)); }
@@ -6984,15 +6880,6 @@ void MainWindow::toggleTaskBoxes(const QList<MindNode *> &nodes) {
     }
     if (anyWithout) { addTaskBoxes(nodes); return; }
     if (!m_document->setTask(with, MindNode::Task::None)) return;
-    m_scene->autoLayout();
-    m_document->flushPendingStep();
-    refreshOutline();
-}
-
-// FEAT-068: "- [ ] " o "- [x] " scritto a inizio titolo (mappa o outliner): casella del nodo,
-// un passo dopo quello del titolo.
-void MainWindow::setTypedTask(MindNode *node, int task) {
-    if (!node || !m_document->setTask({node}, task == 2 ? MindNode::Task::Done : MindNode::Task::Open)) return;
     m_scene->autoLayout();
     m_document->flushPendingStep();
     refreshOutline();
@@ -7397,8 +7284,7 @@ void MainWindow::createTopicCommands() {
     map("summary", [this] { addSummary(); });
     map("note", one(&MainWindow::openNote));
     map("labels", one(&MainWindow::openLabels));
-    map("webLink", one(&MainWindow::editWebLink));
-    map("topicLink", one(&MainWindow::editTopicLink));
+    map("link", one(&MainWindow::editLink));
     map("attachFiles", one(&MainWindow::chooseFilesToAttach));
     // BUG-042: Ctrl+C and Ctrl+X copy the selected branch, as the topic menu does; before, the map had
     // no copy key and Ctrl+V pasted whatever the clipboard held.
@@ -8119,14 +8005,22 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
         auto *keyEvent = static_cast<QKeyEvent *>(event);
         QGraphicsItem *focus = m_scene->focusItem();
         const bool editing = focus && !qgraphicsitem_cast<NodeItem *>(focus);
-        const std::pair<const char *, Qt::Key> moves[] = {{"mapSelectLeft", Qt::Key_Left}, {"mapSelectRight", Qt::Key_Right},
-                                                          {"mapSelectUp", Qt::Key_Up}, {"mapSelectDown", Qt::Key_Down}};
-        for (const auto &[id, key] : moves) {
+        // FEAT-126: the mapAdd keys (Ctrl+arrows) add the topic that way to the selection, as a
+        // Ctrl+click, going on from the topic reached last (the focused one).
+        struct Move { const char *id; Qt::Key key; bool add; };
+        const Move moves[] = {{"mapSelectLeft", Qt::Key_Left, false}, {"mapSelectRight", Qt::Key_Right, false},
+                              {"mapSelectUp", Qt::Key_Up, false},     {"mapSelectDown", Qt::Key_Down, false},
+                              {"mapAddLeft", Qt::Key_Left, true},     {"mapAddRight", Qt::Key_Right, true},
+                              {"mapAddUp", Qt::Key_Up, true},         {"mapAddDown", Qt::Key_Down, true}};
+        for (const auto &[id, key, add] : moves) {
             if (editing || !m_shortcuts->matches(QString::fromLatin1(id), keyEvent)) continue;
             const QList<MindNode *> selected = m_scene->selectedNodes();
+            auto *focused = qgraphicsitem_cast<NodeItem *>(focus);
             MindNode *from = selected.size() == 1 ? selected.front() : (selected.isEmpty() ? m_model->root() : nullptr);
+            if (add && selected.size() > 1 && focused && selected.contains(focused->node())) from = focused->node();
             if (MindNode *to = m_scene->neighbour(from, key)) {
-                m_scene->selectNode(to);
+                if (add && !selected.isEmpty()) m_scene->addToSelection(to);
+                else m_scene->selectNode(to);
                 m_view->ensureVisible(m_scene->nodeSceneRect(to), 24, 24);
             } else if (selected.isEmpty()) {
                 m_scene->selectNode(m_model->root());
@@ -8163,10 +8057,9 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
         QTimer::singleShot(0, this, [this] { if (m_rootFormatBarUpdate) m_rootFormatBarUpdate(); });
     if (watched == m_outline && event->type() == QEvent::KeyPress) {
         auto *keyEvent = static_cast<QKeyEvent *>(event);
-        // Più voci selezionate (2026-10-13): Canc le elimina tutte insieme, come sulla mappa
-        // (QKeySequence::Delete); Esc torna alla sola voce corrente; frecce e Maiusc+frecce restano
-        // alla vista. Gli altri tasti che scrivono, spostano o creano voci non fanno nulla, Backspace
-        // compreso (con una voce riduce il rientro, AGENTS.md "Menu contestuale dell'outliner").
+        // Più voci selezionate (2026-10-13): Canc e Backspace le eliminano tutte insieme, come sulla
+        // mappa; Esc torna alla sola voce corrente; frecce e Maiusc+frecce restano alla vista. Gli
+        // altri tasti che scrivono, spostano o creano voci non fanno nulla.
         if (static_cast<OutlineTreeView *>(m_outline)->hasMultipleSelection()) {
             if (m_shortcuts->matches("outlineDelete", keyEvent)) { deleteOutlineNode(); return true; }
             // FEAT-042 (2026-11-05): Copy and Cut take all the selected items.
@@ -8291,7 +8184,10 @@ void MainWindow::closeEvent(QCloseEvent *event) {
 // aggiungendo un foglio o chiudendo la finestra, e Ctrl+S salvava il titolo vecchio.
 void MainWindow::openResources() {
     commitPendingEdits();
-    ResourcesDialog dialog(this, m_document->resources(), m_document->model()->gantt().calendar());
+    const GanttPlan &plan = m_document->model()->gantt();
+    // FEAT-127: the sheet's plan and assignments for the charts, the load in the Gantt's scale.
+    ResourcesDialog dialog(this, m_document->resources(), plan.calendar(), plan, m_document->model()->ganttAssignments(),
+                           m_ganttView ? m_ganttView->scale() : GanttCanvas::Scale::Days);
     if (dialog.exec() == QDialog::Accepted) m_document->setResources(dialog.resources(), dialog.calendar());
 }
 
@@ -8386,7 +8282,7 @@ void MainWindow::toggleInspector() {
     m_inspectorDock->show();
     auto *animation = new QVariantAnimation(this);
     animation->setStartValue(kFrame);
-    m_inspectorWidth = inspectorMinimumWidth();
+    m_inspectorWidth = inspectorWidthFor(m_inspectorDraggedWidth);
     animation->setEndValue(m_inspectorWidth);
     animation->setDuration(kSlideMs);
     animation->setEasingCurve(QEasingCurve::OutCubic);  // parte svelto e rallenta all'arrivo
@@ -8671,7 +8567,7 @@ void MainWindow::refreshStylePage() {
         QColor line = ink, fill = ink;
         line.setAlphaF(Boundaries::kLineAlpha);
         fill.setAlphaF(Boundaries::kFillAlpha);
-        m_boundaryStylePage->setBoundaries(boundaries, line, fill);
+        m_boundaryStylePage->setBoundaries(boundaries, line, fill, Boundaries::look(Boundary{}, m_model->backdrop(), QString()).titleText);
         m_boundaryStylePage->setVisible(!boundaries.isEmpty());
         if (!boundaries.isEmpty()) {
             if (m_relationStylePage) m_relationStylePage->hide();
@@ -8745,10 +8641,23 @@ int MainWindow::inspectorMinimumWidth() const {
     return std::max(kInspectorMinimumWidth, m_inspectorDock->widget()->minimumSizeHint().width() + margins.left() + margins.right());
 }
 
+int MainWindow::inspectorWidthFor(int wanted) const {
+    const int minimum = inspectorMinimumWidth();
+    // Half the window, and never more than the editor's own minimum leaves (QMainWindow would cut it).
+    int widest = width() / 2;
+    if (QWidget *editor = centralWidget()) {
+        const int separator = style()->pixelMetric(QStyle::PM_DockWidgetSeparatorExtent, nullptr, this);
+        const bool navigation = m_navigationDock && m_navigationDock->isVisible();
+        widest = std::min(widest, width() - editor->minimumSizeHint().width() - separator
+                                      - (navigation ? m_navigationDock->width() + separator : 0));
+    }
+    return std::clamp(wanted, minimum, std::max(minimum, widest));
+}
+
 void MainWindow::applyInspectorMinimumWidth() {
     if (!m_inspectorDock || m_inspectorAnimating) return;  // a fine animazione si riapplica
-    // FEAT-072 B1: fixed width (no separator to drag), as narrow as the content allows.
-    m_inspectorWidth = inspectorMinimumWidth();
+    // Fixed width between drags: the dragged one, never under the content's minimum (BUG-010).
+    m_inspectorWidth = inspectorWidthFor(m_inspectorDraggedWidth);
     m_inspectorDock->setFixedWidth(m_inspectorWidth);
 }
 
@@ -8762,9 +8671,7 @@ void MainWindow::stopInspectorAnimation() {
         if (animation->state() == QAbstractAnimation::Running) animation->stop();  // DeleteWhenStopped
         else animation->deleteLater();  // ancora nella pausa iniziale
     }
-    // FEAT-072 B1: fixed width, the content's minimum (the separator cannot change it).
-    m_inspectorWidth = inspectorMinimumWidth();
-    m_inspectorDock->setFixedWidth(m_inspectorWidth);
+    applyInspectorMinimumWidth();
     if (QLayout *windowLayout = layout()) windowLayout->activate();  // last narrowing still followed
     m_inspectorFollowsSelection = false;
 }
@@ -8807,6 +8714,7 @@ MainWindow::~MainWindow() {
 void MainWindow::resizeEvent(QResizeEvent *event) {
     QMainWindow::resizeEvent(event);
     updateCornerMask();
+    applyInspectorMinimumWidth();  // a narrower window narrows a dragged panel (half the window at most)
 }
 
 void MainWindow::updateCornerMask() {

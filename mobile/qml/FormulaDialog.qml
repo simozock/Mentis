@@ -3,10 +3,10 @@ import QtQuick.Controls
 import Mentis.Mobile
 
 // FEAT-116: the desktop's FormulaDialog (FEAT-064) on the phone. The code field holds the selected
-// topic's formula (monospaced; Enter starts a new line, Ctrl+Enter confirms on a keyboard); the
+// topic's formula (monospaced; Enter starts a new line, Ctrl+Enter confirms on a keyboard, through ModalDialog); the
 // preview (FormulaPreview) draws it live on the formula's background, the error line says why it
 // is not valid and Insert or Save stays disabled. Insert or Save sets it, Remove (when the topic has
-// one) takes it off, Cancel leaves it; one Undo step each. The background colour is kept (no colour
+// one) takes it off, the X leaves it; one Undo step each. The background colour is kept (no colour
 // picker on the phone yet). At the top of the page, as tall as the space above the keyboard.
 ModalDialog {
     id: dialog
@@ -32,6 +32,36 @@ ModalDialog {
         dialog.open()
         codeField.cursorPosition = codeField.length
         codeField.forceActiveFocus()
+    }
+
+    // FEAT-132: the selection when the list opened; the chosen entry replaces it.
+    property int listStart: 0
+    property int listEnd: 0
+    function openList() {
+        dialog.listStart = codeField.selectionStart
+        dialog.listEnd = codeField.selectionEnd
+        latexList.openList()
+    }
+    function insertCode(code) {
+        const done = latexList.insertInto(codeField.text, dialog.listStart, dialog.listEnd, code)
+        codeField.remove(dialog.listStart, dialog.listEnd)
+        codeField.insert(dialog.listStart, done.text.substring(dialog.listStart, done.text.length - codeField.length + dialog.listStart))
+        codeField.cursorPosition = done.caret
+        codeField.forceActiveFocus()
+    }
+
+    // FEAT-133: the braces closed while typing (the whole field is LaTeX).
+    BraceTyping {
+        document: codeField.textDocument
+        active: codeField.activeFocus
+        code: true
+    }
+    LatexListDialog {
+        id: latexList
+        parent: dialog.parent
+        keyboardTop: dialog.keyboardTop
+        fixedFamily: dialog.map.fixedFontFamily()
+        onPicked: code => dialog.insertCode(code)
     }
 
     onAccepted: dialog.map.setFormula(codeField.text)
@@ -89,12 +119,6 @@ ModalDialog {
                     if (top < flick.contentY) flick.contentY = top
                     else if (bottom > flick.contentY + flick.height) flick.contentY = bottom - flick.height
                 }
-                Keys.onPressed: event => {
-                    if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
-                        if (preview.valid) dialog.accept()
-                        event.accepted = true
-                    }
-                }
                 background: Rectangle {
                     radius: Theme.controlRadius
                     color: Theme.darkSunken
@@ -102,7 +126,14 @@ ModalDialog {
                     border.color: Theme.accent
                 }
             }
-            Item { width: 1; height: Theme.grid }
+            // FEAT-132: the list of LaTeX commands, a modal over this one (a full-width button: the
+            // buttons row has no room for a fourth on a phone).
+            DarkButton {
+                objectName: "formulaListButton"
+                width: parent.width
+                text: qsTr("Symbols and formulas…")
+                onClicked: dialog.openList()
+            }
             FormulaPreview {
                 id: preview
                 objectName: "formulaPreview"
@@ -112,7 +143,7 @@ ModalDialog {
                 background: dialog.map.selectedFormulaBackground
                 placeholder: qsTr("The formula appears here while you type")
             }
-            // The desktop's error line, in the modals' error note look (ui-mobile.md, as WebLinkDialog).
+            // The desktop's error line, in the modals' error note look (ui-mobile.md, as LinkDialog).
             Label {
                 objectName: "formulaError"
                 width: parent.width
@@ -134,10 +165,6 @@ ModalDialog {
                 dialog.reject()
                 dialog.map.removeFormula()
             }
-        },
-        DarkButton {
-            text: qsTr("Cancel")
-            onClicked: dialog.reject()
         },
         DarkButton {
             objectName: "formulaInsertButton"

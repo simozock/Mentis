@@ -1,5 +1,7 @@
 #include "ganttplan.h"
 
+#include "formulatext.h"  // FormulaText::split: the core parses formulas without rendering them
+
 #include <QJsonArray>
 #include <QUuid>
 
@@ -62,6 +64,13 @@ const QStringList &colorKeys() {
     static const QStringList keys{QStringLiteral("taskColor"), QStringLiteral("summaryColor"), QStringLiteral("milestoneColor")};
     return keys;
 }
+const QStringList &borderColorKeys() {
+    static const QStringList keys{QStringLiteral("taskBorderColor"), QStringLiteral("summaryBorderColor"),
+                                  QStringLiteral("milestoneBorderColor")};
+    return keys;
+}
+// An opaque colour, or invalid.
+QColor opaque(const QColor &color) { return color.isValid() ? QColor(color.rgb()) : QColor(); }
 
 // Colours compare and save as 8-bit RGB with alpha, so they survive the JSON round trip.
 QColor rgb(const QColor &color) {
@@ -123,6 +132,16 @@ const char *typeKey(GanttDependency::Type type) {
 }
 
 }  // namespace
+
+GanttCalendar GanttCalendar::withWorkingWeek(bool saturday, bool sunday, int minutes) const {
+    GanttCalendar result = *this;
+    for (const auto &[day, on] : {std::pair{int(Qt::Saturday), saturday}, {int(Qt::Sunday), sunday}}) {
+        if (on) result.workingDays.insert(day);
+        else result.workingDays.remove(day);
+    }
+    result.minutesPerDay = std::clamp(minutes, kMinutesStep, kMaxMinutesPerDay);
+    return result;
+}
 
 bool GanttCalendar::isWorkingDay(const QDate &date) const {
     return date.isValid() && workingDays.contains(date.dayOfWeek()) && !holidays.contains(date);
@@ -200,6 +219,7 @@ QString GanttPlan::addTask(GanttTask task, int row) {
         return {};
     if (task.id.isEmpty() || indexOf(task.id) >= 0) task.id = newId();
     task.color = rgb(task.color);
+    task.borderColor = opaque(task.borderColor);
     m_tasks.insert(insertPosition(task.parentId, row), task);
     return task.id;
 }
@@ -372,7 +392,7 @@ GanttBaselineComparison GanttPlan::compare(const GanttSchedule &schedule, const 
         result.tasks.insert(task.id, change);
     }
     for (const GanttBaselineTask &task : baseline.tasks)
-        if (!present.contains(task.id)) result.removed.append(task.name);
+        if (!present.contains(task.id)) result.removed.append(GanttTask::shown(task.name));
     return result;
 }
 
@@ -434,6 +454,17 @@ NodeFillStyle GanttPlan::fillStyle(const GanttTask &task, BarKind kind) const {
 GanttPlan::BorderStyle GanttPlan::borderStyle(const GanttTask &task, BarKind kind) const {
     const int index = task.border.isEmpty() ? -1 : int(borderStyleKeys().indexOf(task.border));
     return index < 0 ? m_borderStyles[int(kind)] : BorderStyle(index);
+}
+
+QColor GanttPlan::borderColor(const GanttTask &task, BarKind kind) const {
+    return task.borderColor.isValid() ? task.borderColor : m_defaultBorderColors[int(kind)];
+}
+
+bool GanttPlan::setBorderColor(const QString &id, const QColor &color) {
+    const int index = indexOf(id);
+    if (index < 0 || m_tasks.at(index).borderColor == opaque(color)) return false;
+    m_tasks[index].borderColor = opaque(color);
+    return true;
 }
 
 QString GanttPlan::styleKey(BarShape shape) { return barShapeKeys().at(int(shape)); }
@@ -505,6 +536,12 @@ bool GanttPlan::setLinkEndSize(LinkEndSize size) {
     return true;
 }
 
+bool GanttPlan::setLinkColor(const QColor &color) {
+    if (opaque(color) == m_linkColor) return false;
+    m_linkColor = opaque(color);
+    return true;
+}
+
 bool GanttPlan::setMilestoneShape(MilestoneShape shape) {
     if (shape == m_milestoneShape) return false;
     m_milestoneShape = shape;
@@ -531,9 +568,15 @@ GanttPlan::BarKind GanttPlan::barKind(const QString &id) const {
 
 bool GanttPlan::setDefaultColor(BarKind kind, const QColor &color) {
     QColor &target = m_defaultColors[int(kind)];
-    const QColor opaque = color.isValid() ? QColor(color.rgb()) : QColor();
-    if (opaque == target) return false;
-    target = opaque;
+    if (opaque(color) == target) return false;
+    target = opaque(color);
+    return true;
+}
+
+bool GanttPlan::setDefaultBorderColor(BarKind kind, const QColor &color) {
+    QColor &target = m_defaultBorderColors[int(kind)];
+    if (opaque(color) == target) return false;
+    target = opaque(color);
     return true;
 }
 
@@ -753,6 +796,7 @@ QJsonObject GanttPlan::toJson() const {
         if (!task.shape.isEmpty()) object.insert(QStringLiteral("shape"), task.shape);
         if (!task.fill.isEmpty()) object.insert(QStringLiteral("fill"), task.fill);
         if (!task.border.isEmpty()) object.insert(QStringLiteral("border"), task.border);
+        if (task.borderColor.isValid()) object.insert(QStringLiteral("borderColor"), task.borderColor.name());
         tasks.append(object);
     }
     QJsonArray dependencies;
@@ -788,6 +832,7 @@ QJsonObject GanttPlan::toJson() const {
     if (m_linkWidth != LinkWidth::Thin) json.insert(QStringLiteral("linkWidth"), linkWidthKeys().at(int(m_linkWidth)));  // thin not written
     if (m_linkEndSize != LinkEndSize::Small)  // small not written
         json.insert(QStringLiteral("linkEndSize"), linkEndSizeKeys().at(int(m_linkEndSize)));
+    if (m_linkColor.isValid()) json.insert(QStringLiteral("linkColor"), m_linkColor.name());  // grey not written
     if (m_milestoneShape != MilestoneShape::Diamond)  // diamond not written
         json.insert(QStringLiteral("milestoneShape"), milestoneShapeKeys().at(int(m_milestoneShape)));
     for (int kind = 0; kind < kBarKinds; ++kind)  // solid not written
@@ -797,6 +842,8 @@ QJsonObject GanttPlan::toJson() const {
         if (m_fillStyles[kind] != NodeFillStyle::Pieno) json.insert(fillKeys().at(kind), NodeStyle::fillStyleKey(m_fillStyles[kind]));
     for (int kind = 0; kind < kBarKinds; ++kind)  // the view's defaults not written
         if (m_defaultColors[kind].isValid()) json.insert(colorKeys().at(kind), m_defaultColors[kind].name());
+    for (int kind = 0; kind < kBarKinds; ++kind)  // automatic not written
+        if (m_defaultBorderColors[kind].isValid()) json.insert(borderColorKeys().at(kind), m_defaultBorderColors[kind].name());
     QJsonArray baselines;  // FEAT-082
     for (const GanttBaseline &baseline : m_baselines) {
         QJsonArray tasks;
@@ -891,6 +938,11 @@ GanttPlan GanttPlan::fromJson(const QJsonObject &json, int *repairs) {
         if (index >= 0) plan.m_linkEndSize = LinkEndSize(index);
         else ++fixed;
     }
+    if (const QJsonValue value = json.value(QStringLiteral("linkColor")); !value.isUndefined()) {  // absent = grey; opaque only
+        const QColor color = QColor::fromString(value.toString());
+        if (color.isValid() && color.alpha() == 255) plan.m_linkColor = color;
+        else ++fixed;
+    }
     if (const QJsonValue shape = json.value(QStringLiteral("milestoneShape")); !shape.isUndefined()) {  // absent or unknown = diamond
         const int index = int(milestoneShapeKeys().indexOf(shape.toString()));
         if (index >= 0) plan.m_milestoneShape = MilestoneShape(index);
@@ -909,13 +961,15 @@ GanttPlan GanttPlan::fromJson(const QJsonObject &json, int *repairs) {
         if (const auto style = NodeStyle::fillStyleFromKey(value.toString())) plan.m_fillStyles[kind] = *style;
         else ++fixed;
     }
-    for (int kind = 0; kind < kBarKinds; ++kind) {  // absent = the view's colour; an invalid or translucent one is dropped
-        const QJsonValue value = json.value(colorKeys().at(kind));
-        if (value.isUndefined()) continue;
-        const QColor color = QColor::fromString(value.toString());
-        if (color.isValid() && color.alpha() == 255) plan.m_defaultColors[kind] = color;
-        else ++fixed;
-    }
+    // Absent = the view's colour (borders: automatic); an invalid or translucent one is dropped.
+    for (const auto &[keys, colors] : {std::pair{&colorKeys(), &plan.m_defaultColors}, std::pair{&borderColorKeys(), &plan.m_defaultBorderColors}})
+        for (int kind = 0; kind < kBarKinds; ++kind) {
+            const QJsonValue value = json.value(keys->at(kind));
+            if (value.isUndefined()) continue;
+            const QColor color = QColor::fromString(value.toString());
+            if (color.isValid() && color.alpha() == 255) (*colors)[kind] = color;
+            else ++fixed;
+        }
 
     // FEAT-082: a baseline without id or name is dropped, a task without id too; bad dates leave it undated.
     for (const QJsonValue &value : json.value(QStringLiteral("baselines")).toArray()) {
@@ -978,6 +1032,11 @@ GanttPlan GanttPlan::fromJson(const QJsonObject &json, int *repairs) {
         if (!color.isEmpty()) {
             task.color = rgb(QColor::fromString(color));
             if (!task.color.isValid()) ++fixed;
+        }
+        if (const QJsonValue value = object.value(QStringLiteral("borderColor")); !value.isUndefined()) {  // opaque only
+            const QColor color = QColor::fromString(value.toString());
+            if (color.isValid() && color.alpha() == 255) task.borderColor = color;
+            else ++fixed;
         }
         for (const auto &[part, key, value] : {std::tuple{OwnStyle::Shape, QStringLiteral("shape"), &task.shape},
                                                std::tuple{OwnStyle::Fill, QStringLiteral("fill"), &task.fill},
@@ -1066,6 +1125,14 @@ GanttPlan GanttPlan::fromJson(const QJsonObject &json, int *repairs) {
         if (dropped.at(d)) plan.m_dependencies.removeAt(d);
     if (repairs) *repairs = fixed;
     return plan;
+}
+
+QString GanttTask::shown(const QString &name) {
+    if (!FormulaText::containsMath(name)) return name.simplified();
+    QString text;
+    for (const FormulaText::Segment &segment : FormulaText::split(name))
+        text += segment.math ? QStringLiteral(" ") : segment.text;
+    return text.simplified();
 }
 
 namespace GanttToday {

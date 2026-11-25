@@ -55,6 +55,10 @@ public:
     // it is in)}; a folder's own subtree is left out.
     Q_INVOKABLE QVariantList moveTargets(const QString &entry) const;
     Q_INVOKABLE bool moveMap(const QString &map, const QString &folder);
+    // Deletes the map for good (MapFolder::removeMap); the Home asks first.
+    Q_INVOKABLE bool removeMap(const QString &map);
+    // A new file name for the map (MapFolder::renameMapFile); refused while it is open.
+    Q_INVOKABLE bool renameMap(const QString &map, const QString &name);
     Q_INVOKABLE bool moveFolder(const QString &folder, const QString &target);
 
     // Also finishes the moves of maps that were open (MapFolder::runPendingMoves).

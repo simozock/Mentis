@@ -44,6 +44,12 @@ bool inTreeTable(const MindNode *node);
 // FEAT-028: the node is somewhere inside a tree table (a cell, or a topic in a cell's branch).
 bool insideTreeTable(const MindNode *node);
 Direction directionOf(const MindNode *node);
+// The directions of `type` that change how `node`'s branch is laid out (MapLayout), so the pickers
+// offer only these and show the others disabled. The central topic: all of them. A branch laid out
+// beside its parent (in a mind map or a logic chart, or under a floating topic) ignores the direction
+// unless its type lays out as a block. Inside a block, "both sides" is only the branch's own side.
+// A floating topic is never laid out by its type: none.
+QList<Direction> effectiveDirections(const MindNode *node, Type type);
 
 // Lati: +1 primo lato (destra, o basso nei tipi verticali), -1 secondo (sinistra, o alto).
 // fixed[i] = +1 o -1 per un ramo con il lato scelto, 0 = automatico. I rami automatici restano

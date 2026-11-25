@@ -192,7 +192,7 @@ void CustomPalettesTest::cancelChangesNothing() {
             if (auto *dialog = qobject_cast<NewPaletteDialog *>(modal))
                 for (int i = 0; i < kColors.size(); ++i) dialog->setColor(i, QColor(kColors[i]));
             if (escape) QTest::keyClick(modal, Qt::Key_Escape);
-            else modal->cancelButton()->click();
+            else modal->closeButton()->click();
         });
         newPaletteButton()->click();
         QApplication::processEvents();

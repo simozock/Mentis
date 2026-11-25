@@ -17,6 +17,8 @@ class QTextDocument;
 // (MentisDomain) links no formula renderer. The desktop connects these hooks to JKQTMathText
 // (FormulaText::installRendering, at startup and with the first NodeItem). Without them a title with
 // $...$ is laid out as text, a note's $...$ stay text and a formula content has no picture.
+// The renderer behind the hooks keeps one engine and is not thread-safe: call them from one thread at a
+// time (the GUI thread, or a render thread while the GUI thread waits, as the phone does).
 namespace FormulaRendering {
 
 // A title with formulas laid out at a width: its size, and the drawing for paint().

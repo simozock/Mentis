@@ -74,7 +74,7 @@ bool isValid(const QString &marker) {
 }
 
 QString next(const QString &marker) {
-    if (isCustom(marker)) return marker;  // i gruppi propri si cambiano dal pannello
+    if (isCustom(marker)) return marker;  // own groups: IconLibrary::nextMarker (the library knows them)
     const QString name = seriesOf(marker), value = marker.section(QLatin1Char(':'), 1);
     for (const Series &s : series())
         if (s.id == name) {

@@ -3,6 +3,7 @@
 #include "slowtests.h"
 #include "floatingui.h"
 #include "linkdialogs.h"
+#include "segmentedcontrol.h"
 #include "document.h"
 #include "mainwindow.h"
 #include "mindmapmodel.h"
@@ -46,6 +47,7 @@ private slots:
     void backLinkInAnotherSheetIsOneStep();
     void webLinkIsCheckedAndOpensTheBrowser();
     void menuIsDisabledWithSeveralNodes();
+    void opensOnTheLinksTabAndInsertsTheVisibleOne();
     void topicDialogOnTenThousandNodes();
 
 private:
@@ -53,7 +55,7 @@ private:
     void select(const QList<MindNode *> &nodes);
     void flushHistory();
     QAction *action(const QString &shortcut) const;
-    QMenu *linkMenu() const;
+    QAction *linkItem() const;
     // Apre il modale con l'azione e, quando e' aperto, esegue interact (poi deve chiuderlo).
     template <typename Dialog>
     void runDialog(QAction *opener, const std::function<void(Dialog *)> &interact);
@@ -122,7 +124,7 @@ QAction *NodeLinksUiTest::action(const QString &shortcut) const {
     return nullptr;
 }
 
-QMenu *NodeLinksUiTest::linkMenu() const { return m_window->findChild<QMenu *>(QStringLiteral("LinkMenu")); }
+QAction *NodeLinksUiTest::linkItem() const { return m_window->findChild<QAction *>(QStringLiteral("LinkItem")); }
 
 template <typename Dialog>
 void NodeLinksUiTest::runDialog(QAction *opener, const std::function<void(Dialog *)> &interact) {
@@ -182,7 +184,8 @@ void NodeLinksUiTest::topicLinkWithBackLinkIsOneStep() {
     MindNode *source = addNode(QStringLiteral("Spesa settimanale"));
     MindNode *target = addNode(QStringLiteral("To-do List"));
     select({source});
-    runDialog<TopicLinkDialog>(linkMenu()->actions().at(0), [&](TopicLinkDialog *dialog) {
+    runDialog<LinkDialog>(linkItem(), [&](LinkDialog *dialog) {
+        dialog->setTab(LinkDialog::Tab::Topic);
         QVERIFY(!dialog->acceptButton()->isEnabled());  // nessun argomento scelto
         QCOMPARE(dialog->focusWidget(), dialog->searchField());  // la ricerca ha il focus
         QVERIFY(dialog->selectNode(target->id));
@@ -205,7 +208,8 @@ void NodeLinksUiTest::topicLinkWithBackLinkIsOneStep() {
     // Esc chiude senza modifiche; un arrivo gia' collegato spegne la casella dell'inverso.
     MindNode *third = addNode(QStringLiteral("Terzo"));
     select({third});
-    runDialog<TopicLinkDialog>(linkMenu()->actions().at(0), [&](TopicLinkDialog *dialog) {
+    runDialog<LinkDialog>(linkItem(), [&](LinkDialog *dialog) {
+        dialog->setTab(LinkDialog::Tab::Topic);
         QVERIFY(dialog->selectNode(target->id));
         QVERIFY(!dialog->backCheck()->isEnabled());
         QTest::keyClick(dialog, Qt::Key_Escape);
@@ -218,7 +222,8 @@ void NodeLinksUiTest::searchShowsMatchesWithAncestorsAndExcludesSource() {
     MindNode *child = addNode(QStringLiteral("Lista della spesa"), parent);
     MindNode *other = addNode(QStringLiteral("Altro"));
     select({other});
-    runDialog<TopicLinkDialog>(linkMenu()->actions().at(0), [&](TopicLinkDialog *dialog) {
+    runDialog<LinkDialog>(linkItem(), [&](LinkDialog *dialog) {
+        dialog->setTab(LinkDialog::Tab::Topic);
         QVERIFY(!dialog->selectNode(other->id));  // il nodo di partenza non si sceglie
         QTest::keyClicks(dialog->searchField(), QStringLiteral("LISTA"));
         auto visible = [dialog](const QString &title) {
@@ -292,7 +297,8 @@ void NodeLinksUiTest::backLinkInAnotherSheetIsOneStep() {
     source = m_model->root()->children.back().get();
     QCOMPARE(source->id, sourceId);
     select({source});
-    runDialog<TopicLinkDialog>(linkMenu()->actions().at(0), [&](TopicLinkDialog *dialog) {
+    runDialog<LinkDialog>(linkItem(), [&](LinkDialog *dialog) {
+        dialog->setTab(LinkDialog::Tab::Topic);
         QVERIFY(dialog->selectNode(targetId));
         QCOMPARE(dialog->targetSheetId().isEmpty(), false);
         dialog->backCheck()->setChecked(true);
@@ -321,7 +327,9 @@ void NodeLinksUiTest::backLinkInAnotherSheetIsOneStep() {
 void NodeLinksUiTest::webLinkIsCheckedAndOpensTheBrowser() {
     MindNode *node = addNode(QStringLiteral("Sito"));
     select({node});
-    runDialog<WebLinkDialog>(linkMenu()->actions().at(1), [&](WebLinkDialog *dialog) {
+    runDialog<LinkDialog>(linkItem(), [&](LinkDialog *dialog) {
+        QCOMPARE(dialog->tab(), LinkDialog::Tab::Web);  // no link yet: the Web page tab
+        QCOMPARE(dialog->focusWidget(), dialog->addressField());
         QVERIFY(!dialog->acceptButton()->isEnabled());  // vuoto
         QTest::keyClicks(dialog->addressField(), QStringLiteral("ftp://example.com"));
         QVERIFY(!dialog->acceptButton()->isEnabled());
@@ -338,15 +346,51 @@ void NodeLinksUiTest::webLinkIsCheckedAndOpensTheBrowser() {
 void NodeLinksUiTest::menuIsDisabledWithSeveralNodes() {
     MindNode *a = addNode(QStringLiteral("A"));
     MindNode *b = addNode(QStringLiteral("B"));
-    QMenu *menu = linkMenu();
-    auto *insert = qobject_cast<QMenu *>(menu->parent());
+    QAction *item = linkItem();
+    QVERIFY(item);
+    auto *insert = qobject_cast<QMenu *>(item->parent());
     QVERIFY(insert);
     select({a, b});
     emit insert->aboutToShow();
-    QVERIFY(!menu->menuAction()->isEnabled());
+    QVERIFY(!item->isEnabled());
     select({a});
     emit insert->aboutToShow();
-    QVERIFY(menu->menuAction()->isEnabled());
+    QVERIFY(item->isEnabled());
+}
+
+// FEAT-117: the opening tab follows the topic's links; each tab keeps its input; Insert applies
+// the visible tab only and leaves the other link as it is.
+void NodeLinksUiTest::opensOnTheLinksTabAndInsertsTheVisibleOne() {
+    MindNode *node = addNode(QStringLiteral("Partenza"));
+    MindNode *first = addNode(QStringLiteral("Primo"));
+    MindNode *second = addNode(QStringLiteral("Secondo"));
+    QVERIFY(m_model->setLinks({{node, first->id, {}}}));
+    select({node});
+    runDialog<LinkDialog>(linkItem(), [&](LinkDialog *dialog) {
+        QCOMPARE(dialog->tab(), LinkDialog::Tab::Topic);  // only a topic link
+        QCOMPARE(dialog->targetId(), first->id);
+        QCOMPARE(dialog->focusWidget(), dialog->searchField());
+        dialog->reject();
+    });
+    QVERIFY(m_model->setLinks({{node, {}, QStringLiteral("https://example.com")}}));
+    runDialog<LinkDialog>(linkItem(), [&](LinkDialog *dialog) {
+        QCOMPARE(dialog->tab(), LinkDialog::Tab::Web);  // both links: Web page
+        QCOMPARE(dialog->addressField()->text(), QStringLiteral("https://example.com"));
+        dialog->addressField()->setText(QStringLiteral("ftp://nope"));
+        QVERIFY(!dialog->acceptButton()->isEnabled());
+        dialog->setTab(LinkDialog::Tab::Topic);
+        QVERIFY(dialog->acceptButton()->isEnabled());  // the Topic tab's own rule
+        QVERIFY(dialog->selectNode(second->id));
+        dialog->setTab(LinkDialog::Tab::Web);
+        QCOMPARE(dialog->addressField()->text(), QStringLiteral("ftp://nope"));  // kept
+        QVERIFY(!dialog->acceptButton()->isEnabled());
+        dialog->setTab(LinkDialog::Tab::Topic);
+        QCOMPARE(dialog->targetId(), second->id);  // kept
+        QCOMPARE(dialog->tabs()->currentIndex(), 1);
+        dialog->acceptButton()->click();
+    });
+    QCOMPARE(node->topicLink, second->id);
+    QCOMPARE(node->webLink, QStringLiteral("https://example.com"));  // the other tab did not apply
 }
 
 void NodeLinksUiTest::topicDialogOnTenThousandNodes() {
@@ -358,10 +402,10 @@ void NodeLinksUiTest::topicDialogOnTenThousandNodes() {
         MindNode *branch = big.addChild(big.root(), QStringLiteral("Ramo %1").arg(i));
         for (int j = 0; j < 99; ++j) big.addChild(branch, QStringLiteral("Argomento %1-%2").arg(i).arg(j));
     }
-    const QList<TopicLinkDialog::SheetContent> sheets{{QStringLiteral("s"), QStringLiteral("Foglio"), big.toFlatSnapshot()}};
+    const QList<LinkDialog::SheetContent> sheets{{QStringLiteral("s"), QStringLiteral("Foglio"), big.toFlatSnapshot()}};
     QElapsedTimer timer;
     timer.start();
-    TopicLinkDialog dialog(m_window.get(), sheets, QString(), QString());
+    LinkDialog dialog(m_window.get(), LinkDialog::Tab::Topic, QString(), [&] { return sheets; }, QString(), QString());
     const qint64 openMs = timer.elapsed();
     qint64 worstMs = 0;
     for (const QString &text : {QStringLiteral("a"), QStringLiteral("ar"), QStringLiteral("arg"), QStringLiteral("argomento 5"),

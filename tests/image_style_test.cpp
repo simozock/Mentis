@@ -1,7 +1,9 @@
 // FEAT-040 (docs/features/FEAT-040-stile-immagine.md): pagina Stile dell'immagine scelta, con il
 // vero MainWindow: pagina al posto di quella del nodo, catena delle proporzioni, ripristino della
 // dimensione, bordo, ombra, opacita', ripristino dello stile, storico e file.
+// FEAT-129: the picture's shape, its border along the shape, the file key.
 #include "document.h"
+#include "imageframe.h"
 #include "mainwindow.h"
 #include "mindmapmodel.h"
 #include "mindmapscene.h"
@@ -18,6 +20,7 @@
 #include <QImage>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPainter>
 #include <QLineEdit>
 #include <QSlider>
 #include <QStackedWidget>
@@ -26,6 +29,7 @@
 #include <QTest>
 #include <QToolButton>
 
+#include <cstdlib>
 #include <memory>
 
 class ImageStyleTest final : public QObject {
@@ -40,6 +44,10 @@ private slots:
     void resetSizeGoesBackToTheInsertionSize();
     void borderShadowAndOpacityAreUndoableSteps();
     void resetStyleRestoresTheDefaults();
+    void shapeIsAnUndoableStepHiddenForStickers();
+    void shapeCutsThePictureAndTheBorderFollowsIt();
+    void effectIsAnUndoableStepShownForStickers();
+    void effectsChangeThePixelsAndKeepTheAlpha();
     void fileKeepsOnlyChangedValues();
     void snapshotForVisualReview();
 
@@ -50,6 +58,8 @@ private:
     void flushHistory();
     void undo();
     static void type(QLineEdit *field, const QString &text);
+    void chooseShape(NodeShape shape);
+    void chooseEffect(ImageEffect effect);
 
     std::unique_ptr<MainWindow> m_window;
     MindMapModel *m_model = nullptr;
@@ -107,6 +117,24 @@ void ImageStyleTest::undo() {
 void ImageStyleTest::type(QLineEdit *field, const QString &text) {
     field->setText(text);
     emit field->editingFinished();
+    QApplication::processEvents();
+}
+
+void ImageStyleTest::chooseShape(NodeShape shape) {
+    QComboBox *select = m_page->shapeField();
+    const int index = select->findData(static_cast<int>(shape));
+    QVERIFY(index >= 0);
+    select->setCurrentIndex(index);
+    emit select->activated(index);
+    QApplication::processEvents();
+}
+
+void ImageStyleTest::chooseEffect(ImageEffect effect) {
+    QComboBox *select = m_page->effectField();
+    const int index = select->findData(static_cast<int>(effect));
+    QVERIFY(index >= 0);
+    select->setCurrentIndex(index);
+    emit select->activated(index);
     QApplication::processEvents();
 }
 
@@ -230,6 +258,10 @@ void ImageStyleTest::resetStyleRestoresTheDefaults() {
     itemFor(node)->selectImage();
     QApplication::processEvents();
     m_page->shadowSwitch()->click();
+    chooseShape(NodeShape::Cuore);
+    QCOMPARE(node->imageStyle.shape, NodeShape::Cuore);
+    chooseEffect(ImageEffect::Sepia);
+    QCOMPARE(node->imageStyle.effect, ImageEffect::Sepia);
     type(m_page->opacityField(), QStringLiteral("0"));
     QCOMPARE(node->imageStyle.opacity, 0);
     // A 0 % l'immagine resta cliccabile: il clic la sceglie ancora.
@@ -245,6 +277,132 @@ void ImageStyleTest::resetStyleRestoresTheDefaults() {
     QCOMPARE(node->imageSize, QSizeF(120, 60));  // la dimensione non cambia
 }
 
+void ImageStyleTest::shapeIsAnUndoableStepHiddenForStickers() {
+    MindNode *node = addNodeWithImage(QStringLiteral("Forma"), {200, 100}, {200, 100});
+    itemFor(node)->selectImage();
+    QApplication::processEvents();
+    QVERIFY(m_page->shapeField()->isVisibleTo(m_page));
+    // Rectangle by default; every topic shape is offered.
+    QCOMPARE(m_page->shapeField()->currentData().toInt(), static_cast<int>(NodeShape::Rettangolo));
+    QCOMPARE(m_page->shapeField()->findData(static_cast<int>(NodeShape::TrapezioRovesciato)) >= 0, true);
+    chooseShape(NodeShape::Cerchio);
+    QCOMPARE(node->imageStyle.shape, NodeShape::Cerchio);
+    QCOMPARE(m_page->shapeField()->currentData().toInt(), static_cast<int>(NodeShape::Cerchio));
+    QCOMPARE(node->imageSize, QSizeF(200, 100));  // the shape fills the box: the size stays
+    undo();
+    QCOMPARE(node->imageStyle.shape, NodeShape::Rettangolo);
+    // A sticker keeps its own outline: no Shape row.
+    MindNode *sticker = addNodeWithImage(QStringLiteral("Adesivo"), {64, 64}, {64, 64});
+    sticker->imageSticker = true;
+    m_scene->updateNode(sticker);
+    itemFor(sticker)->selectImage();
+    QApplication::processEvents();
+    QVERIFY(!m_page->shapeField()->isVisibleTo(m_page));
+}
+
+void ImageStyleTest::shapeCutsThePictureAndTheBorderFollowsIt() {
+    QImage photo(100, 50, QImage::Format_RGB32);
+    photo.fill(QColor("#50c3f7"));
+    const auto draw = [&photo](const ImageStyle &style) {
+        QImage canvas(120, 70, QImage::Format_ARGB32_Premultiplied);
+        canvas.fill(Qt::transparent);
+        QPainter painter(&canvas);
+        ImageFrame::paint(&painter, QRectF(10, 10, 100, 50), photo, style);
+        return canvas;
+    };
+    ImageStyle style;
+    QCOMPARE(draw(style).pixelColor(11, 11), QColor("#50c3f7"));  // Rectangle: the whole box
+    style.shape = NodeShape::Ellisse;
+    const QImage ellipse = draw(style);
+    QCOMPARE(ellipse.pixelColor(11, 11).alpha(), 0);  // the corner of the box is cut away
+    QCOMPARE(ellipse.pixelColor(60, 35), QColor("#50c3f7"));
+    // The border runs along the ellipse, not around the box.
+    style.border = ImageStyle::Border::Solid;
+    style.borderWidth = 4;
+    style.borderColor = QColor("#ff0000");
+    const QImage bordered = draw(style);
+    QCOMPARE(bordered.pixelColor(11, 35), QColor("#ff0000"));  // left end of the ellipse
+    QCOMPARE(bordered.pixelColor(11, 11).alpha(), 0);
+    QCOMPARE(bordered.pixelColor(60, 35), QColor("#50c3f7"));
+    // An open shape keeps the picture whole and draws its lines: the line below.
+    style.shape = NodeShape::LineaSotto;
+    const QImage underline = draw(style);
+    QCOMPARE(underline.pixelColor(11, 11), QColor("#50c3f7"));
+    QCOMPARE(underline.pixelColor(60, 58), QColor("#ff0000"));
+    QCOMPARE(underline.pixelColor(11, 35), QColor("#50c3f7"));
+    QVERIFY(ImageFrame::isPlain(ImageStyle()));
+    QVERIFY(!ImageFrame::isPlain(style));
+    // A picture with a pixel ratio (formulas): cut to the shape once, at its box, not tiled or shifted.
+    QImage sharp(200, 100, QImage::Format_RGB32);
+    sharp.fill(QColor("#50c3f7"));
+    QPainter(&sharp).fillRect(QRect(100, 0, 100, 100), QColor("#22aa44"));
+    sharp.setDevicePixelRatio(2);
+    photo = sharp;
+    const QImage halves = draw(ImageStyle{.shape = NodeShape::Ellisse});
+    QCOMPARE(halves.pixelColor(50, 35), QColor("#50c3f7"));
+    QCOMPARE(halves.pixelColor(70, 35), QColor("#22aa44"));
+    QCOMPARE(halves.pixelColor(11, 11).alpha(), 0);
+}
+
+void ImageStyleTest::effectIsAnUndoableStepShownForStickers() {
+    MindNode *node = addNodeWithImage(QStringLiteral("Effetto"), {200, 100}, {200, 100});
+    NodeItem *item = itemFor(node);
+    item->selectImage();
+    QApplication::processEvents();
+    QVERIFY(m_page->effectField()->isVisibleTo(m_page));
+    QCOMPARE(m_page->effectField()->count(), 5);
+    QCOMPARE(m_page->effectField()->currentData().toInt(), static_cast<int>(ImageEffect::None));
+    const auto centre = [this, item] {
+        const QRectF box = item->mapRectToScene(item->imageBounds());
+        QImage canvas(1, 1, QImage::Format_ARGB32_Premultiplied);
+        canvas.fill(Qt::white);
+        QPainter painter(&canvas);
+        m_scene->render(&painter, QRectF(0, 0, 1, 1), QRectF(box.center(), QSizeF(1, 1)));
+        return canvas.pixelColor(0, 0);
+    };
+    QCOMPARE(centre(), QColor("#50c3f7"));
+    chooseEffect(ImageEffect::Grayscale);
+    QCOMPARE(node->imageStyle.effect, ImageEffect::Grayscale);
+    QCOMPARE(node->imageSize, QSizeF(200, 100));
+    const QColor gray = centre();  // the map shows the effect
+    QCOMPARE(gray.red(), gray.green());
+    QCOMPARE(gray.green(), gray.blue());
+    undo();
+    QCOMPARE(node->imageStyle.effect, ImageEffect::None);
+    QCOMPARE(centre(), QColor("#50c3f7"));
+    // A sticker takes effects too.
+    MindNode *sticker = addNodeWithImage(QStringLiteral("Adesivo"), {64, 64}, {64, 64});
+    sticker->imageSticker = true;
+    m_scene->updateNode(sticker);
+    itemFor(sticker)->selectImage();
+    QApplication::processEvents();
+    QVERIFY(m_page->effectField()->isVisibleTo(m_page));
+}
+
+void ImageStyleTest::effectsChangeThePixelsAndKeepTheAlpha() {
+    QImage picture(2, 1, QImage::Format_ARGB32);
+    picture.setPixelColor(0, 0, QColor("#50c3f7"));
+    picture.setPixelColor(1, 0, QColor(80, 195, 247, 128));
+    picture.setDevicePixelRatio(2);
+    const auto at = [&picture](ImageEffect effect, int x) { return ImageFrame::withEffect(picture, effect).pixelColor(x, 0); };
+    QCOMPARE(at(ImageEffect::None, 0), QColor("#50c3f7"));
+    // CSS Filter Effects grayscale(1) and sepia(1) of (80, 195, 247), rounded.
+    QCOMPARE(at(ImageEffect::Grayscale, 0), QColor(174, 174, 174));
+    QCOMPARE(at(ImageEffect::Sepia, 0), QColor(228, 203, 158));
+    QCOMPARE(at(ImageEffect::Invert, 0), QColor(175, 60, 8));
+    const QColor faded = at(ImageEffect::Faded, 0);
+    QVERIFY(faded.hsvSaturation() < QColor("#50c3f7").hsvSaturation());
+    // Straight colours, alpha kept (premultiplied result: a channel may round by one).
+    const QColor halfInverted = at(ImageEffect::Invert, 1);
+    QCOMPARE(halfInverted.alpha(), 128);
+    QVERIFY(std::abs(halfInverted.red() - 175) <= 1 && std::abs(halfInverted.green() - 60) <= 1 && std::abs(halfInverted.blue() - 8) <= 1);
+    QCOMPARE(ImageFrame::withEffect(picture, ImageEffect::Sepia).devicePixelRatio(), 2.0);
+    for (const ImageEffect effect : {ImageEffect::None, ImageEffect::Grayscale, ImageEffect::Sepia, ImageEffect::Invert, ImageEffect::Faded})
+        QCOMPARE(ImageFrame::effectFromKey(ImageFrame::effectKey(effect)), effect);
+    QVERIFY(ImageFrame::effectKey(ImageEffect::None).isEmpty());
+    QCOMPARE(ImageFrame::effectFromKey(QStringLiteral("unknown")), ImageEffect::None);
+}
+
 void ImageStyleTest::fileKeepsOnlyChangedValues() {
     MindMapModel model;
     MindNode *plain = model.addChild(model.root(), QStringLiteral("Senza stile"));
@@ -255,10 +413,14 @@ void ImageStyleTest::fileKeepsOnlyChangedValues() {
     styled->imageStyle.borderColor = QColor("#ff0000");
     styled->imageStyle.shadow = true;
     styled->imageStyle.opacity = 55;
+    styled->imageStyle.shape = NodeShape::Cuore;
+    styled->imageStyle.effect = ImageEffect::Faded;
     const QJsonObject json = model.toJson();
     const QString text = QString::fromUtf8(QJsonDocument(json).toJson());
     QCOMPARE(text.count(QStringLiteral("\"imageShadow\"")), 1);  // solo il nodo con stile
     QCOMPARE(text.count(QStringLiteral("\"imageOpacity\"")), 1);
+    QCOMPARE(text.count(QStringLiteral("\"imageShape\"")), 1);  // Rectangle writes no key
+    QCOMPARE(text.count(QStringLiteral("\"imageEffect\"")), 1);  // FEAT-131: None writes no key
     MindMapModel reopened;
     QVERIFY(reopened.fromJson(json));
     const auto &children = reopened.root()->children;

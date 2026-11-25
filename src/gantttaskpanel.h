@@ -23,6 +23,8 @@ class DateField;
 class QLabel;
 class QLayout;
 class QLineEdit;
+class GanttNameField;
+struct MindNode;
 class QMenu;
 class NumberField;
 class QPushButton;
@@ -37,13 +39,20 @@ struct GanttColors;
 class GanttTaskPanel final : public QWidget {
     Q_OBJECT
 public:
-    static constexpr int kWidth = 300;
+    static constexpr int kWidth = 300;  // the default and narrowest width; the right edge is dragged wider
+
+    // The width dragged on the view's handle (user's request 2026-11-22); the pages follow it.
+    void setPanelWidth(int width);
 
     explicit GanttTaskPanel(QWidget *parent = nullptr);
 
     // Set by the view: plan edits (Document::editGantt), the topic's title, priority and people.
     std::function<bool(const std::function<bool(GanttPlan &)> &)> edit;
-    std::function<bool(const QString &id, const QString &name)> rename;
+    // FEAT-124: with the name's formatted form (empty: plain).
+    std::function<bool(const QString &id, const QString &name, const QString &html)> rename;
+    std::function<const MindNode *(const QString &id)> topicOf;  // FEAT-124: the name's formats
+    // FEAT-002: every state of the Name being typed, for the table and the bar (GanttView::previewName).
+    std::function<void(const QString &id, const QString &name)> nameTyped;
     // On the tasks the panel edits (targets): nullopt = unchanged.
     std::function<bool(const QStringList &ids, std::optional<int> priority)> setInfo;
     // FEAT-081: resources (ids) assigned to all of the tasks, and removed from all of them.
@@ -60,15 +69,20 @@ public:
     std::function<bool(GanttPlan::SummaryShape shape)> setSummaryShape;  // every task with subtasks
     // FEAT-080: the tasks' own shape, fill or border (a GanttPlan::styleKey), empty = back to the sheet's.
     std::function<bool(const QStringList &ids, GanttPlan::OwnStyle part, const QString &key)> setTaskStyle;
+    // FEAT-080: the tasks' own border colour; nullopt = back to the sheet's (user, 2026-11-22).
+    std::function<bool(const QStringList &ids, const std::optional<QColor> &color)> setTaskBorderColor;
     std::function<bool(GanttPlan::LinkLine line)> setLinkLine;  // every dependency arrow
     std::function<bool(BranchEnd end)> setLinkEnd;
     std::function<bool(GanttPlan::LinkWidth width)> setLinkWidth;
+    std::function<bool(const std::optional<QColor> &color)> setLinkColor;  // nullopt = the view's grey
     std::function<bool(GanttPlan::LinkEndSize size)> setLinkEndSize;
     // The sheet's colour of the tasks or summaries; nullopt = back to the default.
     std::function<bool(GanttPlan::MilestoneShape shape)> setMilestoneShape;  // every milestone
     std::function<bool(GanttPlan::BarKind kind, GanttPlan::BorderStyle style)> setBorderStyle;
     std::function<bool(GanttPlan::BarKind kind, NodeFillStyle style)> setFillStyle;  // every bar of that kind  // every bar of that kind
     std::function<bool(GanttPlan::BarKind kind, const std::optional<QColor> &color)> setDefaultColor;
+    // The sheet's border colour of a kind of bars; nullopt = back to automatic.
+    std::function<bool(GanttPlan::BarKind kind, const std::optional<QColor> &color)> setDefaultBorderColor;
 
     enum class Page { Task, Gantt };
     Page page() const;
@@ -78,8 +92,9 @@ public:
     void showMilestoneShape(GanttPlan::MilestoneShape shape);
     void showBorderStyle(GanttPlan::BarKind kind, GanttPlan::BorderStyle style);
     void showFillStyle(GanttPlan::BarKind kind, NodeFillStyle style);
-    void showLinkStyle(const GanttPlan &plan);  // line, end, thickness and end size
+    void showLinkStyle(const GanttPlan &plan);  // line, end, thickness, end size and colour
     void showDefaultColor(GanttPlan::BarKind kind, const QColor &shown, bool chosen);  // chosen: the sheet's own
+    void showDefaultBorderColor(GanttPlan::BarKind kind, const QColor &shown, bool chosen);
     void clear();  // no task: the Task page says so
 
     // Shows the task's values; a field being edited keeps its text. With several targets (the
@@ -94,13 +109,19 @@ public:
     QString taskId() const { return m_id; }
     // The targets' bar colour (invalid = different colours); manual = some has a colour of its own.
     void showBarColor(const QColor &color, bool manual);
+    // The targets' border colour (invalid = different colours); own = some has a border colour of its own.
+    void showBorderColor(const QColor &color, bool own);
     void commitPendingEdit();  // a field being edited is confirmed (view switch, save)
     void setColors(const GanttColors &colors);  // light or dark card, as the Gantt page
     // Applies a style sheet that setColors() kept while the panel was hidden (also on show).
     void applyPendingStyle();
 
     // Fields, for the tests.
-    QLineEdit *nameField() const { return m_name; }
+    GanttNameField *nameField() const { return m_name; }
+    // FEAT-002: the name typed in the table for the shown task, in the Name field as it is typed;
+    // reloadName puts the task's own back (the typing cancelled).
+    void showTypedName(const QString &id, const QString &name);
+    void reloadName();
     NumberField *progressField() const { return m_progress; }
     QComboBox *priorityField() const { return m_priority; }
     DateField *startField() const { return m_start; }
@@ -142,6 +163,8 @@ public:
     QToolButton *defaultShapeButton() const { return m_defaultShape; }
     QToolButton *defaultFillButton() const { return m_defaultFill; }
     QToolButton *defaultBorderButton() const { return m_defaultBorder; }
+    ColorField *ownBorderColorField() const { return m_ownBorderColor; }
+    QToolButton *defaultBorderColorButton() const { return m_defaultBorderColor; }
     QWidget *styleSection() const { return m_styleSection; }
     QComboBox *milestoneShapeField() const { return m_milestoneShape; }
     QComboBox *borderStyleField(GanttPlan::BarKind kind) const { return m_borderStyle[int(kind)]; }
@@ -150,8 +173,12 @@ public:
     QComboBox *linkEndField() const { return m_linkEnd; }
     QComboBox *linkWidthField() const { return m_linkWidth; }
     QComboBox *linkEndSizeField() const { return m_linkEndSize; }
+    ColorField *linkColorField() const { return m_linkColor; }
+    QToolButton *linkColorReset() const { return m_linkColorReset; }
     ColorField *defaultColorField(GanttPlan::BarKind kind) const { return m_sheetColor[int(kind)]; }
     QToolButton *defaultColorReset(GanttPlan::BarKind kind) const { return m_sheetColorReset[int(kind)]; }
+    ColorField *defaultBorderColorField(GanttPlan::BarKind kind) const { return m_sheetBorderColor[int(kind)]; }
+    QToolButton *defaultBorderColorReset(GanttPlan::BarKind kind) const { return m_sheetBorderColorReset[int(kind)]; }
     bool showsNoTask() const;
     // Links of the task shown: predecessors (id comes after) or successors (id comes first).
     QList<GanttDependency> links(bool predecessors) const;
@@ -165,8 +192,6 @@ public:
     QToolButton *linkRemove(bool predecessors, const QString &other) const;
     // What a link means in words, from the task shown ("Starts after «A» ends, 2 days later").
     static QString sentence(const GanttDependency &link, bool predecessors, const QString &otherName);
-    // A priority's name, 1-5 ("Very low" ... "Very high"); empty for 0 (none).
-    static QString priorityName(int priority);
 
 signals:
     void closeRequested();
@@ -207,8 +232,6 @@ private:
     void showAddMenu(bool predecessors);
     QString parentName(const QString &id) const;
     bool editPlan(const std::function<bool(GanttPlan &)> &change);
-    // One step that changes every target that is not a summary (and not a milestone if asked).
-    bool editLeaves(const std::function<bool(GanttPlan &, const QString &)> &change, bool skipMilestones = false);
 
     QString m_id;
     GanttPlan m_plan;
@@ -240,10 +263,14 @@ private:
     QComboBox *m_linkEnd;
     QComboBox *m_linkWidth;
     QComboBox *m_linkEndSize;
+    ColorField *m_linkColor;
+    QToolButton *m_linkColorReset;
     ColorField *m_sheetColor[GanttPlan::kBarKinds];  // by BarKind
     QToolButton *m_sheetColorReset[GanttPlan::kBarKinds];
+    ColorField *m_sheetBorderColor[GanttPlan::kBarKinds];  // by BarKind
+    QToolButton *m_sheetBorderColorReset[GanttPlan::kBarKinds];
     QLabel *m_title;  // the Task section's: "Task", or "3 tasks" with several
-    QLineEdit *m_name;
+    GanttNameField *m_name;
     NumberField *m_progress;
     QComboBox *m_priority;
     DateField *m_start;
@@ -259,11 +286,14 @@ private:
     QSet<QString> m_partialPeople;  // on only some of the targets
     QColor m_rowText, m_mutedText;
     QSet<QString> m_closedSections;  // object names
+    QList<QWidget *> m_pageContents;  // never wider than the panel
     QHash<QString, std::pair<QLabel *, QWidget *>> m_sectionParts;  // name -> chevron, body
     ToggleSwitch *m_milestone;
     ToggleSwitch *m_label;
     ColorField *m_color;
     QToolButton *m_defaultColor;
+    ColorField *m_ownBorderColor;
+    QToolButton *m_defaultBorderColor;
     QWidget *m_linkSections;
     QWidget *m_datesSection;  // hidden for summaries
     QPushButton *m_remove;

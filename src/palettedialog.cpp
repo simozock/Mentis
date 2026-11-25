@@ -3,6 +3,7 @@
 
 #include "custompalettes.h"
 #include "mindmapmodel.h"
+#include "stylechoices.h"
 #include "stylecontrols.h"
 #include "uitheme.h"
 
@@ -13,8 +14,6 @@
 #include <QPushButton>
 #include <QToolButton>
 #include <QVBoxLayout>
-
-#include <memory>
 
 // Anteprima del tema: per ogni colore una colonna con il ramo principale, un secondo livello e un
 // terzo livello, colorati da NodeStyle::resolveTree come sulla mappa (FEAT-031). I colori non
@@ -27,53 +26,7 @@ public:
 protected:
     void paintEvent(QPaintEvent *) override {
         QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing);
-        p.setPen(Qt::NoPen);
-        p.setBrush(NodeStyle::kMapBackground);
-        p.drawRoundedRect(QRectF(rect()), 8, 8);
-        // Albero di prova: radice, un principale per colore, ognuno con un figlio e un nipote.
-        auto root = std::make_unique<MindNode>();
-        QList<const MindNode *> mains;
-        QStringList palette;
-        for (const QString &color : m_colors) palette.append(color.isEmpty() ? QStringLiteral("#ffffff") : color);
-        for (int i = 0; i < CustomPalettes::kColorCount; ++i) {
-            auto main = std::make_unique<MindNode>();
-            main->parent = root.get();
-            auto child = std::make_unique<MindNode>();
-            child->parent = main.get();
-            auto grandchild = std::make_unique<MindNode>();
-            grandchild->parent = child.get();
-            child->children.push_back(std::move(grandchild));
-            main->children.push_back(std::move(child));
-            mains.append(main.get());
-            root->children.push_back(std::move(main));
-        }
-        NodeStyle::resolveTree(root.get(), palette);
-        constexpr qreal kPad = 12, kGap = 8, kBoxHeight = 28, kRowGap = 10;
-        const qreal column = (width() - 2 * kPad - (CustomPalettes::kColorCount - 1) * kGap) / CustomPalettes::kColorCount;
-        QFont font = p.font();
-        font.setPixelSize(UiTheme::fontPx(12));
-        p.setFont(font);
-        for (int i = 0; i < CustomPalettes::kColorCount; ++i) {
-            const qreal x = kPad + i * (column + kGap);
-            QRectF box(x, kPad, column, kBoxHeight);
-            if (m_colors.value(i).isEmpty()) {
-                p.setPen(QPen(QColor("#c4cad2"), 1, Qt::DashLine));
-                p.setBrush(Qt::NoBrush);
-                p.drawRoundedRect(QRectF(x, kPad, column, height() - 2 * kPad).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
-                continue;
-            }
-            const MindNode *node = mains[i];
-            for (int level = 0; level < 3; ++level) {
-                p.setPen(Qt::NoPen);
-                p.setBrush(node->fill);  // trasparente dove il livello non ha riempimento
-                p.drawRoundedRect(box, 6, 6);
-                p.setPen(node->text);
-                p.drawText(box, Qt::AlignCenter, QStringLiteral("Aa"));
-                box.translate(0, kBoxHeight + kRowGap);
-                if (!node->children.empty()) node = node->children.front().get();
-            }
-        }
+        StyleChoices::drawPalettePreview(p, QRectF(rect()), m_colors, UiTheme::fontPx(12));  // FEAT-119: shared with the phone
     }
 
 private:

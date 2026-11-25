@@ -2,7 +2,10 @@
 // vero MainWindow: modale con anteprima ed errori, blocco sotto il testo, doppio clic, menu (copia del
 // codice e dell'immagine, rimozione), formule nelle note, file e Markdown.
 #include "formuladialog.h"
+#include "formulafielddocument.h"
 #include "formulatext.h"
+#include "latexcatalogue.h"
+#include "latexlistdialog.h"
 #include "document.h"
 #include "mainwindow.h"
 #include "mindmapmodel.h"
@@ -15,9 +18,14 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QContextMenuEvent>
+#include <QComboBox>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListView>
 #include <QDir>
 #include <QFile>
+#include <QFontMetricsF>
+#include <QGraphicsTextItem>
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -45,6 +53,11 @@ private slots:
     void fileAndMarkdownKeepTheFormula();
     void formulaTakesThePlaceOfTheImage();
     void titleKeepsInlineMath();
+    void titleFieldShowsFormulasAsPictures();  // FEAT-116, 2026-11-13
+    void bracesClosedWhileTyping();        // FEAT-133
+    void catalogueEntriesAreDrawn();       // FEAT-132
+    void catalogueInsertion();             // FEAT-132
+    void listSearchesAndInserts();         // FEAT-132
     void snapshotForVisualReview();
 
 private:
@@ -179,6 +192,9 @@ void FormulaTest::insertFromTheMenuWithPreview() {
 void FormulaTest::invalidCodeShowsTheError() {
     FormulaDialog dialog(m_window.get(), QString());
     QTest::keyClicks(dialog.field(), QStringLiteral("\\frac{a}{b"));
+    // FEAT-133: the braces are closed while typing; without the last one the code is not valid.
+    QCOMPARE(dialog.field()->toPlainText(), QStringLiteral("\\frac{a}{b}"));
+    QTest::keyClick(dialog.field(), Qt::Key_Delete);
     QVERIFY(!dialog.isValid());
     QVERIFY(!dialog.acceptButton()->isEnabled());
     QVERIFY(!dialog.errorLabel()->text().isEmpty());
@@ -317,6 +333,181 @@ void FormulaTest::titleKeepsInlineMath() {
     QVERIFY(FormulaText::containsMath(node->title));
 }
 
+// FEAT-116 (user's request 2026-11-13): in the title field each formula is a picture in the line,
+// the one the cursor is in or touches its code; copied and saved as the source.
+void FormulaTest::titleFieldShowsFormulasAsPictures() {
+    MindNode *node = addNode(QStringLiteral("Area $x^2$ ok"));
+    NodeItem *item = itemFor(node);
+    m_scene->selectNode(node);
+    m_view->setFocus();
+    item->beginEditingAtEnd();
+    QApplication::processEvents();
+    QGraphicsTextItem *field = nullptr;
+    for (QGraphicsItem *child : item->childItems())
+        if (auto *text = dynamic_cast<QGraphicsTextItem *>(child)) field = text;
+    QVERIFY(field);
+    const QChar picture = QChar::ObjectReplacementCharacter;
+    QCOMPARE(field->toPlainText(), QStringLiteral("Area %1 ok").arg(picture));
+    QWidget *keys = m_view->viewport();
+    QTest::keyClick(keys, Qt::Key_Left);
+    QTest::keyClick(keys, Qt::Key_Left);
+    QTest::keyClick(keys, Qt::Key_Left);  // right after the picture: its code
+    QCOMPARE(field->toPlainText(), QStringLiteral("Area $x^2$ ok"));
+    QCOMPARE(field->textCursor().position(), 10);
+    QTest::keyClick(keys, Qt::Key_Home);  // away: a picture again
+    QCOMPARE(field->toPlainText(), QStringLiteral("Area %1 ok").arg(picture));
+    QCOMPARE(field->textCursor().position(), 0);
+    // A formula typed at the end: code while the cursor touches it, a picture after a space.
+    QTest::keyClick(keys, Qt::Key_End);
+    QTest::keyClicks(keys, QStringLiteral(" $y$"));
+    QCOMPARE(field->toPlainText(), QStringLiteral("Area %1 ok $y$").arg(picture));
+    QTest::keyClick(keys, Qt::Key_Space);
+    QCOMPARE(field->toPlainText(), QStringLiteral("Area %1 ok %1 ").arg(picture));
+    // The field (and the topic with it) is narrower than the source would be.
+    QVERIFY(field->boundingRect().width() < QFontMetricsF(field->font()).horizontalAdvance(QStringLiteral("Area $x^2$ ok $y$ ")));
+    // The field's Undo gets past the picture steps (they would come back at once) and Redo follows.
+    const QString typed = QStringLiteral("Area $x^2$ ok $y$ ");
+    QTest::keyClick(keys, Qt::Key_Z, Qt::ControlModifier);
+    const QString undone = FormulaFieldDocument::sourceOf(field->document());
+    QVERIFY2(undone != typed && typed.startsWith(undone), qPrintable(undone));
+    QTest::keyClick(keys, Qt::Key_Y, Qt::ControlModifier);
+    QCOMPARE(FormulaFieldDocument::sourceOf(field->document()), typed);
+    QTest::keyClick(keys, Qt::Key_End);
+    QCOMPARE(field->toPlainText(), QStringLiteral("Area %1 ok %1 ").arg(picture));
+    // Copied as the source.
+    QTest::keyClick(keys, Qt::Key_A, Qt::ControlModifier);
+    QTest::keyClick(keys, Qt::Key_C, Qt::ControlModifier);
+    QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("Area $x^2$ ok $y$ "));
+    QTest::keyClick(keys, Qt::Key_Return);
+    QApplication::processEvents();
+    QCOMPARE(node->title, QStringLiteral("Area $x^2$ ok $y$"));
+    QVERIFY(node->titleHtml.isEmpty());
+    // Undo goes back through sources, never through the pictures' characters.
+    flushHistory();
+    for (int i = 0; i < 4 && node->title != QStringLiteral("Area $x^2$ ok"); ++i) {
+        undo();
+        QVERIFY2(!node->title.contains(picture), qPrintable(node->title));
+    }
+    QCOMPARE(node->title, QStringLiteral("Area $x^2$ ok"));
+}
+
+// FEAT-132: every entry of the list is drawn by JKQtMathText without errors.
+void FormulaTest::bracesClosedWhileTyping() {
+    // The formula modal: "{" adds "}", "}" steps over it, Backspace on an empty pair removes both,
+    // one Ctrl+Z takes a pair back.
+    FormulaDialog dialog(m_window.get(), QString());
+    QPlainTextEdit *code = dialog.field();
+    QTest::keyClicks(code, QStringLiteral("x^{"));
+    QCOMPARE(code->toPlainText(), QStringLiteral("x^{}"));
+    QCOMPARE(code->textCursor().position(), 3);
+    QTest::keyClicks(code, QStringLiteral("2}"));
+    QCOMPARE(code->toPlainText(), QStringLiteral("x^{2}"));
+    QCOMPARE(code->textCursor().position(), 5);
+    QTest::keyClicks(code, QStringLiteral("_{"));
+    QTest::keyClick(code, Qt::Key_Backspace);
+    QCOMPARE(code->toPlainText(), QStringLiteral("x^{2}_"));
+    QTest::keyClicks(code, QStringLiteral("{"));
+    QTest::keyClick(code, Qt::Key_Z, Qt::ControlModifier);
+    QVERIFY2(!code->toPlainText().endsWith(QLatin1Char('{')), qPrintable(code->toPlainText()));
+    // A topic's title: only inside a formula.
+    MindNode *node = addNode(QString());
+    NodeItem *item = itemFor(node);
+    m_scene->selectNode(node);
+    m_view->setFocus();
+    item->beginEditingAtEnd();
+    QApplication::processEvents();
+    QGraphicsTextItem *field = nullptr;
+    for (QGraphicsItem *child : item->childItems())
+        if (auto *text = dynamic_cast<QGraphicsTextItem *>(child)) field = text;
+    QVERIFY(field);
+    QWidget *keys = m_view->viewport();
+    QTest::keyClicks(keys, QStringLiteral("{a} $\\frac{1}{2}"));
+    QCOMPARE(FormulaFieldDocument::sourceOf(field->document()), QStringLiteral("{a} $\\frac{1}{2}"));
+}
+
+void FormulaTest::catalogueEntriesAreDrawn() {
+    QFont font = m_window->font();
+    font.setPixelSize(18);
+    QStringList failed;
+    for (const LatexCatalogue::Entry &entry : LatexCatalogue::entries()) {
+        const QString code = LatexCatalogue::previewCode(entry);
+        FormulaText formula;
+        formula.updateBlock(code, font, Qt::black);
+        if (formula.isEmpty() || formula.hadErrors() || !FormulaText::syntaxErrors(code).isEmpty())
+            failed.append(code + QStringLiteral(" [") + formula.errors().join(QStringLiteral("; ")) + u']');
+    }
+    QVERIFY2(failed.isEmpty(), qPrintable(failed.join(QStringLiteral("\n"))));
+    QVERIFY(LatexCatalogue::entries().size() > 200);
+}
+
+void FormulaTest::catalogueInsertion() {
+    using LatexCatalogue::insert;
+    auto r = insert(QStringLiteral("a + "), 4, 4, QStringLiteral("\\frac{}{}"));
+    QCOMPARE(r.text, QStringLiteral("a + \\frac{}{}"));
+    QCOMPARE(r.caret, 10);  // between the first braces
+    r = insert(QStringLiteral("x^2"), 0, 3, QStringLiteral("\\sqrt{}"));
+    QCOMPARE(r.text, QStringLiteral("\\sqrt{x^2}"));
+    QCOMPARE(r.caret, 9);  // after the selection
+    r = insert(QStringLiteral("y = "), 4, 4, QStringLiteral("\\alpha"));
+    QCOMPARE(r.text, QStringLiteral("y = \\alpha"));
+    QCOMPARE(r.caret, 10);  // no placeholder: after the text
+    QCOMPARE(LatexCatalogue::fold(QStringLiteral("Più")), QStringLiteral("piu"));
+}
+
+void FormulaTest::listSearchesAndInserts() {
+    FormulaDialog dialog(m_window.get(), QStringLiteral("a + "));
+    dialog.show();
+    QVERIFY(dialog.listButton());
+    QVERIFY(dialog.listButton()->isVisible());
+    bool checked = false;
+    QTimer::singleShot(50, this, [&checked] {
+        auto *list = qobject_cast<LatexListDialog *>(QApplication::activeModalWidget());
+        QVERIFY(list);
+        QCOMPARE(QApplication::focusWidget(), list->searchField());
+        const auto codes = [list] {
+            QStringList found;
+            for (int row = 0; row < list->resultCount(); ++row)
+                found.append(QString::fromUtf8(LatexCatalogue::entries()[list->entryAt(row)].code));
+            return found;
+        };
+        QTest::keyClicks(list->searchField(), QStringLiteral("int"));
+        QVERIFY(codes().contains(QStringLiteral("\\iint")));
+        QVERIFY(codes().contains(QStringLiteral("\\oint")));
+        QVERIFY(!codes().contains(QStringLiteral("\\alpha")));
+        list->searchField()->setText(QStringLiteral("freccia"));  // Italian keywords
+        QVERIFY(codes().contains(QStringLiteral("\\rightarrow")));
+        list->searchField()->setText(QStringLiteral("zzzz"));
+        QCOMPARE(list->resultCount(), 0);
+        QVERIFY(list->emptyLabel()->isVisible());
+        QVERIFY(!list->acceptButton()->isEnabled());
+        list->searchField()->clear();
+        list->categorySelect()->setCurrentIndex(list->categorySelect()->findData(int(LatexCatalogue::Category::Structures)));
+        QVERIFY(list->resultCount() > 0);
+        int frac = -1;
+        for (int row = 0; row < list->resultCount(); ++row)
+            if (QString::fromUtf8(LatexCatalogue::entries()[list->entryAt(row)].code) == QStringLiteral("\\frac{}{}")) frac = row;
+        QVERIFY(frac >= 0);
+        QListView *grid = list->list();
+        const QModelIndex index = grid->model()->index(frac, 0);
+        grid->scrollTo(index);
+        QTest::mouseClick(grid->viewport(), Qt::LeftButton, {}, grid->visualRect(index).center());
+        checked = true;
+    });
+    dialog.listButton()->click();
+    QVERIFY(checked);
+    QCOMPARE(dialog.field()->toPlainText(), QStringLiteral("a + \\frac{}{}"));
+    QCOMPARE(dialog.field()->textCursor().position(), 10);
+    QCOMPARE(QApplication::activeModalWidget(), &dialog);  // only the list closed
+    // Esc closes only the list, nothing is inserted.
+    QTimer::singleShot(50, this, [] {
+        if (auto *list = qobject_cast<LatexListDialog *>(QApplication::activeModalWidget()))
+            QTest::keyClick(list->searchField(), Qt::Key_Escape);
+    });
+    dialog.listButton()->click();
+    QCOMPARE(dialog.field()->toPlainText(), QStringLiteral("a + \\frac{}{}"));
+    QCOMPARE(QApplication::activeModalWidget(), &dialog);
+}
+
 // Foto per il confronto a vista (solo con MENTIS_SNAPSHOT_DIR, piattaforma con i caratteri).
 void FormulaTest::snapshotForVisualReview() {
     const QString dir = qEnvironmentVariable("MENTIS_SNAPSHOT_DIR");
@@ -347,6 +538,22 @@ void FormulaTest::snapshotForVisualReview() {
         dialog->field()->setPlainText(QStringLiteral("\\frac{1}{2"));
         QTest::qWait(200);
         dialog->grab().save(dir + QStringLiteral("/formula-dialog-error.png"));
+        QTimer::singleShot(300, dialog, [dir] {  // FEAT-132: the list over the formula modal
+            auto *list = qobject_cast<LatexListDialog *>(QApplication::activeModalWidget());
+            if (!list) return;
+            list->grab().save(dir + QStringLiteral("/formula-list.png"));
+            // Every entry, one picture per category (the grid made tall enough for all of them).
+            list->list()->setFixedHeight(2400);
+            for (LatexCatalogue::Category category : LatexCatalogue::categories()) {
+                list->categorySelect()->setCurrentIndex(list->categorySelect()->findData(int(category)));
+                QTest::qWait(50);
+                const QModelIndex last = list->list()->model()->index(list->resultCount() - 1, 0);
+                list->list()->grab(QRect(0, 0, list->list()->width(), list->list()->visualRect(last).bottom() + 2))
+                    .save(dir + QStringLiteral("/formula-list-%1.png").arg(int(category)));
+            }
+            list->reject();
+        });
+        dialog->listButton()->click();
         dialog->reject();
     });
     m_window->editFormula(b);

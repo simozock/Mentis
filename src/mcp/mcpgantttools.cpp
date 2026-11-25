@@ -4,6 +4,7 @@
 #include "mcptoolsupport.h"
 
 #include "document.h"
+#include "ganttcosts.h"
 #include "ganttplan.h"
 #include "ganttresources.h"
 #include "mindmapmodel.h"
@@ -47,15 +48,17 @@ QJsonObject styleJson(const GanttPlan &plan) {
     const std::array shapes{GanttPlan::styleKey(plan.barShape()), GanttPlan::styleKey(plan.summaryShape()),
                             GanttPlan::styleKey(plan.milestoneShape())};
     for (GanttPlan::BarKind kind : kBarKinds) {
-        const QColor color = plan.defaultColor(kind);
+        const QColor color = plan.defaultColor(kind), borderColor = plan.defaultBorderColor(kind);
         style.insert(kKindNames.at(int(kind)), QJsonObject{{"shape", shapes[int(kind)]}, {"fill", GanttPlan::styleKey(plan.fillStyle(kind))},
                                                            {"border", GanttPlan::styleKey(plan.borderStyle(kind))},
+                                                           {"border_color", borderColor.isValid() ? QJsonValue(borderColor.name()) : QJsonValue()},
                                                            {"color", color.isValid() ? QJsonValue(color.name()) : QJsonValue()}});
     }
     style.insert(QStringLiteral("relations"), QJsonObject{{"line", styleKeys(StyleList::LinkLine).at(int(plan.linkLine()))},
                                                           {"end", NodeStyle::branchEndKey(plan.linkEnd())},
                                                           {"width", styleKeys(StyleList::LinkWidth).at(int(plan.linkWidth()))},
-                                                          {"end_size", styleKeys(StyleList::LinkEndSize).at(int(plan.linkEndSize()))}});
+                                                          {"end_size", styleKeys(StyleList::LinkEndSize).at(int(plan.linkEndSize()))},
+                                                          {"color", plan.linkColor().isValid() ? QJsonValue(plan.linkColor().name()) : QJsonValue()}});
     return style;
 }
 
@@ -85,6 +88,7 @@ QJsonObject ganttJson(const Document &document, const MindMapModel &model) {
         }
         for (const auto &[key, value] : {std::pair{"shape", task.shape}, std::pair{"fill", task.fill}, std::pair{"border", task.border}})
             if (!value.isEmpty()) json.insert(QString::fromLatin1(key), value);  // FEAT-080: the task's own style
+        if (task.borderColor.isValid()) json.insert(QStringLiteral("border_color"), task.borderColor.name());
         tasks.append(json);
     }
     for (const GanttDependency &dependency : plan.dependencies())
@@ -93,7 +97,7 @@ QJsonObject ganttJson(const Document &document, const MindMapModel &model) {
     for (const GanttResource &person : document.resources().people)
         people.append(QJsonObject{{"id", person.id}, {"name", person.displayName()}, {"first_name", person.firstName},
                                   {"last_name", person.lastName}, {"role", person.role}, {"email", person.email},
-                                  {"hourly_cost", double(person.hourlyCostCents) / 100}});
+                                  {"hourly_cost", double(person.hourlyCostCents) / 100}, {"currency", person.currency.text()}});
     QJsonArray baselines, workingDays, holidays;
     for (const GanttBaseline &baseline : plan.baselines())
         baselines.append(QJsonObject{{"id", baseline.id}, {"name", baseline.name}, {"taken", baseline.taken.toString(Qt::ISODate)}});
@@ -103,8 +107,12 @@ QJsonObject ganttJson(const Document &document, const MindMapModel &model) {
     QList<QDate> dates = plan.calendar().holidays.values();
     std::sort(dates.begin(), dates.end());
     for (const QDate &date : dates) holidays.append(date.toString(Qt::ISODate));
+    // FEAT-128: the sheet's cost, one amount per currency (never added across them).
+    QJsonObject costs;
+    const GanttCosts computed = GanttCosts::compute(plan, schedule, model.ganttAssignments(), document.resources().people);
+    for (auto it = computed.total.cost.cents.cbegin(); it != computed.total.cost.cents.cend(); ++it) costs.insert(it.key(), double(it.value()) / 100);
     QJsonObject result{{"tasks", tasks}, {"dependencies", dependencies}, {"people", people}, {"baselines", baselines},
-                       {"currency", document.resources().currencyText()}, {"style", styleJson(plan)},
+                       {"costs", costs}, {"style", styleJson(plan)},
                        {"calendar", QJsonObject{{"working_days", workingDays}, {"holidays", holidays},
                                                 {"hours_per_day", plan.calendar().minutesPerDay / 60.0}}}};
     if (schedule.start.isValid()) {
@@ -131,6 +139,16 @@ const QJsonObject kDependencyType{{"enum", QJsonArray::fromStringList(kDependenc
 
 namespace {
 
+// A currency's text ("RON lei", "CHF"), as the tools take it; nullopt with error set (FEAT-128).
+std::optional<GanttCurrency> currencyText(const QJsonValue &value, QString *error) {
+    const QString text = value.toString().simplified();
+    if (text.isEmpty() || text.size() > GanttCurrency::kMaxCodeLength + GanttCurrency::kMaxSymbolLength + 1) {
+        *error = QStringLiteral("currency must be like EUR €, RON lei or CHF");
+        return std::nullopt;
+    }
+    return GanttCurrency::fromText(text).normalized();
+}
+
 // The person's fields from args (only the given ones); false with error set for a wrong value.
 bool readPerson(const QJsonObject &args, GanttResource *person, QString *error) {
     for (const auto &[key, field] : {std::pair{"first_name", &GanttResource::firstName}, std::pair{"last_name", &GanttResource::lastName},
@@ -145,12 +163,20 @@ bool readPerson(const QJsonObject &args, GanttResource *person, QString *error) 
         if (cost < 0 || cost * 100 > double(GanttResources::kMaxHourlyCostCents)) { *error = QStringLiteral("hourly_cost must be 0 to 100000"); return false; }
         person->hourlyCostCents = qRound64(cost * 100);
     }
+    if (args.contains(QStringLiteral("currency"))) {
+        const std::optional<GanttCurrency> currency = currencyText(args.value(QStringLiteral("currency")), error);
+        if (!currency) return false;
+        person->currency = *currency;
+    }
     return true;
 }
 
 const QJsonObject kPersonFields{{"first_name", QJsonObject{{"type", "string"}}}, {"last_name", QJsonObject{{"type", "string"}}},
                                 {"role", QJsonObject{{"type", "string"}}}, {"email", QJsonObject{{"type", "string"}}},
-                                {"hourly_cost", QJsonObject{{"type", "number"}, {"minimum", 0}, {"description", "In the map's currency"}}}};
+                                {"hourly_cost", QJsonObject{{"type", "number"}, {"minimum", 0}, {"description", "In the person's currency"}}},
+                                {"currency", QJsonObject{{"type", "string"},
+                                                         {"description", "Of the hourly cost: name, then the symbol after a space (\"USD $\"); "
+                                                                         "a new person without it takes the last person's"}}}};
 
 }  // namespace
 
@@ -274,11 +300,12 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                   true,
                   [](const Access &, const QJsonObject &args, Document &document, MindMapScene &, MindMapModel &model) {
                       QString error;
+                      GanttResources resources = document.resources();
                       GanttResource person;
                       person.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                      person.currency = resources.newPersonCurrency();
                       if (!readPerson(args, &person, &error)) return ToolResult::error(error);
                       if (person.firstName.isEmpty()) return ToolResult::error(QStringLiteral("first_name is empty"));
-                      GanttResources resources = document.resources();
                       resources.people.append(person);
                       if (!document.setResources(resources, model.gantt().calendar())) return ToolResult::error(QStringLiteral("The person could not be added"));
                       return ToolResult::object({{"id", person.id}, {"name", person.displayName()}});
@@ -324,7 +351,7 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                   }});
 
     edits.append({{QStringLiteral("update_person"), QStringLiteral("Change a person"),
-                   QStringLiteral("Changes a person's first and last name, role, e-mail or hourly cost (omitted fields stay)."),
+                   QStringLiteral("Changes a person's first and last name, role, e-mail, hourly cost or its currency (omitted fields stay)."),
                    [] { QJsonObject p = kPersonFields; p.insert(QStringLiteral("id"), QJsonObject{{"type", "string"}}); return schema(p, {QStringLiteral("id")}); }(),
                    false, {}},
                   true,
@@ -364,17 +391,30 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                   }});
 
     edits.append({{QStringLiteral("set_currency"), QStringLiteral("Set the currency"),
-                   QStringLiteral("Sets the currency of the costs: a name and optionally its symbol, e.g. \"EUR €\", \"USD $\", \"CHF\"."),
-                   schema({{"currency", stringProperty(QStringLiteral("Name, then the symbol after a space"))}}, {QStringLiteral("currency")}), false, {}},
+                   QStringLiteral("Sets the currency of people's hourly costs: a name and optionally its symbol, e.g. \"EUR €\", "
+                                  "\"USD $\", \"CHF\". Each person has their own; without person, every person's. Costs in "
+                                  "different currencies are never added together."),
+                   schema({{"currency", stringProperty(QStringLiteral("Name, then the symbol after a space"))},
+                           {"person", stringProperty(QStringLiteral("Person id; omitted = every person"))}},
+                          {QStringLiteral("currency")}),
+                   false, {}},
                   true,
                   [](const Access &, const QJsonObject &args, Document &document, MindMapScene &, MindMapModel &model) {
-                      const QString currency = args.value(QStringLiteral("currency")).toString().simplified();
-                      if (currency.isEmpty() || currency.size() > GanttResources::kMaxCurrencyLength + GanttResources::kMaxSymbolLength + 1)
-                          return ToolResult::error(QStringLiteral("currency must be like EUR € or CHF"));
+                      QString error;
+                      const std::optional<GanttCurrency> currency = currencyText(args.value(QStringLiteral("currency")), &error);
+                      if (!currency) return ToolResult::error(error);
                       GanttResources resources = document.resources();
-                      resources.setCurrencyText(currency);
+                      if (resources.people.isEmpty()) return ToolResult::error(QStringLiteral("No people yet: add_person first"));
+                      const QString id = args.value(QStringLiteral("person")).toString();
+                      int changed = 0;
+                      for (GanttResource &person : resources.people) {
+                          if (!id.isEmpty() && person.id != id) continue;
+                          person.currency = *currency;
+                          ++changed;
+                      }
+                      if (!id.isEmpty() && changed == 0) return ToolResult::error(QStringLiteral("No person %1 (read_gantt lists them)").arg(id));
                       document.setResources(resources, model.gantt().calendar());
-                      return ToolResult::object({{"currency", document.resources().currencyText()}});
+                      return ToolResult::object({{"currency", currency->text()}, {"people", changed}});
                   }});
 
     edits.append({{QStringLiteral("set_calendar"), QStringLiteral("Set the working calendar"),
@@ -443,8 +483,10 @@ void appendGanttEdits(QList<MapEdit> &edits) {
 
     edits.append({{QStringLiteral("set_gantt_style"), QStringLiteral("Style the Gantt chart"),
                    QStringLiteral("Sets the look of the sheet's whole chart, as the Gantt page of the side panel: for tasks, "
-                                  "summaries and milestones their shape, fill, border and colour (#rrggbb, null = the default); "
-                                  "for the dependency arrows their line, end mark, width and end size. Omitted parts stay; a "
+                                  "summaries and milestones their shape, fill, border, border colour (#rrggbb, null = automatic: "
+                                  "the bar's colour made vivid) and colour (#rrggbb, null = the default); "
+                                  "for the dependency arrows their line, end mark, width, end size and colour (#rrggbb, null = "
+                                  "the default grey; critical arrows stay red). Omitted parts stay; a "
                                   "task with its own style (set_gantt_task_style) keeps it. read_gantt returns the style."),
                    [] {
                        QJsonObject properties{{"sheet", kSheet}};
@@ -454,13 +496,15 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                                                          {"properties", QJsonObject{{"shape", QJsonObject{{"enum", QJsonArray::fromStringList(styleKeys(kShapeLists[int(kind)]))}}},
                                                                                     {"fill", QJsonObject{{"enum", QJsonArray::fromStringList(fillKeys())}}},
                                                                                     {"border", QJsonObject{{"enum", QJsonArray::fromStringList(styleKeys(StyleList::Border))}}},
+                                                                                    {"border_color", QJsonObject{{"type", QJsonArray{"string", "null"}}}},
                                                                                     {"color", QJsonObject{{"type", QJsonArray{"string", "null"}}}}}}});
                        properties.insert(QStringLiteral("relations"),
                                          QJsonObject{{"type", "object"}, {"additionalProperties", false},
                                                      {"properties", QJsonObject{{"line", QJsonObject{{"enum", QJsonArray::fromStringList(styleKeys(StyleList::LinkLine))}}},
                                                                                 {"end", QJsonObject{{"enum", QJsonArray::fromStringList(endKeys())}}},
                                                                                 {"width", QJsonObject{{"enum", QJsonArray::fromStringList(styleKeys(StyleList::LinkWidth))}}},
-                                                                                {"end_size", QJsonObject{{"enum", QJsonArray::fromStringList(styleKeys(StyleList::LinkEndSize))}}}}}});
+                                                                                {"end_size", QJsonObject{{"enum", QJsonArray::fromStringList(styleKeys(StyleList::LinkEndSize))}}},
+                                                                                {"color", QJsonObject{{"type", QJsonArray{"string", "null"}}}}}}});
                        return schema(properties, {});
                    }(),
                    false, {}},
@@ -483,7 +527,7 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                           const QString partName = kKindNames.at(int(kind));
                           if (!args.contains(partName)) continue;
                           const QJsonObject part = args.value(partName).toObject();
-                          if (!args.value(partName).isObject() || !known(part, partName, {"shape", "fill", "border", "color"}))
+                          if (!args.value(partName).isObject() || !known(part, partName, {"shape", "fill", "border", "border_color", "color"}))
                               return ToolResult::error(error.isEmpty() ? QStringLiteral("%1 must be an object").arg(partName) : error);
                           if (part.contains(QStringLiteral("shape"))) {
                               const int shape = key(part, partName, QStringLiteral("shape"), styleKeys(kShapeLists[int(kind)]));
@@ -504,18 +548,23 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                               if (border < 0) return ToolResult::error(error);
                               changes.append([kind, border](GanttPlan &plan) { plan.setBorderStyle(kind, GanttPlan::BorderStyle(border)); });
                           }
-                          if (part.contains(QStringLiteral("color"))) {
-                              const QJsonValue value = part.value(QStringLiteral("color"));
+                          for (const bool border : {false, true}) {
+                              const QString name = border ? QStringLiteral("border_color") : QStringLiteral("color");
+                              if (!part.contains(name)) continue;
+                              const QJsonValue value = part.value(name);
                               const QColor color = value.isNull() ? QColor() : QColor(value.toString());
                               if (!value.isNull() && (!value.isString() || !color.isValid()))
-                                  return ToolResult::error(QStringLiteral("%1.color must be a colour like #2563eb or null").arg(partName));
-                              changes.append([kind, color](GanttPlan &plan) { plan.setDefaultColor(kind, color); });
+                                  return ToolResult::error(QStringLiteral("%1.%2 must be a colour like #2563eb or null").arg(partName, name));
+                              changes.append([kind, color, border](GanttPlan &plan) {
+                                  if (border) plan.setDefaultBorderColor(kind, color);
+                                  else plan.setDefaultColor(kind, color);
+                              });
                           }
                       }
                       if (args.contains(QStringLiteral("relations"))) {
                           const QString partName = QStringLiteral("relations");
                           const QJsonObject part = args.value(partName).toObject();
-                          if (!args.value(partName).isObject() || !known(part, partName, {"line", "end", "width", "end_size"}))
+                          if (!args.value(partName).isObject() || !known(part, partName, {"line", "end", "width", "end_size", "color"}))
                               return ToolResult::error(error.isEmpty() ? QStringLiteral("relations must be an object") : error);
                           if (part.contains(QStringLiteral("line"))) {
                               const int line = key(part, partName, QStringLiteral("line"), styleKeys(StyleList::LinkLine));
@@ -537,6 +586,13 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                               if (size < 0) return ToolResult::error(error);
                               changes.append([size](GanttPlan &plan) { plan.setLinkEndSize(GanttPlan::LinkEndSize(size)); });
                           }
+                          if (part.contains(QStringLiteral("color"))) {
+                              const QJsonValue value = part.value(QStringLiteral("color"));
+                              const QColor color = value.isNull() ? QColor() : QColor(value.toString());
+                              if (!value.isNull() && (!value.isString() || !color.isValid()))
+                                  return ToolResult::error(QStringLiteral("relations.color must be a colour like #2563eb or null"));
+                              changes.append([color](GanttPlan &plan) { plan.setLinkColor(color); });
+                          }
                       }
                       if (changes.isEmpty())
                           return ToolResult::error(QStringLiteral("Nothing to change: give tasks, summaries, milestones or relations"));
@@ -549,7 +605,8 @@ void appendGanttEdits(QList<MapEdit> &edits) {
 
     edits.append({{QStringLiteral("set_gantt_task_style"), QStringLiteral("Style Gantt bars"),
                    QStringLiteral("Gives tasks their own look over the sheet's (set_gantt_style): shape (a key of the task's kind: "
-                                  "tasks, summaries or milestones), fill, border, colour (#rrggbb, the topic's branch colour) and "
+                                  "tasks, summaries or milestones), fill, border, border colour (#rrggbb), colour (#rrggbb, the "
+                                  "topic's branch colour) and "
                                   "whether the name is on the bar. null = back to the sheet's (label: the default, shown on "
                                   "summaries only)."),
                    [] {
@@ -563,6 +620,7 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                        };
                        return schema({{"sheet", kSheet}, {"ids", idsProperty(QStringLiteral("Tasks"))}, {"shape", keyOrNull(shapes)},
                                       {"fill", keyOrNull(fillKeys())}, {"border", keyOrNull(styleKeys(StyleList::Border))},
+                                      {"border_color", QJsonObject{{"type", QJsonArray{"string", "null"}}}},
                                       {"color", QJsonObject{{"type", QJsonArray{"string", "null"}}}},
                                       {"label", QJsonObject{{"type", QJsonArray{"boolean", "null"}}, {"description", "The name on the bar"}}}},
                                      {QStringLiteral("ids")});
@@ -592,8 +650,13 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                       if (hasColor && !colorValue.isNull() && (!colorValue.isString() || !color.isValid()))
                           return ToolResult::error(QStringLiteral("color must be a colour like #2563eb or null"));
                       if (hasLabel && !labelValue.isNull() && !labelValue.isBool()) return ToolResult::error(QStringLiteral("label must be true, false or null"));
-                      if (own.isEmpty() && !hasColor && !hasLabel)
-                          return ToolResult::error(QStringLiteral("Nothing to change: give shape, fill, border, color or label"));
+                      const bool hasBorderColor = args.contains(QStringLiteral("border_color"));
+                      const QJsonValue borderValue = args.value(QStringLiteral("border_color"));
+                      const QColor borderColor = borderValue.isNull() ? QColor() : QColor(borderValue.toString());
+                      if (hasBorderColor && !borderValue.isNull() && (!borderValue.isString() || !borderColor.isValid()))
+                          return ToolResult::error(QStringLiteral("border_color must be a colour like #2563eb or null"));
+                      if (own.isEmpty() && !hasColor && !hasLabel && !hasBorderColor)
+                          return ToolResult::error(QStringLiteral("Nothing to change: give shape, fill, border, border_color, color or label"));
                       // Colour and name are the topics' own fields: changed first, editGantt's step takes them in.
                       if (hasColor) {
                           if (color.isValid()) model.setStyle(nodes, StyleProperty::BranchColor, QVariant(color));
@@ -605,10 +668,12 @@ void appendGanttEdits(QList<MapEdit> &edits) {
                           emit model.ganttChanged();
                       }
                       if (hasColor || hasLabel) document.markChanged();
-                      if (!own.isEmpty())
+                      if (!own.isEmpty() || hasBorderColor)
                           document.editGantt([&](GanttPlan &plan) {
-                              for (const MindNode *node : nodes)
+                              for (const MindNode *node : nodes) {
                                   for (const auto &[part, value] : std::as_const(own)) plan.setOwnStyle(node->id, part, value);
+                                  if (hasBorderColor) plan.setBorderColor(node->id, borderColor);
+                              }
                               return true;
                           });
                       return ToolResult::object({{"tasks", int(nodes.size())}});
@@ -623,56 +688,44 @@ QList<McpServer::Tool> currencyTools(std::function<Access()> access) {
         };
     };
     // The text of a currency ("RON lei"), as set_currency takes it; nullopt with error set.
-    const auto currencyArgument = [](const QJsonObject &args, QString *error) -> std::optional<GanttResources> {
-        const QString text = args.value(QStringLiteral("currency")).toString().simplified();
-        if (text.isEmpty() || text.size() > GanttResources::kMaxCurrencyLength + GanttResources::kMaxSymbolLength + 1) {
-            *error = QStringLiteral("currency must be like RON lei or CHF");
-            return std::nullopt;
-        }
-        GanttResources entry;
-        entry.setCurrencyText(text);
-        return entry.normalized();
+    const auto currencyArgument = [](const QJsonObject &args, QString *error) {
+        return currencyText(args.value(QStringLiteral("currency")), error);
     };
     const auto savedJson = [] { return QJsonArray::fromStringList(GanttResources::savedCurrencies()); };
     QList<McpServer::Tool> list;
     list.append({QStringLiteral("list_currencies"), QStringLiteral("List the currencies"),
                  QStringLiteral("Lists the currencies offered in the Gantt's Resources: the built-in ones and those saved on this "
-                                "computer (add_currency). A map's own currency is in read_gantt."),
+                                "computer (add_currency). Each person's currency is in read_gantt."),
                  schema({}, {}), true, guarded([savedJson](const QJsonObject &) {
                      QStringList builtIn;
-                     for (const QString &currency : GanttResources::currencies()) {
-                         GanttResources entry;
-                         entry.currency = currency;
-                         builtIn.append(entry.normalized().currencyText());
-                     }
+                     for (const QString &currency : GanttResources::currencies()) builtIn.append(GanttCurrency{currency, {}}.normalized().text());
                      return ToolResult::object({{"built_in", QJsonArray::fromStringList(builtIn)}, {"saved", savedJson()},
                                                 {"max_saved", GanttResources::kMaxSavedCurrencies}});
                  })});
     list.append({QStringLiteral("add_currency"), QStringLiteral("Add a currency"),
                  QStringLiteral("Saves a new currency on this computer, offered in every map after the built-in ones: its name "
                                 "and optionally its symbol after a space (\"RON lei\", \"JPY ¥\"). Past the limit the oldest goes. "
-                                "set_currency then uses it in a map."),
+                                "set_currency then gives it to people."),
                  schema({{"currency", stringProperty(QStringLiteral("Name, then the symbol after a space"))}}, {QStringLiteral("currency")}),
                  false, guarded([currencyArgument, savedJson](const QJsonObject &args) {
                      QString error;
-                     const std::optional<GanttResources> entry = currencyArgument(args, &error);
+                     const std::optional<GanttCurrency> entry = currencyArgument(args, &error);
                      if (!entry) return ToolResult::error(error);
-                     if (!entry->canSaveCurrency())
-                         return ToolResult::error(QStringLiteral("%1 is already offered (list_currencies)").arg(entry->currencyText()));
-                     entry->saveCurrency();
-                     return ToolResult::object({{"currency", entry->currencyText()}, {"saved", savedJson()}});
+                     if (!entry->canSave()) return ToolResult::error(QStringLiteral("%1 is already offered (list_currencies)").arg(entry->text()));
+                     entry->save();
+                     return ToolResult::object({{"currency", entry->text()}, {"saved", savedJson()}});
                  })});
     list.append({QStringLiteral("remove_currency"), QStringLiteral("Remove a saved currency"),
-                 QStringLiteral("Removes a currency saved on this computer (built-in ones stay); maps using it keep it."),
+                 QStringLiteral("Removes a currency saved on this computer (built-in ones stay); people using it keep it."),
                  schema({{"currency", stringProperty(QStringLiteral("As list_currencies shows it"))}}, {QStringLiteral("currency")}),
                  false, guarded([currencyArgument, savedJson](const QJsonObject &args) {
                      QString error;
-                     const std::optional<GanttResources> entry = currencyArgument(args, &error);
+                     const std::optional<GanttCurrency> entry = currencyArgument(args, &error);
                      if (!entry) return ToolResult::error(error);
-                     if (!GanttResources::savedCurrencies().contains(entry->currencyText()))
-                         return ToolResult::error(QStringLiteral("%1 is not a saved currency (list_currencies)").arg(entry->currencyText()));
-                     GanttResources::removeSavedCurrency(entry->currencyText());
-                     return ToolResult::object({{"removed", entry->currencyText()}, {"saved", savedJson()}});
+                     if (!GanttResources::savedCurrencies().contains(entry->text()))
+                         return ToolResult::error(QStringLiteral("%1 is not a saved currency (list_currencies)").arg(entry->text()));
+                     GanttResources::removeSavedCurrency(entry->text());
+                     return ToolResult::object({{"removed", entry->text()}, {"saved", savedJson()}});
                  })});
     return list;
 }

@@ -84,6 +84,7 @@ struct EntryLayout {
     QList<QRectF> markers;
     QRectF block;
     int textFlags = 0;        // for QPainter::drawText of the text
+    qreal formulaWidth = -1;  // text with $...$: the width its formulas were laid out at (0 = one line); -1 = plain text
 };
 // Places text, markers and figure inside box. alignment: Qt alignment flags (plus Qt::TextWordWrap
 // to wrap the text, otherwise one elided line). The figure is figureLines lines of font tall times

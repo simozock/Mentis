@@ -144,7 +144,7 @@ NodeGeometry::GeometryKey NodeGeometry::geometryKey() const {
     // and formatted text take the colour in paint(). Before, every text colour change measured the
     // topic again and laid the map out (FEAT-020 part C: a pattern darkens the text of 1,000 topics).
     const QRgb formulaColor = FormulaText::containsMath(m_node->title) ? m_node->text.rgba() : 0;
-    return {{shownTitle(), m_node->titleHtml, formulaColor, !m_node->parent, layoutCustomWidth(), m_node->strikeOut,
+    return {{shownTitle(), m_node->titleHtml, formulaColor, !m_node->parent, NodeStyle::textPadding(m_node), layoutCustomWidth(), m_node->strikeOut,
              m_node->fontFamily, m_node->fontSize, m_node->fontWeight, static_cast<int>(m_node->textCase),
              static_cast<int>(m_node->textAlign), m_node->italic, m_node->underline,
              int(!m_node->topicLink.isEmpty()) + int(!m_node->webLink.isEmpty()) + int(hasNote(m_node) && !showAllNotes())
@@ -252,11 +252,18 @@ void NodeGeometry::updateText() {
     // a box of padding only. Measured here, when the data change.
     m_minContentWidth = metrics.averageCharWidth();
     // The rendering is prepared only for titles with $...$: text-only topics pay nothing more.
-    m_formula.reset();
-    if (FormulaText::containsMath(m_node->title) && FormulaRendering::hooks().layoutTitle)
-        m_formula = FormulaRendering::hooks().layoutTitle(shownTitle(), font, m_node->text,
-                                               layoutCustomWidth() > 0 ? std::max<qreal>(1, manualTextWidth() - 2 * padX())
-                                                                       : kMaxFormulaNodeWidth - 22);
+    // The formula is parsed again only when its own inputs change, not for a marker or a link added
+    // beside it (as FormulaText::update did before the hooks).
+    if (FormulaText::containsMath(m_node->title) && FormulaRendering::hooks().layoutTitle) {
+        FormulaInputs inputs{shownTitle(), font, m_node->text,
+                             layoutCustomWidth() > 0 ? std::max<qreal>(1, manualTextWidth() - 2 * padX()) : kMaxFormulaNodeWidth - 22};
+        if (!m_formula || !(inputs == m_formulaInputs)) {
+            m_formula = FormulaRendering::hooks().layoutTitle(inputs.title, inputs.font, inputs.color, inputs.maxWidth);
+            m_formulaInputs = std::move(inputs);
+        }
+    } else {
+        m_formula.reset();
+    }
     if (!m_node->titleHtml.isEmpty() && !m_formula) {
         if (!m_richDocument) m_richDocument = std::make_unique<QTextDocument>();
         m_richDocument->setDocumentMargin(0);

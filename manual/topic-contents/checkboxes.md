@@ -11,7 +11,7 @@ A checkbox turns a topic into a task to tick off.
 1. Select one or more topics.
 2. Click **Add a checkbox to the topic** in the topic bar, or press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd>.
 
-Or: **Insert content** › **To-do** › **Checkbox**, or start a title with `- [ ] ` (`- [x] ` for a task already done).
+Or: **Insert content** › **To-do** › **Checkbox**.
 
 ## Tick and remove
 

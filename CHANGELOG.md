@@ -12,6 +12,40 @@ All notable changes to Mentis are listed here, newest first. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-25
+
+Mentis comes to Android phones: the same maps, with an app made for touch.
+
+### Added
+
+- **Android app** (64-bit ARM phones, Android 9 or newer), as `Mentis-1.1.0-android-arm64.apk`:
+  the Home with coloured folders, the map with the topic bar and the side panel's Style and Map
+  pages, multiple selection, sheets, search, checkboxes, web and topic links, tags, attached
+  files, relationships, boundaries, summaries and formulas, plus the Outliner, the Gantt and
+  Pitch. It opens and saves the same `.mentis` files as the desktop.
+- One Mentis folder for all your maps, browsed from the Home like a file manager; it can be
+  moved in Settings and the maps move with it. Maps opened from elsewhere are copied in.
+- Coloured folders in the Home to organise maps.
+- Many relationships can start from one topic.
+- Pictures: shapes (the border follows the shape) and effects.
+- Boundaries: more shapes, fill styles, no border, and a text style for the title.
+- Formulas: a list of LaTeX commands in the formula window, and braces closed while typing.
+- Gantt: each person's chart in the Resources window.
+- Markdown shortcuts and format keys in every text field.
+- One Link window with two tabs, for web links and topic links.
+
+### Changed
+
+- The map type menu offers only the directions that change the layout.
+- Windows without a Cancel button close with their X, and the first field takes the focus.
+
+### Fixed
+
+- Widening a boundary around a nested one no longer runs forever.
+- The map type menu draws its samples again when it reopens.
+- Clicking where no field takes the focus confirms the text being edited.
+- The Resources window shows People and Working week on its own background.
+
 ## [1.0.0] - 2026-11-09
 
 The first stable version: maps received from others are handled safely, and the app is checked

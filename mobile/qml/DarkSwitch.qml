@@ -11,9 +11,25 @@ AbstractButton {
     focusPolicy: Qt.NoFocus
     implicitHeight: Math.max(Theme.touchTarget, switchLabel.implicitHeight + 2 * Theme.grid)
     Accessible.name: text
+    // A long press on the label shows its name (TipLabel) and does not toggle; elsewhere it toggles.
+    onPressAndHold: {
+        if (switchLabel.holdsAt(control, pressX, pressY)) {
+            switchLabel.hold()
+        } else {
+            // A connected pressAndHold skips the release's toggle and click (QQuickAbstractButton).
+            if (checkable) {
+                toggle()
+                toggled()
+            }
+            clicked()
+        }
+    }
+    onReleased: switchLabel.release()
+    onCanceled: switchLabel.cancel()
     contentItem: Item {
-        Label {
+        TipLabel {
             id: switchLabel
+            button: control
             anchors.left: parent.left
             anchors.right: track.left
             anchors.rightMargin: 3 * Theme.grid

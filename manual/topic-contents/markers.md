@@ -30,3 +30,7 @@ Markers are small icons before the title: a priority, progress, a flag or a symb
 ## Add your own markers
 
 **New group** creates your own series. The **…** button adds icons from a file or a folder, and restores the built-in collections.
+
+Your own group works as a series: a click on its marker on the topic steps to the next marker of the group, and the right click lists them all.
+
+On the phone, tap **Add** in **Markers and stickers**, name the marker and choose its **Group**, or **New group…** to make one. Tap a marker on the topic to pick another of its series or group, or **Remove marker**.

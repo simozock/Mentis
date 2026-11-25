@@ -37,6 +37,14 @@ ApplicationWindow {
         else home.showError(mobileMap.lastError)
     }
 
+    // FEAT-123: the Home's New map, written in the folder shown and opened.
+    function createMap(folder, name, variant) {
+        const ok = mobileMap.create(folder, name, variant)
+        library.refresh()
+        if (ok) stack.push(mapPage)
+        else home.showError(mobileMap.lastError)
+    }
+
     // FEAT-105: a map given by another app ("Open with", "Share") is copied into the Mentis folder
     // and opened; the open map is saved and closed first. A failed save keeps it open and asks.
     function openIncoming(url) {
@@ -59,6 +67,16 @@ ApplicationWindow {
             id: home
             library: library
             onOpenRequested: url => window.openMap(url)
+            onCreateRequested: (folder, name, variant) => window.createMap(folder, name, variant)
+            onSettingsRequested: stack.push(settingsPage)
+        }
+    }
+
+    Component {
+        id: settingsPage
+        SettingsPage {
+            objectName: "settingsPage"
+            onBackRequested: stack.pop()
         }
     }
 
@@ -121,10 +139,6 @@ ApplicationWindow {
             font.pixelSize: Theme.bodySize
         }
         buttons: [
-            DarkButton {
-                text: qsTr("Cancel")
-                onClicked: saveFailed.reject()
-            },
             DarkButton {
                 objectName: "closeAnywayButton"
                 text: qsTr("Close")

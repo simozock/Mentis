@@ -4,6 +4,7 @@
 #include "document.h"
 #include "mindmapmodel.h"
 #include "relationship.h"
+#include "stylechoices.h"
 #include "summary.h"
 
 #include <QJsonDocument>
@@ -24,6 +25,9 @@ private slots:
     void removingATopicRemovesItsRelationships();
     void boundaryJsonKeepsEveryField();
     void boundaryGeometry();
+    void boundaryShapes();
+    void boundaryFillStyles();  // FEAT-134
+    void nestedBoundaryWideningEnds();
     void summaryGeometry();
     void boundaryCommandsAreOneUndoStepEach();
 };
@@ -207,6 +211,12 @@ void RelationshipTest::boundaryJsonKeepsEveryField() {
     boundary.lineWidth = 3;
     boundary.linePattern = Qt::DotLine;
     boundary.fillColor = QColor(QStringLiteral("#20445566"));
+    boundary.fillStyle = NodeFillStyle::PennellateOrizzontali;  // FEAT-134
+    // FEAT-130: the title's text style.
+    boundary.titleFont = QStringLiteral("Arial");
+    boundary.titleSize = 20;
+    boundary.titleColor = QColor(QStringLiteral("#ff0000ff"));
+    boundary.titleBold = true;
     const QJsonObject json = Boundaries::toJson(boundary);
     const auto read = Boundaries::fromJson(QJsonDocument::fromJson(QJsonDocument(json).toJson()).object());
     QVERIFY(read);
@@ -218,6 +228,15 @@ void RelationshipTest::boundaryJsonKeepsEveryField() {
     QCOMPARE(Boundaries::toJson(plain).keys(), (QStringList{QStringLiteral("id"), QStringLiteral("topics")}));
     const QList<Boundary> list = Boundaries::listFromJson(QJsonArray{QJsonArray{QStringLiteral("t1")}, QJsonObject{{"id", "x"}}, json});
     QCOMPARE(list.size(), 1);
+    // FEAT-130: every shape and the "None" line style come back.
+    for (const auto shape : {Boundary::Shape::Waves, Boundary::Shape::Scallops, Boundary::Shape::Tension, Boundary::Shape::Polygon,
+                             Boundary::Shape::Ellipse, Boundary::Shape::Corners, Boundary::Shape::Tag, Boundary::Shape::RoundedLeft,
+                             Boundary::Shape::Frame}) {
+        Boundary shaped = plain;
+        shaped.shape = shape;
+        shaped.linePattern = Qt::NoPen;
+        QCOMPARE(*Boundaries::fromJson(Boundaries::toJson(shaped)), shaped);
+    }
 }
 
 // FEAT-052 summaries: arms 8 px beyond the branches and 2 px past them, line 11 px out, tick 9 px,
@@ -242,16 +261,117 @@ void RelationshipTest::boundaryGeometry() {
     const QRectF covered(100, 50, 200, 40);
     const QRectF stroke = Boundaries::strokeRect(covered);
     QCOMPARE(stroke, QRectF(92, 42, 216, 56));
-    const QRectF tab = Boundaries::titleRect(stroke, 30);
-    QCOMPARE(tab, QRectF(92 + 12, 42 - 18, 30 + 20, 18));
     Boundary boundary;
-    QCOMPARE(Boundaries::padBelow(boundary), 8 + Boundaries::kDefaultLineWidth / 2);
-    QCOMPARE(Boundaries::padAbove(boundary), Boundaries::padBelow(boundary));
+    const QRectF tab = Boundaries::titleRect(boundary, stroke, 30);
+    QCOMPARE(tab, QRectF(92 + 12, 42 - 18, 30 + 20, 18));
+    const qreal side = 8 + Boundaries::kDefaultLineWidth / 2;
+    QCOMPARE(Boundaries::room(boundary, covered.size()), QMarginsF(side, side, side, side));
     boundary.title = QStringLiteral("T");
-    QCOMPARE(Boundaries::padAbove(boundary), Boundaries::padBelow(boundary) + 18);
+    QCOMPARE(Boundaries::room(boundary, covered.size()), QMarginsF(side, side + 18, side, side));
+    // FEAT-130: a larger title makes the tab taller.
+    boundary.titleSize = 24;
+    QCOMPARE(Boundaries::titleHeight(boundary), 28.0);
+    QCOMPARE(Boundaries::room(boundary, covered.size()).top(), side + 28);
     // Rounded corners: the corner point is outside the outline, the middle of an edge on it.
     QVERIFY(!Boundaries::outline(Boundary::Shape::RoundedRectangle, stroke).contains(stroke.topLeft() + QPointF(0.5, 0.5)));
     QVERIFY(Boundaries::outline(Boundary::Shape::Rectangle, stroke).contains(stroke.topLeft() + QPointF(0.5, 0.5)));
+}
+
+// FEAT-130: every shape holds the covered topics; waves, scallops and the ellipse reach beyond the
+// stroke rect by their measure, and the layout leaves that room.
+void RelationshipTest::boundaryShapes() {
+    const QRectF covered(100, 50, 200, 40);
+    const QRectF stroke = Boundaries::strokeRect(covered);
+    for (const StyleChoices::Choice &choice : StyleChoices::boundaryShapes()) {
+        const auto shape = static_cast<Boundary::Shape>(choice.value);
+        const QPainterPath body = Boundaries::outline(shape, stroke);
+        QVERIFY2(body.contains(covered), qPrintable(Boundaries::shapeKey(shape)));
+        QVERIFY2(Boundaries::shapeBounds(shape, stroke).contains(body.boundingRect().adjusted(0.5, 0.5, -0.5, -0.5)),
+                 qPrintable(Boundaries::shapeKey(shape)));
+        Boundary boundary;
+        boundary.shape = shape;
+        const QRectF bounds = Boundaries::shapeBounds(shape, stroke);
+        const QMarginsF room = Boundaries::room(boundary, covered.size());
+        QCOMPARE(room.top(), covered.top() - bounds.top() + Boundaries::kDefaultLineWidth / 2);
+        QCOMPARE(room.left(), covered.left() - bounds.left() + Boundaries::kDefaultLineWidth / 2);
+    }
+    QCOMPARE(Boundaries::shapeBounds(Boundary::Shape::Waves, stroke), stroke.adjusted(-3, -3, 3, 3));
+    QCOMPARE(Boundaries::shapeBounds(Boundary::Shape::Scallops, stroke), stroke.adjusted(-4, -4, 4, 4));
+    // The ellipse passes through the stroke rect's corners.
+    const QPainterPath ellipse = Boundaries::outline(Boundary::Shape::Ellipse, stroke);
+    QVERIFY(ellipse.contains(stroke.topLeft() + QPointF(1, 1)));
+    QVERIFY(!ellipse.contains(stroke.topLeft() - QPointF(1, 1)));
+    // Polygon: the corner is cut; tension: the edge's middle is inside the rect by 5 px.
+    QVERIFY(!Boundaries::outline(Boundary::Shape::Polygon, stroke).contains(stroke.topLeft() + QPointF(2, 2)));
+    const QPainterPath tension = Boundaries::outline(Boundary::Shape::Tension, stroke);
+    QVERIFY(!tension.contains(QPointF(stroke.center().x(), stroke.top() + 4)));
+    QVERIFY(tension.contains(QPointF(stroke.center().x(), stroke.top() + 6)));
+    // Corner marks: four open L marks, the rectangle as the body.
+    const QPainterPath marks = Boundaries::border(Boundary::Shape::Corners, stroke);
+    QCOMPARE(marks.toSubpathPolygons().size(), 4);
+    QCOMPARE(Boundaries::outline(Boundary::Shape::Corners, stroke).boundingRect(), stroke);
+    // On the ellipse the tab is centred.
+    Boundary oval;
+    oval.shape = Boundary::Shape::Ellipse;
+    QCOMPARE(Boundaries::titleRect(oval, stroke, 30).center().x(), stroke.center().x());
+    QCOMPARE(Boundaries::titleRect(oval, stroke, 30).bottom(), Boundaries::shapeBounds(oval.shape, stroke).top());
+
+    // FEAT-134. Tag: left corners cut, right corners rounded.
+    const QPainterPath tag = Boundaries::outline(Boundary::Shape::Tag, stroke);
+    QVERIFY(!tag.contains(stroke.topLeft() + QPointF(2, 2)));
+    QVERIFY(!tag.contains(stroke.topRight() + QPointF(-0.5, 0.5)));
+    QVERIFY(tag.contains(stroke.topRight() + QPointF(-3, 3)));
+    // Rounded left: the left corners round with a radius of 24, the right ones of 6.
+    const QPainterPath roundedLeft = Boundaries::outline(Boundary::Shape::RoundedLeft, stroke);
+    QVERIFY(!roundedLeft.contains(stroke.topLeft() + QPointF(5, 5)));
+    QVERIFY(roundedLeft.contains(QPointF(stroke.left() + 1, stroke.center().y())));
+    QVERIFY(roundedLeft.contains(stroke.topRight() + QPointF(-3, 3)));
+    // Frame: four edges running 8 px past the corners, the rectangle as the body; the tab stands on
+    // the rectangle, so the room above is the larger of the overrun and the tab.
+    QCOMPARE(Boundaries::border(Boundary::Shape::Frame, stroke).boundingRect(), stroke.adjusted(-8, -8, 8, 8));
+    QCOMPARE(Boundaries::border(Boundary::Shape::Frame, stroke).toSubpathPolygons().size(), 4);
+    QCOMPARE(Boundaries::outline(Boundary::Shape::Frame, stroke).boundingRect(), stroke);
+    Boundary frame;
+    frame.shape = Boundary::Shape::Frame;
+    frame.title = QStringLiteral("T");
+    QCOMPARE(Boundaries::titleRect(frame, stroke, 30), QRectF(stroke.left() + 12, stroke.top() - 18, 50, 18));
+    const qreal side = 8 + Boundaries::kDefaultLineWidth / 2;
+    QCOMPARE(Boundaries::room(frame, covered.size()), QMarginsF(side + 8, side + 18, side + 8, side + 8));
+}
+
+// FEAT-134: the fill styles drawn as the topics': the outline, a rough area, a pattern or nothing.
+void RelationshipTest::boundaryFillStyles() {
+    const QRectF stroke = Boundaries::strokeRect(QRectF(0, 0, 200, 60));
+    Boundary boundary;
+    boundary.id = QStringLiteral("b1");
+    boundary.shape = Boundary::Shape::Tag;
+    QCOMPARE(Boundaries::fill(boundary, stroke).area, Boundaries::outline(boundary.shape, stroke));
+    boundary.fillStyle = NodeFillStyle::PienoManoLibera;
+    const Boundaries::Fill rough = Boundaries::fill(boundary, stroke);
+    QVERIFY(!rough.area.isEmpty() && rough.area != Boundaries::outline(boundary.shape, stroke));
+    QCOMPARE(Boundaries::fill(boundary, stroke).area, rough.area);  // the same seed every time
+    boundary.fillStyle = NodeFillStyle::TratteggioDiagonale;
+    const Boundaries::Fill hatched = Boundaries::fill(boundary, stroke);
+    QVERIFY(hatched.area.isEmpty() && !hatched.pattern.lines.isEmpty());
+    boundary.fillStyle = NodeFillStyle::Nessuno;
+    const Boundaries::Fill none = Boundaries::fill(boundary, stroke);
+    QVERIFY(none.area.isEmpty() && none.pattern.lines.isEmpty());
+}
+
+// A union whose right edge rounds a hair inside the nested boundary's never "contains" it: the
+// widening stops once the union no longer changes (the phone froze on Boundary, 2026-11-13).
+void RelationshipTest::nestedBoundaryWideningEnds() {
+    const QList<Boundary> boundaries{Boundary{}, Boundary{}};
+    QList<QRectF> covers{QRectF(870.0780909949244, -93.77596704006805, 202.56294966354776, 135.82389444857148),
+                         QRectF(814.0413648824745, -122.29989459701422, 129.64587499209028, 137.62415172798194)};
+    QRectF need = Boundaries::strokeRect(covers[0]);
+    const qreal half = Boundaries::kDefaultLineWidth / 2;
+    need.adjust(-half, -half, half, half);
+    QVERIFY(!covers[1].united(need).contains(need));  // the rounding this test is about
+    Boundaries::widenAroundNested(boundaries, covers, [&](const Boundary &inner, const Boundary &) {
+        return &inner == &boundaries[0];
+    });
+    QCOMPARE(covers[1], covers[1].united(need));
 }
 
 void RelationshipTest::boundaryCommandsAreOneUndoStepEach() {

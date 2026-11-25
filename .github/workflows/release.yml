@@ -3,7 +3,7 @@ name: Release
 # The packages of Mentis and the GitHub release that the app's update check reads (FEAT-090).
 # - A tag vX.Y.Z (pushed only on the maintainer's command): Windows installer
 #   Mentis-X.Y.Z-setup-x64.exe, Linux Mentis-X.Y.Z-x86_64.AppImage, macOS Mentis-X.Y.Z-macos.dmg,
-#   SHA256SUMS, the release.
+#   Android Mentis-X.Y.Z-android-arm64.apk, SHA256SUMS, the release.
 # - Run by hand with an existing tag: only the macOS disk image, from that tag's code, added to its
 #   release with the updated SHA256SUMS (a release made without it).
 # - Run by hand without a tag: the three packages from the chosen branch as workflow artifacts, to
@@ -23,8 +23,10 @@ on:
         required: false
         default: ''
 
+# Read only by default: the build jobs run downloaded tools (linuxdeploy, Inno Setup), so only the
+# jobs that publish (release, add-macos) get write access, in their own permissions.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   version:
@@ -34,6 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
       - name: Version
         id: version
@@ -54,9 +57,11 @@ jobs:
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      SIGN: ${{ startsWith(github.ref, 'refs/tags/') && secrets.SIGNPATH_API_TOKEN != '' }}
+      SIGN: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06  # v4.5.0
         with:
           version: '6.8.3'
@@ -150,6 +155,8 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - name: System libraries
         run: |
           sudo apt-get update
@@ -211,6 +218,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
       - uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06  # v4.5.0
         with:
@@ -247,9 +255,97 @@ jobs:
           path: Mentis-${{ env.VERSION }}-macos.dmg
           if-no-files-found: error
 
+  # The phone app (FEAT-097) for arm64 phones. Versions
+  # from Qt's page for Qt 6.8 (https://doc.qt.io/qt-6.8/android-getting-started.html): JDK 17,
+  # NDK 26.1.10909125, platforms;android-36, build-tools;36.0.0. A tag signs it with the
+  # maintainer's release key (secrets ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+  # ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD) and stops without it; test packages get a throwaway
+  # key, so they never install over a released copy.
+  android:
+    if: github.event_name != 'workflow_dispatch' || inputs.tag == ''
+    needs: version
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      QT_VERSION: '6.8.3'
+      QT_ROOT: ${{ github.workspace }}/../qt
+      ANDROID_NDK_VERSION: '26.1.10909125'
+      ANDROID_PLATFORM: 'android-36'
+      ANDROID_BUILD_TOOLS: '36.0.0'
+      RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: lukka/get-cmake@30aea713799f46b5b60e60f5fa83f849abd52c22  # v4.5.0-rc3 (was @latest)
+      - name: Qt for Android and its host Qt
+        run: |
+          python3 -m venv "$RUNNER_TEMP/aqt" && . "$RUNNER_TEMP/aqt/bin/activate"
+          pip install -q aqtinstall
+          aqt install-qt -O "$QT_ROOT" linux desktop "$QT_VERSION" linux_gcc_64
+          aqt install-qt -O "$QT_ROOT" linux android "$QT_VERSION" android_arm64_v8a
+      - name: Android SDK and NDK
+        run: |
+          sdkmanager="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          (yes || true) | "$sdkmanager" --licenses > /dev/null
+          "$sdkmanager" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}" "ndk;${ANDROID_NDK_VERSION}" > /dev/null
+      - name: Build
+        run: |
+          export JAVA_HOME="${JAVA_HOME_17_X64}"
+          # The translations tool runs at build time: built for the host first.
+          cmake -S tools/translations -B build-host -G Ninja -DCMAKE_PREFIX_PATH="$QT_ROOT/$QT_VERSION/gcc_64"
+          cmake --build build-host
+          "$QT_ROOT/$QT_VERSION/android_arm64_v8a/bin/qt-cmake" -S . -B build-android -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
+            -DANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION" \
+            -DQT_HOST_PATH="$QT_ROOT/$QT_VERSION/gcc_64" \
+            -DMENTIS_HOST_TRANSLATIONS="$PWD/build-host/tools/translations/MentisTranslations" \
+            -DBUILD_TESTING=OFF
+          cmake --build build-android --target MentisMobile_make_apk
+      # Qt's release build is unsigned and Android refuses it. The key never enters the repository.
+      - name: Sign
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          export JAVA_HOME="${JAVA_HOME_17_X64}"
+          keystore="$RUNNER_TEMP/mentis.keystore"
+          if [[ -n "${KEYSTORE_BASE64}" && "${RELEASE}" == "true" ]]; then
+            echo "${KEYSTORE_BASE64}" | base64 -d > "$keystore"
+          elif [[ "${RELEASE}" == "true" ]]; then
+            echo "No release key: set the ANDROID_* secrets before tagging a version." >&2
+            exit 1
+          else
+            KEYSTORE_PASSWORD=throwaway KEY_PASSWORD=throwaway KEY_ALIAS=throwaway
+            "$JAVA_HOME/bin/keytool" -genkeypair -keystore "$keystore" -storepass throwaway -keypass throwaway \
+              -alias throwaway -keyalg RSA -keysize 2048 -validity 30 -dname "CN=Mentis test package" -noprompt
+          fi
+          unsigned="$(find build-android -name '*.apk' -path '*outputs/apk/*' | head -n 1)"
+          test -n "$unsigned"
+          tools="$ANDROID_SDK_ROOT/build-tools/$ANDROID_BUILD_TOOLS"
+          apk="Mentis-${VERSION}-android-arm64.apk"
+          "$tools/zipalign" -f -p 4 "$unsigned" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" sign --ks "$keystore" --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD \
+            --ks-key-alias "$KEY_ALIAS" --out "$apk" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify --print-certs "$apk"
+          rm -f "$keystore" "$apk.idsig"
+          badging="$("$tools/aapt2" dump badging "$apk")"
+          package="$(grep -m 1 '^package:' <<< "$badging")"
+          echo "$package"
+          grep -q "name='io.github.simozock.mentis'.*versionName='${VERSION}'" <<< "$package"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: android
+          path: Mentis-${{ env.VERSION }}-android-arm64.apk
+          if-no-files-found: error
+
   release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [version, windows, linux, macos]
+    # A tag pushed, not a run by hand on a tag ref (that only builds test packages).
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [version, windows, linux, macos, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -267,7 +363,7 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum "Mentis-${VERSION}-setup-x64.exe" "Mentis-${VERSION}-x86_64.AppImage" "Mentis-${VERSION}-macos.dmg" > SHA256SUMS
+          sha256sum "Mentis-${VERSION}-setup-x64.exe" "Mentis-${VERSION}-x86_64.AppImage" "Mentis-${VERSION}-macos.dmg" "Mentis-${VERSION}-android-arm64.apk" > SHA256SUMS
           cat SHA256SUMS
       # Build provenance (2026-11-09): GitHub's signed record that these files were built by this
       # workflow from this commit; anyone checks one with
@@ -279,6 +375,7 @@ jobs:
             dist/Mentis-${{ env.VERSION }}-setup-x64.exe
             dist/Mentis-${{ env.VERSION }}-x86_64.AppImage
             dist/Mentis-${{ env.VERSION }}-macos.dmg
+            dist/Mentis-${{ env.VERSION }}-android-arm64.apk
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

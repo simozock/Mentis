@@ -47,14 +47,15 @@ absolute; work only on the files the user asked for.
 12. Gantt (every topic but the central one is a task, with the topic's id): `read_gantt`,
     `set_gantt_task` (start YYYY-MM-DD, duration in working days, progress, priority),
     `add_dependency`, `remove_dependency`, `add_person`, `update_person` (name, role, e-mail, hourly
-    cost), `remove_person` (one assigned to tasks: the user's yes), `assign_people` (with `percent`,
-    each person's share of the task), `set_currency`, `list_currencies`, `add_currency` and
+    cost and its currency), `remove_person` (one assigned to tasks: the user's yes), `assign_people` (with `percent`,
+    each person's share of the task), `set_currency` (one person's or everyone's: each person has
+    their own, costs in different currencies are never added), `list_currencies`, `add_currency` and
     `remove_currency` (currencies saved on this computer), `set_calendar` (working weekdays,
     holidays, hours per day), `add_baseline`, `rename_baseline`, `set_gantt_style` (shape, fill,
     border and colour of tasks, summaries and milestones; line, end, width of the arrows),
     `set_gantt_task_style` (a task's own shape, fill, border, colour, name on the bar).
-    `read_gantt` also lists shares, own styles, the chart style, the baselines, the calendar and the
-    currency. Summaries take their dates from their tasks.
+    `read_gantt` also lists shares, own styles, the chart style, the baselines, the calendar and each
+    person's currency. Summaries take their dates from their tasks.
 13. Exports and presentation: `export_map` (.png, .svg, .pdf, .docx, .xlsx, .md to a
     file), `set_pitch` (theme or template, aspect, per-topic slides). Replacing an existing file, also with
     `create_map` or `save_open_map`, needs the user's yes as above.
