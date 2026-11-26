@@ -13,9 +13,11 @@ repository has the secret `SIGNPATH_API_TOKEN`. Without it the release is built 
 3. Turn on multi-factor authentication on GitHub and on SignPath for every team member.
 4. On SignPath: add the "GitHub.com" trusted build system and link it to the project; create the
    artifact configurations `program` and `installer` from the two XML files here. They are drafts
-   written from SignPath's reference and not yet validated: SignPath's editor checks them, and the
-   Foundation may ask for restrictions (product name and version). Note the organization id, the
-   project slug and the signing policy slug.
+   written from SignPath's reference and not yet validated: SignPath's editor checks them. They
+   require the product name "Mentis", which `Mentis.exe` (`assets/appicon/mentis.rc.in`),
+   `MentisMathText.dll` (`third_party/jkqtmathtext/mentismathtext.rc.in`) and the installer
+   (`installer/mentis.iss`) carry with the project's version; the Foundation may also ask for a
+   version restriction. Note the organization id, the project slug and the signing policy slug.
 5. Install the SignPath GitHub App (<https://github.com/apps/signpath>) on this repository.
 6. In the repository's Settings > Secrets and variables > Actions:
    - secret `SIGNPATH_API_TOKEN`: the API token of a SignPath CI user;

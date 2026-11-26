@@ -1,0 +1,30 @@
+// Generated into the build folder by CMakeLists.txt (configure_file): the version information of
+// MentisMathText.dll. Code signing (installer/signpath/README.md) checks the product name and
+// version of every signed file, so they match Mentis.exe's (assets/appicon/mentis.rc.in).
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+PRODUCTVERSION @PROJECT_VERSION_MAJOR@,@PROJECT_VERSION_MINOR@,@PROJECT_VERSION_PATCH@,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_DLL
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "Mentis"
+            VALUE "FileDescription", "Mentis formula renderer (JKQTMathText)"
+            VALUE "FileVersion", "@PROJECT_VERSION@"
+            VALUE "InternalName", "MentisMathText"
+            VALUE "LegalCopyright", "JKQTMathText by Jan W. Krieger, GNU LGPL-2.1-or-later"
+            VALUE "OriginalFilename", "MentisMathText.dll"
+            VALUE "ProductName", "Mentis"
+            VALUE "ProductVersion", "@PROJECT_VERSION@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

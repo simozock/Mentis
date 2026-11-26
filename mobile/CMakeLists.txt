@@ -205,6 +205,17 @@ if(ANDROID)
     # The name under the launcher icon: Qt writes the target's (MentisMobile) here, and
     # QT_ANDROID_APP_NAME exists only from Qt 6.9.
     string(REPLACE "-- %%INSERT_APP_NAME%% --" "Mentis" mentis_manifest "${mentis_manifest}")
+    # The launcher icon, written here too: QT_ANDROID_APP_ICON (below) exists only from Qt 6.9, and
+    # Qt 6.8's template (the CI's) has no icon attribute, so its APK showed Android's default icon.
+    string(REPLACE "-- %%INSERT_APP_ICON%% --" "@mipmap/ic_launcher" mentis_manifest "${mentis_manifest}")
+    string(FIND "${mentis_manifest}" "android:icon=" mentis_icon_at)
+    if(mentis_icon_at EQUAL -1)
+        string(FIND "${mentis_manifest}" "android:hardwareAccelerated=\"true\"" mentis_accel_at)
+        if(mentis_accel_at EQUAL -1)
+            message(FATAL_ERROR "No place for the launcher icon in ${mentis_qt_manifest}")
+        endif()
+        string(REPLACE "android:hardwareAccelerated=\"true\"" "android:hardwareAccelerated=\"true\"\n        android:icon=\"@mipmap/ic_launcher\"" mentis_manifest "${mentis_manifest}")
+    endif()
     file(WRITE "${mentis_android_package}/AndroidManifest.xml.new" "${mentis_manifest}")
     file(COPY_FILE "${mentis_android_package}/AndroidManifest.xml.new" "${mentis_android_package}/AndroidManifest.xml" ONLY_IF_DIFFERENT)
     file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/android/res" DESTINATION "${mentis_android_package}")

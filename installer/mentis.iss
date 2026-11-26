@@ -28,6 +28,11 @@ VersionInfoProductName=Mentis
 VersionInfoProductVersion={#AppVersion}
 VersionInfoCompany=Mentis
 VersionInfoDescription=Mentis setup
+; Signing on the maintainer's PC (tools/sign-windows-certum.ps1): ISCC /DSignTool=mentis plus
+; /Smentis=<signtool command> signs the setup and its uninstaller. Not defined on CI.
+#ifdef SignTool
+SignTool={#SignTool}
+#endif
 ; With PrivilegesRequired=lowest {autopf} is {userpf}: %LOCALAPPDATA%\Programs.
 PrivilegesRequired=lowest
 DefaultDirName={autopf}\Mentis

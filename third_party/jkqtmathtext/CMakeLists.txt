@@ -33,3 +33,9 @@ target_compile_definitions(MentisMathText
     PUBLIC  JKQTCOMMON_LIB_IN_DLL JKQTMATHTEXT_LIB_IN_DLL JKQTMATHTEXT_COMPILED_WITH_FIRAMATH
     PRIVATE JKQTCOMMON_LIB_EXPORT_LIBRARY JKQTMATHTEXT_LIB_EXPORT_LIBRARY)
 target_link_libraries(MentisMathText PUBLIC Qt6::Core Qt6::Gui)
+# Version information of the DLL, from the top-level project(): code signing checks the product name
+# and version of every signed file (installer/signpath/README.md).
+if(WIN32)
+    configure_file(mentismathtext.rc.in "${CMAKE_BINARY_DIR}/generated/mentismathtext.rc" @ONLY)
+    target_sources(MentisMathText PRIVATE "${CMAKE_BINARY_DIR}/generated/mentismathtext.rc")
+endif()

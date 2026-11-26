@@ -7,10 +7,18 @@ name: Release
 # - Run by hand with an existing tag: only the macOS disk image, from that tag's code, added to its
 #   release with the updated SHA256SUMS (a release made without it).
 # - Run by hand without a tag: the three packages from the chosen branch as workflow artifacts, to
-#   try a fix before a version (user's request 2026-11-09); no signing, no release.
+#   try a fix before a version (user's request 2026-11-09); no signing, no release. With
+#   android_only, only the APK (user's request 2026-11-26).
+# - Run by hand from main with an existing tag and android_only: the APK rebuilt from main's code,
+#   signed with the release key, replaces the release's APK and its line in SHA256SUMS (2026-11-26:
+#   1.1.0's APK showed Android's default icon). main must still have the release's version.
 # Signing (SignPath Foundation, installer/signpath/README.md) runs only for a tag and only when the
 # secret SIGNPATH_API_TOKEN exists: without it the release is unsigned. Each signing request waits
 # for a manual approval on SignPath (two per release: the program, then the installer).
+# Certum (installer/certum/README.md): with the repository variable WINDOWS_SIGNING=certum a tag
+# builds no Windows installer. The windows job uploads the unsigned program as the artifact
+# windows-stage and the release is a draft without it; tools/sign-windows-certum.ps1 on the
+# maintainer's PC signs the program, builds and signs the installer and publishes the release.
 on:
   # Only for a version (user's decision 2026-11-09): a tag vX.Y.Z, or by hand for the macOS image.
   # Before, every push to main built the three packages too; the Build workflow checks the code.
@@ -22,6 +30,11 @@ on:
         description: Existing release (vX.Y.Z) that gets the macOS disk image; empty = test packages only
         required: false
         default: ''
+      android_only:
+        description: Only the Android APK (with a tag, from main - replaces the release's APK)
+        type: boolean
+        required: false
+        default: false
 
 # Read only by default: the build jobs run downloaded tools (linuxdeploy, Inno Setup), so only the
 # jobs that publish (release, add-macos) get write access, in their own permissions.
@@ -52,12 +65,13 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
   windows:
-    if: github.event_name != 'workflow_dispatch' || inputs.tag == ''
+    if: github.event_name != 'workflow_dispatch' || (inputs.tag == '' && !inputs.android_only)
     needs: version
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      SIGN: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && secrets.SIGNPATH_API_TOKEN != '' }}
+      SIGN: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && vars.WINDOWS_SIGNING != 'certum' && secrets.SIGNPATH_API_TOKEN != '' }}
+      CERTUM: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && vars.WINDOWS_SIGNING == 'certum' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -79,6 +93,20 @@ jobs:
       - name: Remove unused SQL drivers
         shell: bash
         run: find stage/plugins/sqldrivers -name 'qsql*.dll' ! -name 'qsqlite.dll' -delete
+      # Certum: the program and what the installer needs from this tag, for signing on the
+      # maintainer's PC (tools/sign-windows-certum.ps1). Paths are kept from the workspace root.
+      - name: Upload the program for Certum signing
+        if: env.CERTUM == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: windows-stage
+          path: |
+            stage/
+            installer/mentis.iss
+            LICENSE
+            assets/appicon/mentis.ico
+          if-no-files-found: error
+          retention-days: 30
       # Only our own binaries are signed (SignPath Foundation's terms), not the Qt libraries.
       - name: Upload the program to sign
         id: unsigned-program
@@ -108,6 +136,7 @@ jobs:
         shell: bash
         run: cp -f signed-program/Mentis.exe signed-program/MentisMathText.dll stage/bin/
       - name: Installer
+        if: env.CERTUM != 'true'
         shell: pwsh
         run: |
           choco install innosetup --no-progress -y
@@ -138,7 +167,8 @@ jobs:
         if: env.SIGN == 'true'
         shell: bash
         run: cp -f "signed-installer/Mentis-${VERSION}-setup-x64.exe" dist/
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+      - if: env.CERTUM != 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: windows
           path: dist/Mentis-${{ env.VERSION }}-setup-x64.exe
@@ -148,7 +178,7 @@ jobs:
   # a newer one. linuxdeploy and its Qt plugin collect Qt, its plugins and the libraries
   # (https://github.com/linuxdeploy/linuxdeploy-plugin-qt).
   linux:
-    if: github.event_name != 'workflow_dispatch' || inputs.tag == ''
+    if: github.event_name != 'workflow_dispatch' || (inputs.tag == '' && !inputs.android_only)
     needs: version
     runs-on: ubuntu-22.04
     env:
@@ -211,6 +241,7 @@ jobs:
   # (https://doc.qt.io/qt-6/macos-deployment.html); the ad-hoc signature is what Apple silicon needs
   # to run binaries that macdeployqt has rewritten.
   macos:
+    if: github.event_name != 'workflow_dispatch' || !inputs.android_only
     needs: version
     runs-on: macos-latest
     env:
@@ -262,7 +293,7 @@ jobs:
   # ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD) and stops without it; test packages get a throwaway
   # key, so they never install over a released copy.
   android:
-    if: github.event_name != 'workflow_dispatch' || inputs.tag == ''
+    if: github.event_name != 'workflow_dispatch' || inputs.tag == '' || inputs.android_only
     needs: version
     runs-on: ubuntu-24.04
     env:
@@ -272,8 +303,13 @@ jobs:
       ANDROID_NDK_VERSION: '26.1.10909125'
       ANDROID_PLATFORM: 'android-36'
       ANDROID_BUILD_TOOLS: '36.0.0'
-      RELEASE: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
+      RELEASE: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.android_only && github.ref == 'refs/heads/main') }}
     steps:
+      - name: A replaced APK comes from main
+        if: github.event_name == 'workflow_dispatch' && inputs.tag != '' && github.ref != 'refs/heads/main'
+        run: |
+          echo "Replacing the APK of ${{ inputs.tag }}: run the workflow from main." >&2
+          exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
@@ -336,6 +372,9 @@ jobs:
           package="$(grep -m 1 '^package:' <<< "$badging")"
           echo "$package"
           grep -q "name='io.github.simozock.mentis'.*versionName='${VERSION}'" <<< "$package"
+          # The launcher icon is Mentis's, not Android's default.
+          grep -m 1 '^application:' <<< "$badging"
+          grep -q "^application:.*icon='res/" <<< "$badging"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: android
@@ -354,28 +393,33 @@ jobs:
       artifact-metadata: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      CERTUM: ${{ vars.WINDOWS_SIGNING == 'certum' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # One folder per artifact: windows-stage (Certum) is a whole folder tree, not a package.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
         with:
-          path: dist
-          merge-multiple: true
+          path: artifacts
       - name: Checksums
+        id: checksums
         run: |
+          mkdir dist
+          mv artifacts/*/Mentis-* dist/
           cd dist
-          sha256sum "Mentis-${VERSION}-setup-x64.exe" "Mentis-${VERSION}-x86_64.AppImage" "Mentis-${VERSION}-macos.dmg" "Mentis-${VERSION}-android-arm64.apk" > SHA256SUMS
+          packages=("Mentis-${VERSION}-x86_64.AppImage" "Mentis-${VERSION}-macos.dmg" "Mentis-${VERSION}-android-arm64.apk")
+          # Certum: the installer is added later by tools/sign-windows-certum.ps1, with its checksum.
+          if [[ "${CERTUM}" != "true" ]]; then packages=("Mentis-${VERSION}-setup-x64.exe" "${packages[@]}"); fi
+          sha256sum "${packages[@]}" > SHA256SUMS
           cat SHA256SUMS
+          { echo 'subjects<<END'; printf 'dist/%s\n' "${packages[@]}"; echo END; } >> "$GITHUB_OUTPUT"
       # Build provenance (2026-11-09): GitHub's signed record that these files were built by this
       # workflow from this commit; anyone checks one with
       # "gh attestation verify <file> --repo simozock/Mentis". Not a code signature: Windows and
       # macOS still warn until the installers are signed.
+      # Certum: no attestation for the installer, which is built and signed on the maintainer's PC.
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
         with:
-          subject-path: |
-            dist/Mentis-${{ env.VERSION }}-setup-x64.exe
-            dist/Mentis-${{ env.VERSION }}-x86_64.AppImage
-            dist/Mentis-${{ env.VERSION }}-macos.dmg
-            dist/Mentis-${{ env.VERSION }}-android-arm64.apk
+          subject-path: ${{ steps.checksums.outputs.subjects }}
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -386,12 +430,16 @@ jobs:
             exit 0
           fi
           # The code signing policy goes on every release page (SignPath Foundation's terms).
-          gh release create "${GITHUB_REF_NAME}" dist/* --title "Mentis ${VERSION}" \
+          # Certum: a draft, hidden from the update check (releases/latest) until the signed
+          # installer is added and tools/sign-windows-certum.ps1 publishes it.
+          draft=()
+          if [[ "${CERTUM}" == "true" ]]; then draft=(--draft); fi
+          gh release create "${GITHUB_REF_NAME}" dist/* "${draft[@]}" --title "Mentis ${VERSION}" \
             --notes-file .github/release-notes.md --generate-notes
 
   # Run by hand: the macOS disk image joins a release made without it.
   add-macos:
-    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != '' && !inputs.android_only
     needs: [version, macos]
     runs-on: ubuntu-latest
     permissions:
@@ -424,3 +472,34 @@ jobs:
           gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json body --jq .body > body.md
           { cat ../.github/release-notes.md; echo; awk '/^## What.s Changed|^\*\*Full Changelog/{found=1} found' body.md; } > notes.md
           gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --notes-file notes.md
+
+  # Run by hand from main: the rebuilt APK replaces the release's.
+  replace-android:
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != '' && inputs.android_only && github.ref == 'refs/heads/main'
+    needs: [version, android]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: android
+          path: dist
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-path: dist/Mentis-${{ env.VERSION }}-android-arm64.apk
+      - name: Replace in the release
+        run: |
+          cd dist
+          gh release download "${TAG}" --repo "${GITHUB_REPOSITORY}" --pattern SHA256SUMS
+          { grep -v -- "-android-arm64.apk" SHA256SUMS || true; sha256sum "Mentis-${VERSION}-android-arm64.apk"; } > sums
+          mv sums SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "${TAG}" --repo "${GITHUB_REPOSITORY}" --clobber "Mentis-${VERSION}-android-arm64.apk" SHA256SUMS
